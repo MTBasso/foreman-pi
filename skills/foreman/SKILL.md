@@ -17,13 +17,14 @@ output, or a sub-agent's report came back in English. If a sub-agent's
 report is in a different language than the user is using, translate it when
 you relay it, rather than pasting it through as-is.
 
-**Resolving `references/*.md` and `agents/*.md` paths below**: both
-directories live at the **package root**, not inside this skill's own
-folder. Take the `location` pi gave you in the
+**Resolving `references/*.md`, `agents/*.md`, and `templates/*.md` paths
+below**: all three directories live at the **package root**, not inside
+this skill's own folder. Take the `location` pi gave you in the
 `<skill name="foreman" location=".../skills/foreman/SKILL.md">` tag that
 loaded this file, strip `skills/foreman/SKILL.md` off the end to get the
-package root, then append `references/<name>.md` or `agents/<name>.md`.
-Concretely: if `location` is `/home/null/.pi/agent/git/github.com/MTBasso/foreman-pi/skills/foreman/SKILL.md`,
+package root, then append `references/<name>.md`, `agents/<name>.md`, or
+`templates/<name>.md`. Concretely: if `location` is
+`/home/null/.pi/agent/git/github.com/MTBasso/foreman-pi/skills/foreman/SKILL.md`,
 then `references/using-worktrees.md` is
 `/home/null/.pi/agent/git/github.com/MTBasso/foreman-pi/references/using-worktrees.md`
 — **not** `.../skills/foreman/references/using-worktrees.md` (one level too
