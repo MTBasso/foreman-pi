@@ -1,23 +1,106 @@
 {
   "providers": {
-    "anthropic-bridge": {
-      "apiKey": "YOUR_CLAUDE_CODE_API_KEY",
-      "baseURL": "https://anthropic.com"
-    },
     "refuseless": {
-      "apiKey": "YOUR_REFUSELESS_API_KEY",
-      "baseURL": "https://refuseless.com"
-    }
+        "baseUrl": "https://api.refuseless.com/v1",
+        "api": "openai-completions",
+        "apiKey": "$REFUSELESS_API_KEY",
+        "models": [
+          {
+            "id": "glm-5.3-abliterated",
+            "name": "GLM 5.3 Abliterated",
+            "contextWindow": 1048576,
+            "maxTokens": 131072,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          },
+          {
+            "id": "glm-5.3-flash-abliterated",
+            "name": "GLM 5.3 Flash Abliterated",
+            "contextWindow": 1048576,
+            "maxTokens": 131072,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          },
+          {
+            "id": "deepseek-v4.1-flash-abliterated",
+            "name": "DeepSeek V4.1 Flash 1017 Abliterated",
+            "contextWindow": 1048576,
+            "maxTokens": 131072,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": "off",
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          },
+          {
+            "id": "deepseek-v4.1-flash-fast",
+            "name": "DeepSeek V4.1 Flash 1017",
+            "contextWindow": 1048576,
+            "maxTokens": 262144,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": "off",
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          },
+          {
+            "id": "minimax-m3.1-flash",
+            "name": "Minimax M3.1 Flash",
+            "contextWindow": 1048576,
+            "maxTokens": 512000,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          },
+          {
+            "id": "kimi-k3.1-pro",
+            "name": "Kimi K3.1 Pro",
+            "contextWindow": 1048576,
+            "maxTokens": 131072,
+            "reasoning": true,
+            "thinkingLevelMap": {
+              "off": null,
+              "minimal": null,
+              "low": "low",
+              "medium": null,
+              "high": "high",
+              "max": "max"
+            }
+          }
+        ]
+      }
   },
   "models": [
     {
-      "id": "claude-bridge/claude-3-7-sonnet",
-      "name": "Claude Code Primary",
-      "provider": "anthropic-bridge",
-      "contextWindow": 200000
-    },
-    {
-      "id": "refuseless/deepseek-v4-abliterated",
+      "id": "refuseless/deepseek-v4.1-flash-abliterated",
       "name": "Refuseless Fallback",
       "provider": "refuseless",
       "contextWindow": 524288
