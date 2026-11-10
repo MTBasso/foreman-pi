@@ -19,8 +19,39 @@ This README only covers what exists in this repo right now and how to run it.
 | `extensions/subagent-dispatch/` | **Adopted + patched**, not written from scratch — see "Why adopt the example" below. One documented, tested change: bundled `agents/*.md` are discovered alongside user/project agents. |
 | `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. |
 | `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
+| `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
 | `templates/`, `commands/` equivalents | **Not started.** |
 | Packaging for real install (`pi install ./foreman-pi` or via npm) | **Not verified.** The directory layout follows the documented package convention (`extensions/`, `skills/`, conventional discovery, no manifest needed) but has not actually been installed into a `pi` session. |
+
+## Model fallback (false-positive testing, not a refusal bypass)
+
+`extensions/model-fallback/` retries a refused Claude response on GPT, as a
+way to test whether Claude's refusal was a false positive on this project —
+**not** as a way to route around a refusal in general. The distinction is
+load-bearing, not cosmetic:
+
+- The fallback target (`openai`/GPT) is an ordinary aligned provider with its
+  own safety policy. If GPT also refuses, this extension stops — it does not
+  escalate to a third, less-aligned model. There is deliberately no "keep
+  trying providers until one says yes" loop.
+- A provider marketed specifically as having no refusals was explicitly
+  considered and rejected for this role (see the conversation that led to
+  this extension) — that pattern is a refusal-bypass system by construction,
+  regardless of how the retry is framed, and this repo will not add one.
+- The refusal detector (`looksLikeRefusal` in `index.ts`) is a conservative
+  heuristic (short text + an opening refusal phrase, English and
+  Portuguese) specifically to avoid misfiring on a long legitimate answer
+  that happens to contain "I can't" mid-paragraph. See
+  `extensions/model-fallback/smoke-test.ts` scenario 5 for the check.
+
+**Needs a real OpenAI API key with billing, not a ChatGPT subscription** —
+the ChatGPT consumer app (free or Plus) does not grant API access; `pi`
+talks to providers the same way it talks to Anthropic, via `OPENAI_API_KEY`
+(see `docs/providers.md` in the installed package). Model ids
+(`FOREMAN_PRIMARY_MODEL`/`FOREMAN_FALLBACK_MODEL` env vars, defaulting to
+`claude-sonnet-4-5`/`gpt-4o-mini`) are unverified guesses — confirm the
+exact catalog ids with `/models` inside `pi` or https://pi.dev/models before
+relying on the defaults.
 
 ## What's not verified yet
 
@@ -81,6 +112,7 @@ extensions/
   orchestrator-guardrail/        — tool_call block + setActiveTools (foreman's guardrail)
   session-reminder/               — session_start + before_agent_start reminder
   subagent-dispatch/              — adopted+patched upstream subagent example
+  model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
 agents/                           — the 8 ported foreman subagent definitions
 skills/                           — the 4 ported foreman skills
 references/                       — supporting docs the skills point to

@@ -245,6 +245,37 @@ desenvolvimento não replicando o remapeamento de módulos do Pi. Documentado
 e excluído do `tsc` estrito do nosso `tsconfig.json` (ver comentário lá);
 não alteramos a linha em si pra manter o diff vendorizado limpo.
 
+## Fora do escopo original: fallback de modelo pra teste de falso positivo
+
+Fora das 6 fases acima (que portam o `foreman` original), adicionamos
+`extensions/model-fallback/` a pedido do usuário, pra testar se uma recusa
+do Claude num projeto específico é falso positivo. Decisões importantes,
+registradas aqui porque vieram de uma negociação explícita na conversa:
+
+- **O que foi recusado**: um roteador que, ao ver uma recusa do Claude,
+  repassa pra um modelo "refuseless" (sem salvaguardas) — isso é bypass de
+  recusa por construção, independente de como a intenção é descrita, e não
+  foi implementado.
+- **O que foi implementado**: fallback pra GPT (provedor comum, com sua
+  própria política de segurança). Se o GPT também recusar, a extensão para
+  — sem escalar pra um terceiro modelo. Ver `README.md`, seção "Model
+  fallback", pra essa distinção por completo.
+- **Mecanismo confirmado** contra `docs/virtual-models.md` e
+  `examples/extensions/jev-router.ts` reais do pacote instalado:
+  `registerVirtualModel` com `route()` *sem estado* — decide reolhando a
+  cauda de `request.messages` desde a última mensagem de usuário, em vez de
+  carregar estado entre chamadas (mesmo padrão do `editedThisTurn` do
+  `jev-router.ts`). `agent_end` detecta a recusa e `agent_settled` (ponto
+  documentado como seguro pra isso) dispara o retry via
+  `pi.sendMessage(..., {triggerTurn:true})`.
+- **Bloqueio prático real**: GPT via API exige chave da OpenAI com billing
+  — a assinatura do ChatGPT (grátis ou Plus) não dá acesso à API. O usuário
+  mencionou só ter o plano grátis do ChatGPT; isso precisa ser resolvido
+  (chave de API própria) antes de qualquer teste ao vivo.
+- 8/8 checks de lógica passam (`npm run test:fallback`), incluindo um teste
+  específico pra garantir que uma resposta longa e legítima contendo "I
+  can't" no meio do texto não é confundida com recusa.
+
 ## Fontes
 
 - https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
