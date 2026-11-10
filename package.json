@@ -1,0 +1,34 @@
+{
+  "name": "foreman-pi",
+  "version": "0.1.0",
+  "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see PLAN.md.",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:guardrail": "tsx extensions/orchestrator-guardrail/smoke-test.ts",
+    "test:agents": "tsx extensions/subagent-dispatch/smoke-test.ts",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MTBasso/foreman-pi.git"
+  },
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/MTBasso/foreman-pi/issues"
+  },
+  "homepage": "https://github.com/MTBasso/foreman-pi#readme",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

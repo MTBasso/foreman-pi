@@ -182,28 +182,68 @@ com o fluxo atual via marketplace), ou como arquivos pra colar direto no
    `@mariozechner/pi-coding-agent` quanto `@earendil-works/pi-coding-agent`
    — confirmar qual é o atual antes de fixar instruções de instalação.
 
-## Fases propostas (nenhuma iniciada ainda)
+## Fases — status
 
-- **Fase 0 — prova de conceito do guardrail.** Extensão mínima só com
-  `tool_call` block + `setActiveTools`, testada num projeto Pi descartável,
-  confirmando que bloqueia de verdade e que a mensagem de erro chega
-  legível ao modelo.
-- **Fase 1 — portar skills.** Copiar `SKILL.md` (foreman, plan-runner,
-  design-preview, project-memory) pra `.pi/skills/`, ajustar frontmatter,
-  revisar qualquer referência a mecanismo específico do Claude Code
-  (menções a "PreToolUse", "Agent tool", etc. no corpo do texto).
-- **Fase 2 — portar agentes + dispatcher de sub-agente.** Decidir a
-  pergunta aberta 1, portar `agents/*.md` pra `.pi/agents/`.
-- **Fase 3 — portar o guardrail completo + reminder de sessão.** Unir a
-  Fase 0 com a lógica real do marcador `.orchestrator-active`
-  (criação/remoção/`.gitignore`/detecção de obsoleto), replicando o que o
-  `references/orchestrator-marker.md` do foreman documenta hoje.
-- **Fase 4 — portar comandos de slash.** `/foreman`, `/foreman-status`,
-  `/foreman-audit`, `/foreman-diagnose`, `/plan-runner`.
-- **Fase 5 — empacotamento.** Resolver a pergunta aberta 2 e publicar de
-  forma instalável.
-- **Fase 6 — paridade de testes.** Adaptar o conceito da pasta `evals/` do
-  foreman original pro que o Pi oferecer de testável.
+Pesquisa de payload do `session_start`/`before_agent_start` e desenvolvimento
+inicial feitos em 2026-11-10, direto contra `@earendil-works/pi-coding-agent@1.5.2`
+instalado como devDependency deste repo (tipos reais de
+`dist/core/extensions/types.d.ts`, exemplos reais em `examples/extensions/`)
+— não apenas a doc resumida. Ver `README.md` ("Status" e "O que não foi
+verificado ainda") pro estado exato de cada peça.
+
+- **Fase 0 — prova de conceito do guardrail. ✅ feito.** `extensions/orchestrator-guardrail/`
+  implementa `tool_call` block + `setActiveTools`, com 10/10 checks de lógica
+  passando (`npm run test:guardrail`) contra os tipos reais. **Não testado**
+  ainda dentro de uma sessão `pi` de verdade (sem runtime `pi` disponível
+  neste ambiente) — próximo passo real da Fase 0.
+- **Fase 1 — portar skills. ✅ feito.** `SKILL.md` de `foreman`, `plan-runner`,
+  `design-preview`, `project-memory` copiados pra `skills/` (convenção de
+  pacote do Pi, descoberta automática sem manifesto — ver `packages.md`).
+  Menções específicas do Claude Code (Artifact tool, `PreToolUse`,
+  `NotebookEdit`, "Agent tool"/"create a new session") reescritas pros
+  primitivos reais do Pi.
+- **Fase 2 — portar agentes + dispatcher de sub-agente. ✅ feito** (ver
+  `README.md`, "Why adopt the example"). Decisão da pergunta aberta 1:
+  adotar `examples/extensions/subagent/` (copiado pra
+  `extensions/subagent-dispatch/`) em vez de escrever do zero, com uma
+  mudança funcional documentada (agentes empacotados em `agents/*.md` são
+  descobertos junto dos de usuário/projeto, `source: "package"`). 8 agentes
+  portados (`backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`,
+  `plan-step-builder`, `release-manager`, `codebase-auditor`), confirmados
+  descobertos pelo dispatcher real (`npm run test:agents`).
+- **Fase 3 — portar o guardrail completo + reminder de sessão. ✅ feito.**
+  `extensions/session-reminder/` combina `session_start` (detecta marcador
+  obsoleto num `startup`/`new`) + `before_agent_start` (injeta o aviso uma
+  vez), como documentado na seção 3 abaixo. `references/orchestrator-marker.md`
+  e `references/guardrail-troubleshooting.md` reescritos pra terminologia
+  do Pi.
+- **Fase 4 — portar comandos de slash.** Não iniciada. `/foreman`,
+  `/foreman-status`, `/foreman-audit`, `/foreman-diagnose`, `/plan-runner`
+  via `pi.registerCommand(...)`.
+- **Fase 5 — empacotamento.** Parcialmente resolvida: a pergunta aberta 2
+  tem resposta (convenção de diretórios `extensions/`/`skills/`, sem
+  manifesto `pi` necessário — ver `packages.md`), mas **nunca testamos**
+  `pi install ./foreman-pi` de verdade nem confirmamos que a descoberta
+  automática encontra tudo como a doc promete.
+- **Fase 6 — paridade de testes.** Não iniciada além dos smoke tests
+  ad-hoc (`npm test`) escritos pra esta fase 0-3.
+
+## Descoberta de desenvolvimento: quirk de typecheck no dispatcher adotado
+
+`extensions/subagent-dispatch/index.ts` (código upstream, não nosso) falha
+o `tsc --noEmit` em dois pontos (`params.agentScope ?? "user"`) com
+`Type '{}' is not assignable to type 'AgentScope'`, em qualquer versão de
+TypeScript testada (7.0.2 e 5.9.3) — não é um problema de versão do
+compilador. É o tipo `Static<>` do `typebox`/`StringEnum` não resolvendo
+igual fora do runtime real do Pi: a doc de extensões já avisa que "Pi maps
+these imports to its own copies, so extensions share Pi's classes and
+registries" — ou seja, nosso `npm install` local resolve um `typebox`
+separado do que o `pi` real remapearia via `jiti` em tempo de execução, e
+só nesse cenário local isolado a inferência quebra. Não é um bug de lógica
+(o `jiti` do Pi não faz type-check, só transpila) — é só o nosso harness de
+desenvolvimento não replicando o remapeamento de módulos do Pi. Documentado
+e excluído do `tsc` estrito do nosso `tsconfig.json` (ver comentário lá);
+não alteramos a linha em si pra manter o diff vendorizado limpo.
 
 ## Fontes
 
