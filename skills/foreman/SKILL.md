@@ -17,9 +17,16 @@ output, or a sub-agent's report came back in English. If a sub-agent's
 report is in a different language than the user is using, translate it when
 you relay it, rather than pasting it through as-is.
 
+**Resolving `references/*.md` paths below**: every such path in this file is
+relative to this skill's own directory — the `location` pi gave you in the
+`<skill name="foreman" location="...">` tag that loaded this file (strip
+`SKILL.md` off the end, then append the relative path). Do not guess a path
+based on the skill's name or on where a similarly-named project might live
+elsewhere on disk; a wrong guess here derails the whole run.
+
 ## 0. Isolated workspace, then mark foreman mode active
 
-Read `references/using-worktrees.md` and follow it before anything else —
+Read `references/using-worktrees.md` (resolved as above) and follow it before anything else —
 detect whether you're already isolated, otherwise get the user's consent
 before creating a worktree for this feature/bug. Skip it only if the user
 declines or there's no way to create one; work in place then.
@@ -102,7 +109,12 @@ If what the user wants is a review/audit/recommendations on existing UI or
 older code — not a new feature or a bug to fix — don't run this through
 grilling/planning/building at all. Spawn the `codebase-auditor` agent
 directly, pointed at whatever scope the user named (or the whole project if
-they didn't). Post the usual `[PENDING]`/`[DONE]` status line around it.
+they didn't): post `[PENDING] codebase-auditor → ...`, call the `subagent`
+tool in that same turn, and wait for its result — see §4 for why this must
+be a real tool call, not just the status line, and for the `subagent` vs
+`workflow` distinction (this spawn uses `subagent`, so it is NOT actually
+backgrounded — write `[DONE]`/`[BLOCKED]` as soon as that call returns,
+don't tell the user you'll check back later).
 
 It writes `FOREMAN_AUDIT.md` and reports back a short summary; relay that to
 the user. If they then want something from the report acted on, that's a
@@ -176,6 +188,22 @@ in this plugin: one line before spawning (`[PENDING] ...`), one line after it
 reports back (`[DONE]`/`[BLOCKED] ...`). Same shape every time, no restating
 the full brief — this is what keeps delegations skimmable instead of each
 one narrated differently.
+
+**Pi has two different delegation tools — know which one you're calling.**
+The `subagent` tool is synchronous: it blocks this turn until the child
+process finishes and hands the result back as that same call's result, in
+the same turn. The `workflow` tool is genuinely asynchronous: calling it
+with a single-agent script returns immediately ("started in the
+background, run ID ..."), and its result is injected back into this
+conversation later, on its own, with no further action from you. If you
+write `[PENDING]` and then describe the work as "running in the
+background" / "I'll report back once it's done", you MUST have actually
+called `workflow` (not `subagent`) to make that true — and if you called
+`subagent`, you already have the real result in the same turn, so write
+`[DONE]`/`[BLOCKED]` immediately from it instead of claiming it's still
+running. Never write `[PENDING]` followed by a promise to check back later
+without a tool_result already in hand or a real `workflow` run ID to point
+to — that combination is always false.
 
 **Surface preview files, don't just mention them.** `frontend-dev`, `qa`, and
 `codebase-auditor` run as separate subagent processes — when any of them
