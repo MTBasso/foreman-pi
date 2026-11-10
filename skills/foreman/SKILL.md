@@ -107,14 +107,43 @@ that actually explain the "why" of each area) already in place?
 
 If what the user wants is a review/audit/recommendations on existing UI or
 older code — not a new feature or a bug to fix — don't run this through
-grilling/planning/building at all. Spawn the `codebase-auditor` agent
-directly, pointed at whatever scope the user named (or the whole project if
-they didn't): post `[PENDING] codebase-auditor → ...`, call the `subagent`
-tool in that same turn, and wait for its result — see §4 for why this must
-be a real tool call, not just the status line, and for the `subagent` vs
-`workflow` distinction (this spawn uses `subagent`, so it is NOT actually
-backgrounded — write `[DONE]`/`[BLOCKED]` as soon as that call returns,
-don't tell the user you'll check back later).
+grilling/planning/building at all. Spawn the `codebase-auditor` agent via
+the `workflow` tool, pointed at whatever scope the user named (or the whole
+project if they didn't). This is the one delegation in this skill that
+genuinely backgrounds — see §4 for the `subagent` vs `workflow` distinction
+in general; here's the concrete recipe for this one:
+
+1. Read `agents/codebase-auditor.md` (resolved relative to this skill's
+   directory, same rule as `references/*.md` above — strip the YAML
+   frontmatter, keep the body) if you haven't already this session.
+2. Call the `workflow` tool with a script of this shape (fill in the
+   prompt text from step 1 and the task from what the user asked for —
+   `tools` must match the auditor's frontmatter `tools:` line exactly, do
+   not widen it):
+
+   ```js
+   export const meta = { name: "codebase-auditor", description: "Audit on request", phases: [{ title: "Audit" }] };
+   const prompt = `<the full body of agents/codebase-auditor.md, frontmatter stripped>`;
+   return await agent(prompt, { label: "codebase-auditor", tier: "worker", tools: ["read", "grep", "find", "bash", "write"] })(
+     "<scope the user named, or 'the whole project' if they didn't>"
+   );
+   ```
+3. Post `[PENDING] codebase-auditor → <scope>` right before this call.
+   `workflow` returns immediately with a run ID — that response is not the
+   audit result, it's confirmation the run started. **Do not write `[DONE]`
+   yet and do not fabricate a result.** Tell the user it's running in the
+   background and that you'll relay it once it lands. Then actually wait
+   for it: the run's completion arrives as a message in this conversation
+   on its own, but — per pi's own `workflow` docs — that does **not**
+   automatically re-prompt you. In practice this means: if the user's next
+   message comes before you've seen a completion message, check for one
+   before answering anything else; don't claim progress you haven't seen.
+4. The first call in a project needs the user to approve the generated
+   script interactively (`y` at the approval prompt) and, the very first
+   time ever, to have run `/workflow setup` to configure model roles — if
+   `workflow` errors saying roles aren't configured, tell the user to run
+   `/workflow setup` once and stop there; don't retry or fall back to
+   `subagent` silently.
 
 It writes `FOREMAN_AUDIT.md` and reports back a short summary; relay that to
 the user. If they then want something from the report acted on, that's a
@@ -192,23 +221,27 @@ one narrated differently.
 **Pi has two different delegation tools — know which one you're calling.**
 The `subagent` tool is synchronous: it blocks this turn until the child
 process finishes and hands the result back as that same call's result, in
-the same turn. The `workflow` tool is genuinely asynchronous: calling it
+the same turn. The `workflow` tool is genuinely backgrounded: calling it
 with a single-agent script returns immediately ("started in the
-background, run ID ..."), and its result is injected back into this
-conversation later, on its own, with no further action from you. If you
-write `[PENDING]` and then describe the work as "running in the
-background" / "I'll report back once it's done", you MUST have actually
-called `workflow` (not `subagent`) to make that true — and if you called
-`subagent`, you already have the real result in the same turn, so write
-`[DONE]`/`[BLOCKED]` immediately from it instead of claiming it's still
-running. Never write `[PENDING]` followed by a promise to check back later
-without a tool_result already in hand or a real `workflow` run ID to point
-to — that combination is always false.
+background, run ID ..."), and the result is injected into this
+conversation on its own once the run finishes — but per pi's own docs,
+that completion message is "display-only" and does **not** automatically
+re-prompt you. So "I'll report back once it's done" is only honest with
+`workflow`, and even then it means "I'll look for that message and relay
+it the next time I'm prompted," not "I'll proactively interrupt to tell
+you" — nothing wakes you up early. If you called `subagent`, you already
+have the real result in the same turn, so write `[DONE]`/`[BLOCKED]`
+immediately from it instead of claiming it's still running. Never write
+`[PENDING]` followed by a promise to check back later without either a
+tool_result already in hand (`subagent`) or a real `workflow` run ID
+you're going to look for on your next turn — that combination is always
+false.
 
-**Surface preview files, don't just mention them.** `frontend-dev`, `qa`, and
-`codebase-auditor` run as separate subagent processes — when any of them
-name a `.foreman/previews/*.html` path in their report, read it yourself and
-tell the user exactly how to open it (or open it directly if this session has
+**Surface preview files, don't just mention them.** `frontend-dev` and `qa`
+run as separate `subagent` processes, and `codebase-auditor` runs as a
+`workflow` agent (§1.5) — when any of them name a `.foreman/previews/*.html`
+path in their report, read it yourself and tell the user exactly how to
+open it (or open it directly if this session has
 a way to), rather than leaving them to go find the file themselves.
 
 **Multi-item requests get split, not bundled.** If what the user described
