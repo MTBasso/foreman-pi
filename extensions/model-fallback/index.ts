@@ -36,13 +36,13 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ModelRoute, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
 
 const PRIMARY_PROVIDER = "anthropic";
-const FALLBACK_PROVIDER = "openai";
+const FALLBACK_PROVIDER = "refuseless";
 
 // Override with env vars once you've confirmed the exact catalog ids for
 // your account (`/models` inside pi, or https://pi.dev/models) -- these are
 // reasonable guesses, not verified against a live catalog.
-const PRIMARY_MODEL_ID = process.env.FOREMAN_PRIMARY_MODEL ?? "claude-sonnet-4-5";
-const FALLBACK_MODEL_ID = process.env.FOREMAN_FALLBACK_MODEL ?? "gpt-4o-mini";
+const PRIMARY_MODEL_ID = process.env.FOREMAN_PRIMARY_MODEL ?? "claude-sonnet-5-5"
+const FALLBACK_MODEL_ID = process.env.FOREMAN_FALLBACK_MODEL ?? "deepseek-v4-abliterated";
 
 const VIRTUAL_PROVIDER = "foreman";
 const VIRTUAL_MODEL_ID = "hybrid";

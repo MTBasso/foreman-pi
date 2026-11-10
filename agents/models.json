@@ -1,0 +1,26 @@
+{
+  "providers": {
+    "anthropic-bridge": {
+      "apiKey": "YOUR_CLAUDE_CODE_API_KEY",
+      "baseURL": "https://anthropic.com"
+    },
+    "refuseless": {
+      "apiKey": "YOUR_REFUSELESS_API_KEY",
+      "baseURL": "https://refuseless.com"
+    }
+  },
+  "models": [
+    {
+      "id": "claude-bridge/claude-3-7-sonnet",
+      "name": "Claude Code Primary",
+      "provider": "anthropic-bridge",
+      "contextWindow": 200000
+    },
+    {
+      "id": "refuseless/deepseek-v4-abliterated",
+      "name": "Refuseless Fallback",
+      "provider": "refuseless",
+      "contextWindow": 524288
+    }
+  ]
+}
