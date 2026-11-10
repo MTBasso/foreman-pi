@@ -2,22 +2,30 @@ Referenced from `foreman`'s and `plan-runner`'s step 0 — read this once per
 session before marking orchestrator mode active, instead of re-deriving the
 same steps each time.
 
-## Create the marker
+## Create the marker and keep it out of git — one bash call, not two
 
-Create an empty file at `.orchestrator-active` in the project root (`touch
-.orchestrator-active`) if it doesn't already exist. The
-`orchestrator-guardrail` extension denies `write`/`edit` outright, denies any
-`bash` call that looks like it writes a file (redirection, `sed -i`, `tee`,
-`patch`, `dd`), and drops `write`/`edit` from this session's own active tools
-on every turn, all while this marker exists — so the "never edit code" rule
-is enforced even if you forget it mid-task.
+Run this exact one-liner in a single `bash` tool call (don't split it into
+separate "create the marker" and "update .gitignore" calls — each extra
+round trip is a chance for `pi-claude-cli`'s `--resume` to stall or repeat
+itself, which is what actually happened in session 01a1c625/01a1c62?: the
+model re-ran the same marker-creation command four times in a row instead
+of moving on):
 
-## Keep it out of git
+```bash
+touch .orchestrator-active && (grep -qxF '.orchestrator-active' .gitignore 2>/dev/null || echo '.orchestrator-active' >> .gitignore)
+```
 
-Make sure `.orchestrator-active` is listed in the project's `.gitignore`
-(append it, creating the file if needed, if it isn't there already). It's
-session-local bookkeeping, not something that should ever be committed or
-carried between clones/machines.
+It's idempotent — safe to run even if the marker or the `.gitignore` line
+already exist, so there's never a reason to check first or run it twice.
+
+The `orchestrator-guardrail` extension denies `write`/`edit` outright,
+denies any `bash` call that looks like it writes a file (redirection,
+`sed -i`, `tee`, `patch`, `dd`), and drops `write`/`edit` from this
+session's own active tools on every turn, all while this marker exists —
+so the "never edit code" rule is enforced even if you forget it mid-task.
+`.orchestrator-active` is session-local bookkeeping, not something that
+should ever be committed or carried between clones/machines, which is why
+it belongs in `.gitignore`.
 
 ## Remove it only at the real end
 

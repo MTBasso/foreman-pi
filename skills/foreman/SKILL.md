@@ -34,6 +34,20 @@ plausible-looking one that just 404s) derails the whole run.
 
 ## 0. Isolated workspace, then mark foreman mode active
 
+**Check the `foreman-session-reminder` custom message already in this
+conversation before running any check yourself.** The `session-reminder`
+extension pre-gathers whether `.orchestrator-active` exists, `FOREMAN_MEMORY.md`'s
+first lines (or that it doesn't exist), `git branch`/`status`/`log`, and a
+top-level directory listing — all with zero tool calls, at session start.
+This exists because a live run (session 01a1c625) showed the model burning
+7+ sequential turns just re-checking `.orchestrator-active`'s existence
+before `pi-claude-cli`'s `--resume` gave up mid-run with no answer at all —
+a provider-level instability around long tool-call round trips that no
+amount of rephrasing fixes; the only real mitigation is needing fewer round
+trips. Re-running `ls`/`cat`/`git log` for something already in that message
+burns exactly the round trips that cause this — use what's there, and only
+reach for a tool when you need something that message doesn't cover.
+
 Read `references/using-worktrees.md` (resolved as above) and follow it before anything else —
 detect whether you're already isolated, otherwise get the user's consent
 before creating a worktree for this feature/bug. Skip it only if the user
@@ -43,7 +57,8 @@ Read `references/orchestrator-marker.md` in this plugin and follow it: create
 `.orchestrator-active` in the project root, make sure it's in the project's
 `.gitignore`, and only remove it when the user explicitly ends foreman mode
 for this session. It also covers what to do if you find the marker already
-present at the start of a session you don't remember activating.
+present at the start of a session you don't remember activating — the
+reminder message already told you whether it's present; don't re-check.
 
 ## 0.3. When to use this skill, vs plan-runner, vs nothing
 
@@ -81,14 +96,21 @@ Skip this step entirely once you've confirmed they're installed.
 
 ## 1. Orient on the project (do this first, every time)
 
-- Read the current repository (README, package manifests, top-level folders,
-  recent commits) to understand what the project is and its current state.
-- If the repo/folder is empty or has no discernible project yet, STOP and ask the
+- The top-level listing, git branch/status/log, and `FOREMAN_MEMORY.md`'s
+  first lines are already in the `foreman-session-reminder` message (§0) —
+  don't re-run `ls`/`git log`/`cat FOREMAN_MEMORY.md` for them. Read a
+  README or package manifest yourself only if the task needs detail beyond
+  that (what the project actually does, its stack) — the reminder doesn't
+  cover file contents besides `FOREMAN_MEMORY.md`.
+- If the repo/folder is empty or has no discernible project yet (the
+  reminder's top-level listing is empty or near-empty), STOP and ask the
   user what the project is going to be before doing anything else. Do not guess.
-- Check for a project memory file at `./FOREMAN_MEMORY.md` in the repo root. If it
-  exists, read it — it holds conventions, stack choices and decisions learned on
-  this project over time (see the `project-memory` skill). If it doesn't exist yet,
-  note that it will be created once decisions start being made.
+- `FOREMAN_MEMORY.md` holds conventions, stack choices and decisions learned
+  on this project over time (see the `project-memory` skill) — read its
+  full contents yourself if the reminder's first-15-lines excerpt isn't
+  enough for what you're about to decide. If it doesn't exist yet (the
+  reminder says so), note that it will be created once decisions start
+  being made.
 
 ### Existing codebase: audit before proposing anything, but only if it needs it
 
