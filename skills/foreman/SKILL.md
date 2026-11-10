@@ -17,12 +17,20 @@ output, or a sub-agent's report came back in English. If a sub-agent's
 report is in a different language than the user is using, translate it when
 you relay it, rather than pasting it through as-is.
 
-**Resolving `references/*.md` paths below**: every such path in this file is
-relative to this skill's own directory — the `location` pi gave you in the
-`<skill name="foreman" location="...">` tag that loaded this file (strip
-`SKILL.md` off the end, then append the relative path). Do not guess a path
-based on the skill's name or on where a similarly-named project might live
-elsewhere on disk; a wrong guess here derails the whole run.
+**Resolving `references/*.md` and `agents/*.md` paths below**: both
+directories live at the **package root**, not inside this skill's own
+folder. Take the `location` pi gave you in the
+`<skill name="foreman" location=".../skills/foreman/SKILL.md">` tag that
+loaded this file, strip `skills/foreman/SKILL.md` off the end to get the
+package root, then append `references/<name>.md` or `agents/<name>.md`.
+Concretely: if `location` is `/home/null/.pi/agent/git/github.com/MTBasso/foreman-pi/skills/foreman/SKILL.md`,
+then `references/using-worktrees.md` is
+`/home/null/.pi/agent/git/github.com/MTBasso/foreman-pi/references/using-worktrees.md`
+— **not** `.../skills/foreman/references/using-worktrees.md` (one level too
+deep) and **not** a path guessed from the skill's name or from where a
+similarly-named project might live elsewhere on disk. Confirm with `ls` on
+the package root once per session if unsure; a wrong guess here (even a
+plausible-looking one that just 404s) derails the whole run.
 
 ## 0. Isolated workspace, then mark foreman mode active
 
@@ -113,9 +121,9 @@ project if they didn't). This is the one delegation in this skill that
 genuinely backgrounds — see §4 for the `subagent` vs `workflow` distinction
 in general; here's the concrete recipe for this one:
 
-1. Read `agents/codebase-auditor.md` (resolved relative to this skill's
-   directory, same rule as `references/*.md` above — strip the YAML
-   frontmatter, keep the body) if you haven't already this session.
+1. Read `agents/codebase-auditor.md` (resolved against the package root,
+   same rule as `references/*.md` above — strip the YAML frontmatter, keep
+   the body) if you haven't already this session.
 2. Call the `workflow` tool with a script of this shape (fill in the
    prompt text from step 1 and the task from what the user asked for —
    `tools` must match the auditor's frontmatter `tools:` line exactly, do
