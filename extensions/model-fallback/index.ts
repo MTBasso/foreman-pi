@@ -32,20 +32,27 @@
  * in the environment this was built in. Typechecked against the real API;
  * logic not exercised against a real model response. See README.md.
  */
-import type { Message } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, ModelRoute, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
+import type { Message } from '@earendil-works/pi-ai';
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ModelRoute,
+  ModelRouteRequest,
+} from '@earendil-works/pi-coding-agent';
 
-const PRIMARY_PROVIDER = "anthropic";
-const FALLBACK_PROVIDER = "refuseless";
+const PRIMARY_PROVIDER = 'anthropic';
+const FALLBACK_PROVIDER = 'refuseless';
 
 // Override with env vars once you've confirmed the exact catalog ids for
 // your account (`/models` inside pi, or https://pi.dev/models) -- these are
 // reasonable guesses, not verified against a live catalog.
-const PRIMARY_MODEL_ID = process.env.FOREMAN_PRIMARY_MODEL ?? "claude-sonnet-5-5"
-const FALLBACK_MODEL_ID = process.env.FOREMAN_FALLBACK_MODEL ?? "deepseek-v4-abliterated";
+const PRIMARY_MODEL_ID =
+  process.env.FOREMAN_PRIMARY_MODEL ?? 'claude-sonnet-5-5';
+const FALLBACK_MODEL_ID =
+  process.env.FOREMAN_FALLBACK_MODEL ?? 'deepseek-v4.1-flash-abliterated';
 
-const VIRTUAL_PROVIDER = "foreman";
-const VIRTUAL_MODEL_ID = "hybrid";
+const VIRTUAL_PROVIDER = 'foreman';
+const VIRTUAL_MODEL_ID = 'hybrid';
 
 /**
  * Heuristic refusal detector. Deliberately conservative: real refusals are
@@ -54,116 +61,136 @@ const VIRTUAL_MODEL_ID = "hybrid";
  * "here's what I can't do, here's what I can" answer gets misrouted.
  */
 const REFUSAL_OPENERS: RegExp[] = [
-	/^i can'?t (help|assist|do|provide|create|write)/i,
-	/^i('m| am) (not able|unable) to/i,
-	/^i won'?t /i,
-	/^sorry,? (but )?i can'?t/i,
-	/^i must decline/i,
-	/^n[ãa]o posso (ajudar|fazer|criar|escrever|auxiliar)/i,
-	/^desculpe,? (mas )?n[ãa]o posso/i,
-	/^infelizmente,? n[ãa]o posso/i,
+  /^i can'?t (help|assist|do|provide|create|write)/i,
+  /^i('m| am) (not able|unable) to/i,
+  /^i won'?t /i,
+  /^sorry,? (but )?i can'?t/i,
+  /^i must decline/i,
+  /^n[ãa]o posso (ajudar|fazer|criar|escrever|auxiliar)/i,
+  /^desculpe,? (mas )?n[ãa]o posso/i,
+  /^infelizmente,? n[ãa]o posso/i,
 ];
 const MAX_REFUSAL_LENGTH = 600; // refusals are short; a long reply isn't one
 
 function extractText(message: Message): string {
-	if (message.role !== "assistant") return "";
-	return message.content
-		.flatMap((block) => (block.type === "text" ? [block.text] : []))
-		.join("\n")
-		.trim();
+  if (message.role !== 'assistant') return '';
+  return message.content
+    .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+    .join('\n')
+    .trim();
 }
 
 function looksLikeRefusal(text: string): boolean {
-	if (!text || text.length > MAX_REFUSAL_LENGTH) return false;
-	return REFUSAL_OPENERS.some((re) => re.test(text));
+  if (!text || text.length > MAX_REFUSAL_LENGTH) return false;
+  return REFUSAL_OPENERS.some((re) => re.test(text));
 }
 
-function lastAssistantSinceLastUser(messages: readonly Message[]): Message | undefined {
-	const lastUserIndex = messages.findLastIndex((m) => m.role === "user");
-	const tail = messages.slice(lastUserIndex + 1);
-	for (let i = tail.length - 1; i >= 0; i--) {
-		if (tail[i].role === "assistant") return tail[i];
-	}
-	return undefined;
+function lastAssistantSinceLastUser(
+  messages: readonly Message[]
+): Message | undefined {
+  const lastUserIndex = messages.findLastIndex((m) => m.role === 'user');
+  const tail = messages.slice(lastUserIndex + 1);
+  for (let i = tail.length - 1; i >= 0; i--) {
+    if (tail[i].role === 'assistant') return tail[i];
+  }
+  return undefined;
 }
 
-function routeTo(ctx: ExtensionContext, provider: string, modelId: string, thinkingLevel: ModelRouteRequest["thinkingLevel"]): ModelRoute {
-	const model = ctx.modelRegistry.find(provider, modelId);
-	if (!model) {
-		throw new Error(
-			`foreman-pi model-fallback: ${provider}/${modelId} is not in the catalog. ` +
-				`Check the exact id with /models or https://pi.dev/models and set ` +
-				`${provider === PRIMARY_PROVIDER ? "FOREMAN_PRIMARY_MODEL" : "FOREMAN_FALLBACK_MODEL"}.`,
-		);
-	}
-	return { model, thinkingLevel };
+function routeTo(
+  ctx: ExtensionContext,
+  provider: string,
+  modelId: string,
+  thinkingLevel: ModelRouteRequest['thinkingLevel']
+): ModelRoute {
+  const model = ctx.modelRegistry.find(provider, modelId);
+  if (!model) {
+    throw new Error(
+      `foreman-pi model-fallback: ${provider}/${modelId} is not in the catalog. ` +
+        `Check the exact id with /models or https://pi.dev/models and set ` +
+        `${provider === PRIMARY_PROVIDER ? 'FOREMAN_PRIMARY_MODEL' : 'FOREMAN_FALLBACK_MODEL'}.`
+    );
+  }
+  return { model, thinkingLevel };
 }
 
 export default function (pi: ExtensionAPI) {
-	let pendingFallbackRetry = false;
+  let pendingFallbackRetry = false;
 
-	pi.registerVirtualModel({
-		provider: VIRTUAL_PROVIDER,
-		id: VIRTUAL_MODEL_ID,
-		name: "Foreman Hybrid (Claude, GPT fallback on refusal)",
-		thinkingLevels: ["off", "low", "medium", "high"],
-		route(request, ctx) {
-			const lastAssistant = lastAssistantSinceLastUser(request.messages);
-			const primaryJustRefused =
-				lastAssistant?.role === "assistant" &&
-				lastAssistant.provider === PRIMARY_PROVIDER &&
-				looksLikeRefusal(extractText(lastAssistant));
+  pi.registerVirtualModel({
+    provider: VIRTUAL_PROVIDER,
+    id: VIRTUAL_MODEL_ID,
+    name: 'Foreman Hybrid (Claude, GPT fallback on refusal)',
+    thinkingLevels: ['off', 'low', 'medium', 'high'],
+    route(request, ctx) {
+      const lastAssistant = lastAssistantSinceLastUser(request.messages);
+      const primaryJustRefused =
+        lastAssistant?.role === 'assistant' &&
+        lastAssistant.provider === PRIMARY_PROVIDER &&
+        looksLikeRefusal(extractText(lastAssistant));
 
-			if (primaryJustRefused) {
-				const fallback = ctx.modelRegistry.find(FALLBACK_PROVIDER, FALLBACK_MODEL_ID);
-				if (fallback && ctx.modelRegistry.hasConfiguredAuth(fallback)) {
-					return { model: fallback, thinkingLevel: request.thinkingLevel };
-				}
-				// No usable fallback credential -- stay on the primary rather than
-				// throw mid-turn. The agent_settled handler below will have already
-				// told the user why no retry happened.
-			}
+      if (primaryJustRefused) {
+        const fallback = ctx.modelRegistry.find(
+          FALLBACK_PROVIDER,
+          FALLBACK_MODEL_ID
+        );
+        if (fallback && ctx.modelRegistry.hasConfiguredAuth(fallback)) {
+          return { model: fallback, thinkingLevel: request.thinkingLevel };
+        }
+        // No usable fallback credential -- stay on the primary rather than
+        // throw mid-turn. The agent_settled handler below will have already
+        // told the user why no retry happened.
+      }
 
-			return routeTo(ctx, PRIMARY_PROVIDER, PRIMARY_MODEL_ID, request.thinkingLevel);
-		},
-	});
+      return routeTo(
+        ctx,
+        PRIMARY_PROVIDER,
+        PRIMARY_MODEL_ID,
+        request.thinkingLevel
+      );
+    },
+  });
 
-	pi.on("agent_end", async (event) => {
-		const lastAssistant = [...event.messages].reverse().find((m) => m.role === "assistant");
-		pendingFallbackRetry = !!(
-			lastAssistant?.role === "assistant" &&
-			lastAssistant.provider === PRIMARY_PROVIDER &&
-			looksLikeRefusal(extractText(lastAssistant))
-		);
-	});
+  pi.on('agent_end', async (event) => {
+    const lastAssistant = [...event.messages]
+      .reverse()
+      .find((m) => m.role === 'assistant');
+    pendingFallbackRetry = !!(
+      lastAssistant?.role === 'assistant' &&
+      lastAssistant.provider === PRIMARY_PROVIDER &&
+      looksLikeRefusal(extractText(lastAssistant))
+    );
+  });
 
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (!pendingFallbackRetry) return;
-		pendingFallbackRetry = false;
+  pi.on('agent_settled', async (_event, ctx) => {
+    if (!pendingFallbackRetry) return;
+    pendingFallbackRetry = false;
 
-		const fallback = ctx.modelRegistry.find(FALLBACK_PROVIDER, FALLBACK_MODEL_ID);
-		if (!fallback || !ctx.modelRegistry.hasConfiguredAuth(fallback)) {
-			pi.sendMessage({
-				customType: "foreman-fallback-unavailable",
-				display: true,
-				content:
-					`The last response looked like a refusal, but no usable credential is configured ` +
-					`for ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID} (needs an API key with billing, not a ` +
-					`ChatGPT subscription — set ${FALLBACK_PROVIDER.toUpperCase()}_API_KEY). Not retrying.`,
-			});
-			return;
-		}
+    const fallback = ctx.modelRegistry.find(
+      FALLBACK_PROVIDER,
+      FALLBACK_MODEL_ID
+    );
+    if (!fallback || !ctx.modelRegistry.hasConfiguredAuth(fallback)) {
+      pi.sendMessage({
+        customType: 'foreman-fallback-unavailable',
+        display: true,
+        content:
+          `The last response looked like a refusal, but no usable credential is configured ` +
+          `for ${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID} (needs an API key with billing, not a ` +
+          `ChatGPT subscription — set ${FALLBACK_PROVIDER.toUpperCase()}_API_KEY). Not retrying.`,
+      });
+      return;
+    }
 
-		pi.sendMessage(
-			{
-				customType: "foreman-fallback-retry",
-				display: true,
-				content:
-					"The previous response looked like a refusal. Retrying the same request on the " +
-					`configured fallback model (${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}) to check whether ` +
-					"this was a false positive, as explicitly requested by the user for this project.",
-			},
-			{ triggerTurn: true },
-		);
-	});
+    pi.sendMessage(
+      {
+        customType: 'foreman-fallback-retry',
+        display: true,
+        content:
+          'The previous response looked like a refusal. Retrying the same request on the ' +
+          `configured fallback model (${FALLBACK_PROVIDER}/${FALLBACK_MODEL_ID}) to check whether ` +
+          'this was a false positive, as explicitly requested by the user for this project.',
+      },
+      { triggerTurn: true }
+    );
+  });
 }
