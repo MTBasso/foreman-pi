@@ -256,7 +256,7 @@ Today `agents.ts` parses `model:` only. `spawn-worker.ts` passes `--thinking` on
 
 ## Phase 6 — `lib/i18n.ts` (parallel-safe)
 
-Status: todo
+Status: done
 
 **Design:**
 - **Locale selection.** `detectLocale(env)` checks `FOREMAN_LANG`, then `LC_ALL`, `LC_MESSAGES`, `LANG`, and falls back to `en`.
