@@ -111,6 +111,16 @@ this explicitly, so it never has to guess.
 - `extensions/session-reminder/` and `extensions/model-fallback/` live
   (both still only have the faked-API smoke tests passing).
 - The slash-command equivalents (Fase 4) — not started at all yet.
+- A single orchestrator session doing "try the edit myself, get blocked, then
+  delegate" as one uninterrupted flow: the session that was asked to do this
+  (guardrail confirmed blocking `edit`/`write` mid-session, per its own
+  `toolsRemoved` event) stalled for 14+ minutes after that and had to be
+  killed, never producing a `subagent` tool call. This is the documented
+  `pi-claude-cli` instability with long sequential tool-use chains (see the
+  root `CLAUDE.md`'s "~/.pi (Pi coding agent config)" gotchas), not a bug in
+  either extension — both halves of the flow are independently confirmed
+  working above. Worth keeping in mind for real orchestrator usage: prefer
+  short, decisive turns over "try it yourself first" framing.
 
 ## Why adopt the example instead of writing a dispatcher from scratch
 
