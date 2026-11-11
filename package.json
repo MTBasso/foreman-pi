@@ -1,37 +1,79 @@
 {
   "name": "foreman-pi",
-  "version": "0.1.0",
-  "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see PLAN.md.",
+  "version": "0.2.0",
+  "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see https://github.com/MTBasso/foreman-pi.",
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "foreman",
+    "orchestrator"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/*/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "changelogPath": "./CHANGELOG.md"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "agents",
+    "skills",
+    "references",
+    "templates",
+    "README.md",
+    "README.pt-BR.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "!**/smoke-test.ts",
+    "!**/*-test.ts",
+    "!**/live-*.ts",
+    "!agents/models.json"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:guardrail": "tsx extensions/orchestrator-guardrail/smoke-test.ts",
-    "test:agents": "tsx extensions/subagent-dispatch/smoke-test.ts",
+    "test:worker-guard": "tsx extensions/worker-guard/smoke-test.ts",
+    "test:agents": "tsx lib/agents-test.ts",
+    "test:spawn": "tsx lib/spawn-test.ts",
+    "test:model-policy": "tsx lib/model-policy-test.ts",
+    "test:i18n": "tsx lib/i18n-test.ts",
+    "test:readme": "tsx lib/readme-test.ts",
+    "test:mode": "tsx lib/mode-test.ts",
+    "test:foreman-mode": "tsx extensions/foreman-mode/smoke-test.ts",
     "test:instructions": "tsx extensions/orchestrator-guardrail/instructions-test.ts",
     "test:coordination": "tsx extensions/coordination/smoke-test.ts",
     "test:live:coordination": "tsx extensions/coordination/live-rpc.ts",
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
     "test:context-filter": "tsx extensions/context-filter/smoke-test.ts",
     "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:i18n && npm run test:readme && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
     "test:reminder": "tsx extensions/session-reminder/smoke-test.ts",
-    "test:live:phase3": "tsx extensions/coordination/live-phase3.ts"
+    "test:live:phase3": "tsx extensions/coordination/live-phase3.ts",
+    "test:package": "tsx scripts/check-package.ts"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MTBasso/foreman-pi.git"
   },
-  "author": "",
+  "author": "Matheus Basso <matheusbasso@proton.me>",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/MTBasso/foreman-pi/issues"
   },
   "homepage": "https://github.com/MTBasso/foreman-pi#readme",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.5.2",

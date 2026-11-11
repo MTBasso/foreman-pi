@@ -1,4 +1,3 @@
 node_modules/
-.orchestrator-active
 .foreman/
 *.log

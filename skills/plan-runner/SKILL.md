@@ -10,9 +10,16 @@ and is already approved. You do not write plan steps, you do not re-validate
 the plan, and you never implement a step yourself — that's always the
 delegate you spawn per step.
 
-**Language**: always speak to the user in the language they wrote their last
-message in. Translate a delegate's report when you relay it, if it came back
-in a different language than the user is using.
+## Language
+
+- Converse with the user in their language: detect it from their messages
+  (`en` or `pt-BR`), default English. Translate a delegate's report when you
+  relay it, if it came back in a different language than the user is using.
+- Write handoffs and instructions to agents in English, and set the handoff's
+  `User language:` field (`en` or `pt-BR`, default `en`) so workers write
+  their prose in the user's language.
+- Never translate code, paths, field names or contract keywords (`Status`,
+  `Summary`, `completed|failed|blocked`, and the like).
 
 Why no validation here: if the plan came out of this plugin's own
 foreman → planner → user-approval loop, that already served the purpose a
@@ -21,16 +28,20 @@ extra safety net. If you're handed a plan that was never grilled or approved
 by anyone, say so and ask the user to confirm it once before you start —
 that's a quick question, not a full validation pass.
 
-## 0. Isolated workspace, then mark orchestrator mode active
+## 0. Isolated workspace; orchestrator mode is already on
 
 Read `references/using-worktrees.md` and follow it — detect whether you're
 already isolated, otherwise get the user's consent before creating a
 worktree for this plan's run. Skip it only if the user declines or the
 project gives you no way to create one; work in place then.
 
-Read `references/orchestrator-marker.md` in this plugin and follow it —
-same marker/guardrail hook `foreman` uses. Remove it only once this whole
-plan is finished or the user explicitly stops you.
+Entering orchestrator mode is the `/plan-runner` command's job, not yours:
+do not create files or edit `.gitignore` to mark anything. Read
+`references/orchestrator-mode.md` in this plugin once per session — it is the
+same mode and guardrail `foreman` uses, and only the user ends it, with
+`/foreman off`. If `foreman_delegate` refuses with a not-in-mode error, tell
+the user to run `/foreman`, and never try `bash` or file edits to work around
+it.
 
 ## 0.5. This plan's ledger (written by the extension, not by you)
 
@@ -38,7 +49,7 @@ Conversation memory does not survive compaction. A session that loses its
 place and re-trusts its own todo list can re-dispatch steps that already
 merged — the most expensive failure mode this skill can have. Progress is
 tracked on disk, and **the coordination extension writes that ledger for
-you** — you have no `bash`, `write` or `edit` while the marker is active,
+you** — you have no `bash`, `write` or `edit` while orchestrator mode is on,
 and you never append to it by hand.
 
 - Ledger path: `.foreman/plan-runner/<plan-slug>/progress.md` (slug the
@@ -91,14 +102,21 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   `templates/handoff-summary.md`).
 - Dispatch with `foreman_delegate`: `role: "plan-step-builder"`,
   `plan_slug: "<plan-slug>"` and `plan_step: "<N>"` on **every** call (the
-  extension uses them to write the ledger), and a `handoff_prompt` with
-  instructions to read
-  `.claude/skills/build-plan/SKILL.md` in this repo and follow it exactly for
-  `docs/plans/<plan>.md` step `<N>` — including that skill's own Merge
-  section. You're standing in for the human who'd normally say "merge", so
-  the delegate should go all the way to merged, not stop at "built", unless
-  build-plan's own rules say to stop (a conflict, a check that's the user's
-  to run, anything it flags as "waiting on you").
+  extension uses them to write the ledger), and a `handoff_prompt` filled
+  from `templates/handoff-prompt.md` that names `docs/plans/<plan>.md` step
+  `<N>` and carries two fields:
+  - `Build instructions:` — the repo's own build instructions file for a plan
+    step (for example the repo's `build-plan` skill file, if it has one),
+    which the delegate follows exactly, including its Merge section. If the
+    repo has none, write `none` and the delegate follows the step's Touches
+    and Checks.
+  - `User language:` — `en` or `pt-BR`, taken from the user's messages
+    (default `en`).
+
+  You're standing in for the human who'd normally say "merge", so the
+  delegate should go all the way to merged, not stop at "built", unless the
+  build instructions say to stop (a conflict, a check that's the user's to
+  run, anything flagged "waiting on you").
 - `foreman_delegate` returns `{task_id, ack}` immediately; that is not the
   step's result. After dispatching, END YOUR TURN — never poll or wait.
 - When the worker finishes, a `<task-notification>` (task-id, role, status
@@ -150,18 +168,26 @@ notification) run `verify-change` once over the whole plan's accumulated diff. I
 touched UI, ask once whether to also run `visual-regression` (it's live and
 opt-in by that skill's own rules — don't run it without asking).
 
-Before handing off, read `references/code-review-discipline.md` and apply
-its "requesting a review" half if the plan's own tooling doesn't already
-force one — the step reviews from `build-plan` cover each step in
-isolation, this is the one pass that looks at the whole accumulated diff.
+Then read `references/code-review-discipline.md` and request the review half:
+the step reviews from `build-plan` cover each step in isolation; this is the
+one pass that looks at the whole accumulated diff. Fill in
+`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`,
+`User language:`), dispatch the `reviewer` role via `foreman_delegate`
+(`plan_slug`, and the last `plan_step`), and END YOUR TURN. On its
+notification read the `Verdict:` token in the summary: `changes-requested`
+means dispatch `qa-bugfix` with the findings, then the `reviewer` again over
+the new range, until `Verdict: approve` (or the user accepts the open findings).
 
 ## 4. Handoff
 
 Report concisely: steps merged, anything left "waiting on you", any rulings
-made (pointing at the ledger rather than re-pasting it), and offer to delegate to
-the `release-manager` role via `foreman_delegate`, in this same
-session, for commit/PR packaging — same as `foreman` would for any other
-finished feature.
+made (pointing at the ledger rather than re-pasting it), and include the reviewer's
+verdict, and offer to delegate to the `shipper` role via `foreman_delegate`,
+in this same session, for commit packaging (and a push/PR only if the user
+explicitly asks) — same as `foreman` would for any other finished feature.
+Fill in `templates/release-handoff-prompt.md` with its `## Review` section
+(reviewer task id, reviewed range, `Verdict: approve`); the shipper blocks
+without it.
 
 The ledger directory (`.foreman/plan-runner/<plan-slug>/`) is run-scoped
 bookkeeping, not a project record; it is gitignored and you don't delete it
@@ -171,6 +197,7 @@ yourself (no bash) — leave it, or ask the user to clear it.
 
 - Never build or edit a step yourself — always through a delegate.
 - Never skip a step's own "waiting on you" flag by trying to force it through.
+- Never dispatch `shipper` without a `reviewer` pass that ended in `Verdict: approve`, and never ask it to push or open a PR unless the user explicitly asked.
 - Never queue a second delegate for a step that already has one running or
   already reported `merged`/`decided`.
 - Never write or append to the ledger by hand — the extension owns it.

@@ -1,6 +1,7 @@
 /**
- * Live Phase 3 check over `pi --mode rpc` in a temp dir with the marker.
- *  1. Runs one orchestrator turn that asks the model to call `subagent`.
+ * Live Phase 3 check over `pi --mode rpc` in a temp dir with FOREMAN_PI_MODE=orchestrator.
+ *  1. Runs one orchestrator turn that asks the model to call `subagent` (a tool
+ *     that no longer ships with foreman-pi; this checks it stays unavailable).
  *  2. Runs a probe extension command (/probe-tools) that dumps pi.getActiveTools()
  *     and pi.getAllTools() names (there is no RPC command for the tool list).
  *  Expect: foreman_delegate active, subagent absent from the active set; any
@@ -14,7 +15,6 @@ import { join } from "node:path";
 
 const TIMEOUT_MS = Number(process.env.LIVE_TIMEOUT_MS ?? 240_000);
 const dir = mkdtempSync(join(tmpdir(), "foreman-live3-"));
-writeFileSync(join(dir, ".orchestrator-active"), "");
 const out = join(dir, "probe-out.json");
 const probe = join(dir, "probe-ext.ts");
 writeFileSync(
@@ -35,7 +35,7 @@ const note = (s: string) => { const l = `+${((Date.now() - t0) / 1000).toFixed(1
 const proc = spawn(process.env.LIVE_PI ?? "pi", ["--mode", "rpc", "--no-session", "-e", probe], {
 	cwd: dir,
 	stdio: ["pipe", "pipe", "pipe"],
-	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string },
+	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string, FOREMAN_PI_MODE: "orchestrator" },
 });
 let stderr = "";
 proc.stderr.on("data", (d) => (stderr += d.toString()));

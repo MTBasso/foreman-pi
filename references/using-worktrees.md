@@ -29,8 +29,8 @@ one on top of it.
 If you're in a normal repo checkout (not already isolated), ask the user
 once before creating a worktree for this run:
 
-> "Quer que eu crie um worktree isolado pra essa execução? Protege a branch
-> atual de mudanças."
+Ask, in the user's language: "Do you want me to create an isolated worktree
+for this run? It protects your current branch from changes."
 
 Honor a preference the user already stated for this session (worktree
 yes/no) without asking again. If they decline, work in place — proceed
@@ -52,10 +52,9 @@ If they agree:
 
 ## Step 3: Report where you are
 
-State plainly, once: "Trabalhando no worktree `<path>`, branch `<name>`."
-(or, if working in place: "Sem worktree — trabalhando direto na branch
-atual, conforme combinado.") Everything downstream (the `.orchestrator-active`
-marker, the ledger in plan-runner's §0.5, any delegate spawned) happens
+State plainly, once and in the user's language: "Working in worktree
+`<path>`, branch `<name>`." (or, if working in place: "No worktree — working
+directly on the current branch, as agreed.") Everything downstream (orchestrator mode, the ledger in plan-runner's §0.5, any delegate spawned) happens
 relative to this workspace.
 
 ## Cleanup

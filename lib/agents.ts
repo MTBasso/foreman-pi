@@ -1,20 +1,29 @@
 /**
- * Agent discovery and configuration
+ * Agent discovery and configuration.
  *
- * ADAPTED from @earendil-works/pi-coding-agent's examples/extensions/subagent/
- * (see UPSTREAM-README.md in this directory for the original). foreman-pi's
- * only change here: agents also load from a `packageAgentsDir` bundled next
- * to this extension (foreman's own backend-dev/frontend-dev/qa/etc.), tagged
- * `source: "package"` rather than `"project"` so they don't trip the
- * project-agent confirmation gate in index.ts (that gate exists for
- * arbitrary repo-local agents a project could inject; package agents are
- * something the user explicitly installed, same trust level as `"user"`).
- * See PLAN.md open question 1.
+ * Loads agent definitions (markdown files with YAML frontmatter) from three
+ * places: the user's agent dir (`<agentDir>/agents`), the nearest project
+ * `.pi/agents`, and foreman-pi's own bundled `agents/` directory (tagged
+ * `source: "package"`). Package agents have the lowest precedence, so a
+ * same-named user or project agent overrides the bundled one.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+
+export const MODEL_TIERS = ["strong", "mid", "cheap"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export function isThinkingLevel(v: unknown): v is ThinkingLevel {
+	return typeof v === "string" && (THINKING_LEVELS as readonly string[]).includes(v);
+}
+export function isModelTier(v: unknown): v is ModelTier {
+	return typeof v === "string" && (MODEL_TIERS as readonly string[]).includes(v);
+}
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -23,6 +32,11 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	/** Named model tier; resolved to a model by lib/model-policy.ts (no ids ship). */
+	tier?: ModelTier;
+	thinking?: ThinkingLevel;
+	/** Notes about ignored/invalid frontmatter (e.g. an unknown thinking level). */
+	notes?: string[];
 	systemPrompt: string;
 	source: "user" | "project" | "package";
 	filePath: string;
@@ -46,6 +60,8 @@ type AgentFrontmatter = {
 	description?: unknown;
 	tools?: unknown;
 	model?: unknown;
+	tier?: unknown;
+	thinking?: unknown;
 };
 
 /**
@@ -101,11 +117,26 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			continue;
 		}
 
+		const notes: string[] = [];
+		let tier: ModelTier | undefined;
+		if (frontmatter.tier !== undefined) {
+			if (isModelTier(frontmatter.tier)) tier = frontmatter.tier;
+			else notes.push(`ignored invalid tier ${JSON.stringify(frontmatter.tier)} (expected ${MODEL_TIERS.join("|")})`);
+		}
+		let thinking: ThinkingLevel | undefined;
+		if (frontmatter.thinking !== undefined) {
+			if (isThinkingLevel(frontmatter.thinking)) thinking = frontmatter.thinking;
+			else notes.push(`ignored invalid thinking ${JSON.stringify(frontmatter.thinking)} (expected ${THINKING_LEVELS.join("|")})`);
+		}
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			tier,
+			thinking,
+			notes: notes.length > 0 ? notes : undefined,
 			systemPrompt: body,
 			source,
 			filePath,
@@ -135,8 +166,31 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
-/** foreman-pi's own bundled agents, shipped next to this extension. */
-const PACKAGE_AGENTS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "agents");
+/** Absolute path of the foreman-pi package root (parent of lib/). */
+export const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
+
+/** foreman-pi's own bundled agents, shipped at the package root. */
+const PACKAGE_AGENTS_DIR = path.join(PACKAGE_ROOT, "agents");
+
+/** Shared worker rules appended to every worker's system prompt. */
+export const WORKER_COMMON_PATH = path.join(PACKAGE_ROOT, "references", "worker-common.md");
+
+/**
+ * Compose a worker's system prompt: the agent body followed by the shared
+ * `references/worker-common.md` (discipline, report contract, language rule).
+ * `{{PACKAGE_ROOT}}` is substituted in both parts.
+ */
+export function composeWorkerPrompt(agent: Pick<AgentConfig, "systemPrompt">): string {
+	let common = "";
+	try {
+		common = fs.readFileSync(WORKER_COMMON_PATH, "utf-8");
+	} catch {
+		// Missing shared file: fall back to the bare agent body rather than failing the spawn.
+	}
+	const body = agent.systemPrompt.trim();
+	const joined = [body, common.trim()].filter(Boolean).join("\n\n");
+	return joined.split("{{PACKAGE_ROOT}}").join(PACKAGE_ROOT) + "\n";
+}
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");
