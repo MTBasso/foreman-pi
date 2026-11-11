@@ -18,7 +18,8 @@ const EXPECTED = [
 	"planner",
 	"qa-bugfix",
 	"qa",
-	"release-manager",
+	"reviewer",
+	"shipper",
 ];
 
 let failures = 0;

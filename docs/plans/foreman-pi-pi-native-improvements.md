@@ -405,7 +405,7 @@ Status: done
 
 ## Phase 8 — `reviewer` and `shipper` roles
 
-Status: todo
+Status: done
 
 1. **`lib/roles.ts`** (new, pure) is the single `ROLES` list, used by `coordinator.ts` and the `foreman_delegate` enum.
    - **`release-manager` is dropped with no alias.** Add `reviewer` and `shipper`. A drift test fails if the name reappears in code, agents, skills, templates or the README.

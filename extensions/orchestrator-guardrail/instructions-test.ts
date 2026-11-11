@@ -3,16 +3,17 @@
  * commands and writing secrets to disk. Run: npx tsx extensions/orchestrator-guardrail/instructions-test.ts
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { ROLES } from "../../lib/roles.ts";
 
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
 const pr = readFileSync(new URL("skills/plan-runner/SKILL.md", root), "utf8");
-const rm = readFileSync(new URL("agents/release-manager.md", root), "utf8");
+const shipper = readFileSync(new URL("agents/shipper.md", root), "utf8");
 let failures = 0;
 const check = (l: string, c: boolean, _detail?: string) => { console.log(`${c ? "ok " : "FAIL"} - ${l}`); if (!c) failures++; };
 check("skill forbids parallel dependent steps", /Dependent steps are sequential, never parallel/.test(skill));
 check("skill names git push + gh pr create example", /`git push` and\s+`gh pr create`/.test(skill));
-check("release-manager forbids parallel push/PR", /Never issue `git push`\s+and `gh pr create`/.test(rm));
+check("shipper forbids parallel push/PR", /Never issue `git push`\s+and `gh pr create`/.test(shipper));
 check("skill forbids writing secrets to disk", /Never write a file containing secrets to disk/.test(skill));
 check("skill says deliver secrets in chat", /in the chat/.test(skill) && /copy/.test(skill));
 check("foreman skill dispatches via foreman_delegate", /foreman_delegate/.test(skill));
@@ -111,4 +112,34 @@ check("skills §0 point at orchestrator-mode.md and the commands, with no touch/
 check("skills tell the model to ask for /foreman on a not-in-mode refusal", /not-in-mode/.test(skill) && /not-in-mode/.test(pr));
 check(".gitignore no longer lists the marker", !readFileSync(new URL(".gitignore", root), "utf8").includes(needleMarker));
 check("templates/handoff-prompt.md says orchestrator mode does not apply to workers", /About orchestrator mode/.test(readFileSync(new URL("templates/handoff-prompt.md", root), "utf8")));
+
+// --- Phase 8: reviewer and shipper roles ------------------------------------
+const readme = readFileSync(new URL("README.md", root), "utf8");
+const dropped = ["release", "manager"].join("-");
+const reviewer = readFileSync(new URL("agents/reviewer.md", root), "utf8");
+check("ROLES has reviewer and shipper, not the dropped role", ROLES.includes("reviewer") && ROLES.includes("shipper") && !(ROLES as readonly string[]).includes(dropped));
+check("every ROLES entry has an agents/<role>.md and nothing else is there", ROLES.every((r) => existsSync(new URL(`agents/${r}.md`, root))) && agentFiles.length === ROLES.length);
+check("agents/ has no dropped-role file", !existsSync(new URL(`agents/${dropped}.md`, root)));
+const foremanRoleList = skill.match(/`role` is one of\s+((?:`[a-z-]+`,?\s*)+)/)?.[1].match(/[a-z-]+/g) ?? [];
+check("drift: foreman skill role list equals ROLES", JSON.stringify([...foremanRoleList].sort()) === JSON.stringify([...ROLES].sort()), foremanRoleList.join(","));
+const readmeRoles = readme.match(/\| `role` \| enum \| ([^|]+)\|/)?.[1].match(/`([a-z-]+)`/g)?.map((x) => x.replace(/`/g, "")) ?? [];
+check("drift: README foreman_delegate role table equals ROLES", JSON.stringify([...readmeRoles].sort()) === JSON.stringify([...ROLES].sort()), readmeRoles.join(","));
+check("README agents row names every role", ROLES.every((r) => readme.split("\n").some((l) => l.includes("agents/") && l.includes(`\`${r}\``))));
+const roleGate = [...gated, "README.md"].filter((f) => readFileSync(new URL(f, root), "utf8").includes(dropped));
+check(`drift: the dropped role name appears nowhere in code, agents, skills, templates, README${roleGate.length ? " -> " + roleGate.join(", ") : ""}`, roleGate.length === 0);
+check("reviewer: tier strong, thinking high, tools read/grep/find/bash", /^tier: strong$/m.test(reviewer) && /^thinking: high$/m.test(reviewer) && /^tools: read, grep, find, bash$/m.test(reviewer));
+check("reviewer: reads git diff BASE..HEAD, writes no files, English verdict tokens", /git diff BASE\.\.HEAD/.test(reviewer) && /writes? no files/.test(reviewer) && /Verdict: approve/.test(reviewer) && /Verdict: changes-requested/.test(reviewer) && /User language/.test(reviewer));
+check("reviewer: Status completed/blocked/failed rules", /`Status: completed`/.test(reviewer) && /`Status: blocked`/.test(reviewer) && /`Status: failed`/.test(reviewer));
+check("shipper: tier mid, thinking low", /^tier: mid$/m.test(shipper) && /^thinking: low$/m.test(shipper));
+check("shipper: requires review reference, blocked otherwise", /## Review/.test(shipper) && /Status: blocked/.test(shipper) && /changes-requested/.test(shipper) && /Blocked-on: review reference/.test(shipper));
+check("shipper: AgentShield optional, never installed", /optional/.test(shipper) && /never install it/.test(shipper));
+check("shipper: no push/PR without explicit instruction", /Do not push and do not open a PR unless the handoff explicitly says to/.test(shipper));
+const reviewTpl = readFileSync(new URL("templates/review-handoff-prompt.md", root), "utf8");
+const releaseTpl = readFileSync(new URL("templates/release-handoff-prompt.md", root), "utf8");
+check("review template: SHAs and User language", /BASE_SHA/.test(reviewTpl) && /HEAD_SHA/.test(reviewTpl) && /User language:/.test(reviewTpl));
+check("release template: Review section and User language", /^## Review/m.test(releaseTpl) && /Reviewer task id/.test(releaseTpl) && /Verdict: approve/.test(releaseTpl) && /User language:/.test(releaseTpl));
+check("foreman skill flow: reviewer -> qa-bugfix + re-review -> shipper", /Review, then ship/.test(skill) && /changes-requested/.test(skill) && /review-handoff-prompt\.md/.test(skill) && /`shipper`/.test(skill));
+check("plan-runner flow: reviewer pass then shipper offer", /`reviewer`/.test(pr) && /review-handoff-prompt\.md/.test(pr) && /`shipper`/.test(pr));
+check("never lists forbid shipper without an approved review", /Never dispatch `shipper` without a `reviewer` pass/.test(skill) && /Never dispatch `shipper` without a `reviewer` pass/.test(pr));
+check("code-review-discipline names reviewer role and verdict", (() => { const t = readFileSync(new URL("references/code-review-discipline.md", root), "utf8"); return /`reviewer` role/.test(t) && /Verdict: changes-requested/.test(t) && /before `shipper`/.test(t); })());
 if (failures) process.exit(1);

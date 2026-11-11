@@ -168,18 +168,26 @@ notification) run `verify-change` once over the whole plan's accumulated diff. I
 touched UI, ask once whether to also run `visual-regression` (it's live and
 opt-in by that skill's own rules — don't run it without asking).
 
-Before handing off, read `references/code-review-discipline.md` and apply
-its "requesting a review" half if the plan's own tooling doesn't already
-force one — the step reviews from `build-plan` cover each step in
-isolation, this is the one pass that looks at the whole accumulated diff.
+Then read `references/code-review-discipline.md` and request the review half:
+the step reviews from `build-plan` cover each step in isolation; this is the
+one pass that looks at the whole accumulated diff. Fill in
+`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`,
+`User language:`), dispatch the `reviewer` role via `foreman_delegate`
+(`plan_slug`, and the last `plan_step`), and END YOUR TURN. On its
+notification read the `Verdict:` token in the summary: `changes-requested`
+means dispatch `qa-bugfix` with the findings, then the `reviewer` again over
+the new range, until `Verdict: approve` (or the user accepts the open findings).
 
 ## 4. Handoff
 
 Report concisely: steps merged, anything left "waiting on you", any rulings
-made (pointing at the ledger rather than re-pasting it), and offer to delegate to
-the `release-manager` role via `foreman_delegate`, in this same
-session, for commit/PR packaging — same as `foreman` would for any other
-finished feature.
+made (pointing at the ledger rather than re-pasting it), and include the reviewer's
+verdict, and offer to delegate to the `shipper` role via `foreman_delegate`,
+in this same session, for commit packaging (and a push/PR only if the user
+explicitly asks) — same as `foreman` would for any other finished feature.
+Fill in `templates/release-handoff-prompt.md` with its `## Review` section
+(reviewer task id, reviewed range, `Verdict: approve`); the shipper blocks
+without it.
 
 The ledger directory (`.foreman/plan-runner/<plan-slug>/`) is run-scoped
 bookkeeping, not a project record; it is gitignored and you don't delete it
@@ -189,6 +197,7 @@ yourself (no bash) — leave it, or ask the user to clear it.
 
 - Never build or edit a step yourself — always through a delegate.
 - Never skip a step's own "waiting on you" flag by trying to force it through.
+- Never dispatch `shipper` without a `reviewer` pass that ended in `Verdict: approve`, and never ask it to push or open a PR unless the user explicitly asked.
 - Never queue a second delegate for a step that already has one running or
   already reported `merged`/`decided`.
 - Never write or append to the ledger by hand — the extension owns it.

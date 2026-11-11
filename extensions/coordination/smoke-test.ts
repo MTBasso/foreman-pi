@@ -13,6 +13,7 @@ import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { PACKAGE_ROOT, composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { t } from "../../lib/i18n.ts";
 import { MODE_EVENT } from "../../lib/mode.ts";
+import { ROLES as SHARED_ROLES } from "../../lib/roles.ts";
 import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, renderReport, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
 import extension, { buildDetails, callText, registerCoordination } from "./index.ts";
 import {
@@ -389,6 +390,9 @@ async function main() {
 		check("notification renderer registered", orch.renderers.includes(NOTIFICATION_CUSTOM_TYPE));
 		const props = Object.keys(orch.tools[0].parameters.properties);
 		check("params: role, handoff_prompt, plan_step, plan_slug", ["role", "handoff_prompt", "plan_step", "plan_slug"].every((p) => props.includes(p)));
+		const roleEnum: string[] = orch.tools[0].parameters.properties.role.enum ?? [];
+		check("role enum is exactly lib/roles.ts ROLES", JSON.stringify(roleEnum) === JSON.stringify([...SHARED_ROLES]), roleEnum.join(","));
+		check("role enum has reviewer and shipper, not the dropped role", roleEnum.includes("reviewer") && roleEnum.includes("shipper") && !roleEnum.includes(["release", "manager"].join("-")));
 		check("guidelines say end turn / never poll", /END YOUR TURN/.test(orch.tools[0].promptGuidelines.join(" ")) && /Never poll/.test(orch.tools[0].promptGuidelines.join(" ")));
 
 		const dir = mkdtempSync(join(tmpdir(), "foreman-coord-idx-"));
@@ -692,6 +696,18 @@ async function main() {
 		check("parser: localized Status value -> malformed", pmix.contract === "malformed");
 		const pup = parseFinalBlock(blk("STATUS: COMPLETED\nSUMMARY: Ok\nFILES: none"));
 		check("parser: upper case keys and value accepted", pup.contract === "ok" && pup.status === "completed" && pup.summary === "Ok");
+		// Phase 8: reviewer report, Portuguese findings + English Verdict token
+		const prv = parseFinalBlock(blk("Status: completed\nSummary: Revisão concluída: 1 achado importante em src/ação.ts:42 (validação ausente).\nVerdict: changes-requested\nFiles: none\nRulings: none\nBlocked-on: none"));
+		check("parser: reviewer pt-BR findings keep the English Verdict token in summary", prv.contract === "ok" && prv.status === "completed" && /Revisão concluída/.test(prv.summary) && /Verdict: changes-requested$/.test(prv.summary), prv.summary);
+		const prva = parseFinalBlock(blk("Status: completed\nSummary: Nenhum problema encontrado.\nVerdict: approve\nFiles: none"));
+		check("parser: reviewer approve verdict", prva.status === "completed" && /Verdict: approve$/.test(prva.summary));
+		const prvb = parseFinalBlock(blk("Status: blocked\nSummary: Não foi possível resolver os SHAs.\nFiles: none\nRulings: none\nBlocked-on: BASE_SHA unresolved"));
+		check("parser: reviewer blocked when SHAs unresolved", prvb.status === "blocked" && prvb.contract === "ok");
+		// A shipper handoff without a review reference is answered with a blocked report (contract in agents/shipper.md).
+		const shipperPrompt = composeWorkerPrompt(discoverAgents(process.cwd(), "user").agents.find((a) => a.name === "shipper")!);
+		check("shipper prompt: missing review reference -> Status: blocked, nothing else", /missing[^\n]*\n?[^\n]*Status: blocked/.test(shipperPrompt) && /Blocked-on: review reference/.test(shipperPrompt) && /Verdict: approve/.test(shipperPrompt));
+		const psh = parseFinalBlock(blk("Status: blocked\nSummary: no review reference in the handoff\nFiles: none\nRulings: none\nBlocked-on: review reference"));
+		check("parser: shipper blocked report", psh.status === "blocked" && psh.contract === "ok");
 		check("parser: empty report", parseFinalBlock("").status === undefined);
 		const nb = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "ok" });
 		const nm = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "malformed" });

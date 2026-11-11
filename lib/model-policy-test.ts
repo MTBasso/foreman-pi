@@ -77,7 +77,8 @@ try {
 		"plan-step-builder": ["mid", "medium"],
 		qa: ["cheap", "low"],
 		"codebase-auditor": ["cheap", "low"],
-		"release-manager": ["mid", "low"],
+		reviewer: ["strong", "high"],
+		shipper: ["mid", "low"],
 	};
 	for (const [n, [t, th]] of Object.entries(expected)) {
 		const a = by(n);

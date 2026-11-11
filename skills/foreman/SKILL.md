@@ -243,7 +243,7 @@ one narrated differently.
 tool you use to delegate is `foreman_delegate`, with this schema:
 `{role, handoff_prompt, plan_step?, plan_slug?}` where `role` is one of
 `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`,
-`release-manager`, `plan-step-builder`, `codebase-auditor`. It returns
+`plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper`. It returns
 `{task_id, ack}` immediately — the worker runs in its own background `pi`
 process and that return value is only an acknowledgement, never the result.
 Every dispatch must carry `role` and `plan_step` (the step number it
@@ -322,11 +322,11 @@ then delegate B. If A fails, stop and report; never fire B anyway. Example of
 what is forbidden: a single turn that dispatches both `git push` and
 `gh pr create`. Only steps with no data or ordering dependency may go in
 parallel (and only after the overlap check above). When handing a feature to
-`release-manager`, one agent runs these in order; do not split push and PR
+`shipper`, one agent runs these in order; do not split push and PR
 creation across concurrent delegates.
 
 **Spot-check claims, don't just relay them.** Before relaying a `[DONE]`
-report to the user, or handing a feature off to `release-manager`,
+report to the user, or handing a feature off to `shipper`,
 independently have at least one check the delegate claimed re-run (its test,
 build, or lint command) by a *different* worker such as `qa` — rather than
 trusting the report's word alone. While orchestrator mode is on you
@@ -343,8 +343,8 @@ nobody's watching the sub-agent work in real time.
 **Request a real review before the release handoff, and don't rubber-stamp
 its reply.** Read `references/code-review-discipline.md` once per session
 (skip if you already have) and apply both halves of it: how to request a
-review (fresh context, real SHAs, no shared history with the implementer)
-before handing off to `release-manager`, and how to receive one without
+review (the `reviewer` role: fresh context, real SHAs, no shared history with
+the implementer) before handing off to `shipper`, and how to receive one without
 performative agreement if the user or a delegate pushes back on your plan.
 
 - **Planning**: once the feature is grilled and the relevant context gathered,
@@ -375,16 +375,27 @@ performative agreement if the user or a delegate pushes back on your plan.
   produced. When CI fails or a review comment lands, delegate the
   investigation/fix to `qa-bugfix` rather than fixing it yourself. Report
   outcomes back to the user here.
-- **Handing off to the release manager**: once all waves for this feature are
-  done ([DONE] or explicitly accepted [BLOCKED]), fill in
-  `templates/release-handoff-prompt.md` from this plugin — reusing the
-  `[PENDING]`/`[DONE]`/`[BLOCKED]` status lines you already posted and the
-  relevant `FOREMAN_MEMORY.md` entries, don't re-derive either. Spawn the
-  `release-manager` role directly via `foreman_delegate` with that filled
-  prompt — no new session, no copy-paste. Post `[PENDING] release-manager → packaging and shipping`
-  first, same as any other delegation. When it reports back ([DONE]/[BLOCKED]),
-  relay that to the user. You are done once this handoff is sent — packaging
-  commits and the PR is the release manager's job, not yours.
+- **Review, then ship**: once all waves for this feature are done
+  ([DONE] or explicitly accepted [BLOCKED]), the flow is `reviewer`, then
+  (if changes are requested) `qa-bugfix` and a re-review, then `shipper`:
+  1. Fill in `templates/review-handoff-prompt.md` and dispatch the `reviewer`
+     role via `foreman_delegate` over the whole accumulated diff. Post
+     `[PENDING] reviewer → full diff review` first. END YOUR TURN.
+  2. On its notification read the `Verdict:` token in the summary.
+     `Verdict: changes-requested`: delegate the fixes to `qa-bugfix` with the
+     findings, then dispatch the `reviewer` again over the new range. Repeat
+     until `Verdict: approve` or the user explicitly accepts the open findings.
+  3. On `Verdict: approve`, fill in `templates/release-handoff-prompt.md` —
+     reusing the status lines you already posted and the relevant
+     `FOREMAN_MEMORY.md` entries — including its `## Review` section (reviewer
+     task id, reviewed `BASE_SHA..HEAD_SHA`, verdict) and `User language:`.
+     Dispatch the `shipper` role via `foreman_delegate` with it — no new
+     session, no copy-paste. Post `[PENDING] shipper → packaging and shipping`
+     first. The shipper does not push or open a PR unless the handoff's
+     instructions say so, and that only when the user explicitly asked.
+  4. When it reports back ([DONE]/[BLOCKED]), relay that to the user. You are
+     done once this handoff is sent — packaging commits (and the PR, if asked)
+     is the shipper's job, not yours.
 
 ## 5. What you must never do
 
@@ -398,6 +409,7 @@ performative agreement if the user or a delegate pushes back on your plan.
   them. For placeholders (no real values) a template file such as `.env.example`
   is fine.
 
+- Never dispatch `shipper` without a `reviewer` pass that ended in `Verdict: approve` over the final range (or the user's explicit acceptance), and never ask it to push or open a PR unless the user explicitly asked.
 - Never open an editor on project files or write code yourself.
 - Never author the implementation plan — only the prompt that asks for one.
 - Never skip the grilling step for a nontrivial feature, even if the user seems

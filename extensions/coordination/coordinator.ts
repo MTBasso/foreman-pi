@@ -14,17 +14,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
 
-export const ROLES = [
-	"planner",
-	"frontend-dev",
-	"backend-dev",
-	"qa",
-	"qa-bugfix",
-	"release-manager",
-	"plan-step-builder",
-	"codebase-auditor",
-] as const;
-export type Role = (typeof ROLES)[number];
+import { ROLES, type Role } from "../../lib/roles.ts";
+export { ROLES, type Role };
 
 export const NOTIFICATION_CUSTOM_TYPE = "foreman-task-notification";
 export const TASK_ENTRY_TYPE = "foreman-task";

@@ -41,7 +41,8 @@ const EXPECTED_AGENTS = [
 	"planner",
 	"qa",
 	"qa-bugfix",
-	"release-manager",
+	"reviewer",
+	"shipper",
 ];
 const REQUIRED_FILES = ["package.json", "LICENSE", "README.md", "lib/agents.ts", "lib/spawn.ts", "lib/mode.ts", "lib/workers.ts", "lib/ui.ts"];
 const FORBIDDEN = [/(^|\/)smoke-test\.ts$/, /-test\.ts$/, /(^|\/)live-[^/]*\.ts$/, /^agents\/models\.json$/, /(^|\/)node_modules\//];

@@ -1,4 +1,4 @@
-Referenced from `foreman`, `qa`, `qa-bugfix`, `release-manager`, and
+Referenced from `foreman`, `qa`, `qa-bugfix`, `reviewer`, `shipper`, and
 `plan-step-builder`. Two halves: how to ask for a review, and how to take
 one — read whichever half applies, or both.
 
@@ -13,19 +13,27 @@ produced the code, it inherits the same blind spots.
    BASE_SHA=$(git merge-base origin/main HEAD)   # or the plan's actual base
    HEAD_SHA=$(git rev-parse HEAD)
    ```
-2. **Dispatch a fresh subagent/session** (never the implementer itself, never
-   your own session if you wrote the plan it's checking) with:
+2. **Dispatch the `reviewer` role** via `foreman_delegate` (a fresh worker;
+   never the implementer itself, never your own session if you wrote the plan
+   it's checking), with a prompt filled from `templates/review-handoff-prompt.md`:
    - A one-line description of what was built.
    - The plan/requirements it should have met (paste the relevant plan
      section or grilled requirement — don't make it go find it).
    - `BASE_SHA` and `HEAD_SHA`, and instructions to read the actual diff
      between them, not trust a summary.
-3. **Act on the reply**: fix anything it flags as a real defect before this
-   goes further (don't defer "I'll fix it later" on something it found).
-   If you think it's wrong, push back with your own technical reasoning —
-   see "Receiving a review" below for how, don't just override it silently.
+   - `User language:` (`en` or `pt-BR`).
+3. **Read the verdict.** The reviewer's `Summary` carries findings (in the
+   user's language) and one token, `Verdict: approve` or
+   `Verdict: changes-requested` (always English).
+   - `changes-requested`: delegate the fixes (`qa-bugfix`, or the builder
+     role), then dispatch the reviewer again over the new range. Repeat until
+     `approve` or the user accepts the remaining findings.
+   - `approve`: pass the reference (reviewer task id, `BASE_SHA..HEAD_SHA`,
+     verdict) in the `shipper` handoff. The shipper blocks without it.
+   If you think a finding is wrong, push back with your own technical
+   reasoning — see "Receiving a review" below, don't just override it silently.
 
-When to request one (mandatory, not optional): before `release-manager`
+When to request one (mandatory, not optional): before `shipper`
 packages anything, after any step/task a plan marks risky, and any time a
 delegate's self-report is the only evidence a change works.
 
