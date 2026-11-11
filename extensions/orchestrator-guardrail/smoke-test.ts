@@ -68,28 +68,28 @@ async function main() {
 	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "FOREMAN_MEMORY.md", content: "x" } }, ctx);
 	check("FOREMAN_MEMORY.md write allowed with marker", r === undefined);
 
-	// 4. Bash write-pattern blocked, read-only bash allowed.
-	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "sed -i s/a/b/ src/app.js" } }, ctx);
-	check("sed -i blocked with marker", r?.block === true);
-
-	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "npm test" } }, ctx);
-	check("plain bash allowed with marker", r === undefined);
-
-	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "npm test > out.log 2>&1" } }, ctx);
-	check("bash redirect to .log allowed with marker", r === undefined);
-
-	// Regression: a live `pi` session caught this bypassing the guardrail when
-	// `.txt` was in ALLOWED_BASH_TARGET_PATTERNS (meant for "spot-check" output,
-	// but .txt is a real content format, not a safe signal).
-	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "echo 'hacked' > existing.txt" } }, ctx);
-	check("bash redirect to .txt blocked with marker", r?.block === true);
+	// 4. bash is blocked outright, read-only or not.
+	for (const command of ["sed -i s/a/b/ src/app.js", "npm test", "cat package.json", "echo x > a.txt"]) {
+		r = await fire(handlers, "tool_call", { toolName: "bash", input: { command } }, ctx);
+		check(`bash blocked with marker: ${command}`, r?.block === true);
+	}
 
 	// 5. turn_start proactively drops write/edit from active tools.
 	await fire(handlers, "turn_start", {}, ctx);
 	const active = getActiveTools();
 	check("write removed from active tools", !active.includes("write"));
 	check("edit removed from active tools", !active.includes("edit"));
-	check("bash kept in active tools", active.includes("bash"));
+	check("bash removed from active tools", !active.includes("bash"));
+	check("read kept in active tools", active.includes("read"));
+	check("active tools are exactly the allowlist", active.every((t: string) => ["read", "grep", "find", "ls", "subagent"].includes(t)));
+
+	// Re-enabling bash/write/edit mid-session is re-stripped next turn and still blocked.
+	api.setActiveTools([...getActiveTools(), "bash", "write", "edit", "subagent"]);
+	await fire(handlers, "turn_start", {}, ctx);
+	check("re-enabled bash/write/edit stripped again", !["bash", "write", "edit"].some((t) => getActiveTools().includes(t)));
+	check("subagent retained", getActiveTools().includes("subagent"));
+	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "ls" } }, ctx);
+	check("bash call still blocked after re-enable", r?.block === true);
 
 	// Regression: a live `pi` session confirmed that when foreman-pi is
 	// installed as a package, this extension auto-loads into subagent-dispatch's
@@ -100,7 +100,7 @@ async function main() {
 	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "src/app.js", content: "x" } }, ctx);
 	check("write allowed in subagent child despite marker", r === undefined);
 	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "sed -i s/a/b/ src/app.js" } }, ctx);
-	check("sed -i allowed in subagent child despite marker", r === undefined);
+	check("bash allowed in subagent child despite marker", r === undefined);
 	delete process.env.FOREMAN_PI_SUBAGENT;
 
 	rmSync(dir, { recursive: true, force: true });

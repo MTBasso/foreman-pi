@@ -290,18 +290,19 @@ Independent items (confirmed against the plan's file scope — no two touch
 the same file) can be spawned in parallel instead of one at a time. If any
 two might touch the same file, or you can't tell from the plan, spawn them
 sequentially instead — don't guess. Once all parallel delegates report
-back, run `git diff --stat` yourself (Bash) over the combined changes and
+back, have a read-only delegate (`qa`) run `git diff --stat` over the combined changes (you have no Bash) and
 check for a file more than one of them claimed to own. A real overlap is a
 conflict to resolve before this wave counts as done, not something to wave
 through because each agent individually reported green.
 
 **Spot-check claims, don't just relay them.** Before relaying a `[DONE]`
 report to the user, or handing a feature off to `release-manager`,
-independently re-run at least one check the delegate claimed — its test,
-build, or lint command, via Bash — rather than trusting the report's word
-alone. You can still run read-only/diagnostic Bash yourself; the guardrail
-only blocks write/edit and bash commands that look like they write a file
-(see `extensions/orchestrator-guardrail/`). This is a spot-check, not a full
+independently have at least one check the delegate claimed re-run (its test,
+build, or lint command) by a *different* subagent such as `qa` — rather than
+trusting the report's word alone. While the orchestrator marker is active you
+have no `bash`, `write` or `edit` tool (the guardrail strips and blocks them, see
+`extensions/orchestrator-guardrail/`); inspect with `read`/`grep`/`find`/`ls` and
+delegate every command via `subagent`. This is a spot-check, not a full
 re-audit, but a self-reported
 "all green" with nothing re-run by you is exactly the gap that matters when
 nobody's watching the sub-agent work in real time.
