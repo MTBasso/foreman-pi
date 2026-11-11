@@ -9,7 +9,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import extension from "./index.ts";
+import extension, { buildDetails, callText } from "./index.ts";
 import {
 	createCoordinator,
 	finalReport,
@@ -391,6 +391,13 @@ async function main() {
 		} catch (e) {
 			err = String(e);
 		}
+		const th = { fg: (_c: any, t: string) => t, bold: (t: string) => t };
+		const a = { role: "qa", plan_step: 7, plan_slug: "my-plan", handoff_prompt: "do it" };
+		check("renderCall shows role and plan_step", /qa/.test(callText(a, false, th)) && /step 7/.test(callText(a, false, th)));
+		check("renderCall hides plan_slug collapsed, shows expanded", !/my-plan/.test(callText(a, false, th)) && /my-plan/.test(callText(a, true, th)));
+		const det: any = buildDetails({ task_id: "t1-qa", state: "running", ack: "x", run_id: "r" } as any, a);
+		check("result details include role, plan_step, plan_slug", det.role === "qa" && det.plan_step === 7 && det.plan_slug === "my-plan" && det.task_id === "t1-qa");
+		check("renderCall via tool def works", /step 7/.test(orch.tools[0].renderCall(a, th, { expanded: false }).render(200).join("\n")));
 		check("marker + unknown role -> execute throws", /Unknown role/.test(err));
 		for (const h of orch.handlers.agent_settled ?? []) await h({ type: "agent_settled", aborted: false }, ctx);
 		for (const h of orch.handlers.session_shutdown ?? []) await h({}, ctx);

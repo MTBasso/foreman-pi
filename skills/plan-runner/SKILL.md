@@ -119,7 +119,7 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
 - A merge frees new steps — on the notification that completes it, dispatch
   everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
-- `subagent` may still exist in this phase; never use it for dispatch.
+- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`. It is the only dispatch path (`subagent` is unavailable).
 
 ### 2.5. Rulings, not stalls
 

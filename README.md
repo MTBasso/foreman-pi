@@ -20,7 +20,7 @@ This README only covers what exists in this repo right now and how to run it.
 | `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. `templates/handoff-prompt.md` now also tells a delegated subagent explicitly that `.orchestrator-active` doesn't apply to it, after a live test caught a subagent pausing to ask instead of just acting on an ambiguous marker file. |
 | `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`), and `planner`/`frontend-dev` confirmed to actually run correctly end to end in a live child process (see above). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
 | `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
-| `extensions/coordination/` | **Phase 1 built, smoke-tested and verified live.** `foreman_delegate` tool + event-driven coordinator: spawns workers as child `pi` processes, returns immediately, and wakes the orchestrator with a `foreman-task-notification` message when they finish. Logic covered by `npm run test:coordination`; real end-to-end check in `npm run test:live:coordination` (see "Coordination" below). `subagent` remains available to the orchestrator until Phase 3. |
+| `extensions/coordination/` | **Phase 1 built, smoke-tested and verified live.** `foreman_delegate` tool + event-driven coordinator: spawns workers as child `pi` processes, returns immediately, and wakes the orchestrator with a `foreman-task-notification` message when they finish. Logic covered by `npm run test:coordination`; real end-to-end check in `npm run test:live:coordination` (see "Coordination" below). **Phase 3 done:** `foreman_delegate` is the orchestrator's only action tool (`subagent` removed from its allowlist and blocked in `tool_call`). |
 | `extensions/context-filter/` | **Phase 2 built, smoke-tested and verified live.** `context` handler that prunes stale `foreman-task-notification` results (keeps the latest per role plus the last notification; failed/blocked never pruned; older ones collapse to `[pruned: K older <role> results — recover: <paths>]`). Logic covered by `npm run test:context-filter`; real check in `npm run test:live:context-filter` (see "Context filter" below). |
 | `templates/`, `commands/` equivalents | **Not started.** |
 | Packaging for real install (`pi install ./foreman-pi` or via npm) | **Verified by accident, not by design**: this repo is in fact installed as a package on the machine this verification ran on (`~/.pi/agent/settings.json` lists `https://github.com/MTBasso/foreman-pi` under `packages`), and its extensions and agents are confirmed auto-discovered in every `pi` invocation — that's exactly what surfaced the subagent-exemption bug above. `pi install ./foreman-pi` itself (the local-path install flow) has still not been run explicitly in this verification pass. |
@@ -192,7 +192,24 @@ paths; runs 2 and 3 then passed. Observed event order on the idle-wake path: the
 `agent_settled`, then a new `agent_start` triggered by the
 `foreman-task-notification` message.
 
-`subagent` is still available to the orchestrator until Phase 3.
+**Phase 3: `subagent` removed from the orchestrator.** While `.orchestrator-active`
+exists, the active tool set is `read`/`grep`/`find`/`ls`/`foreman_delegate` (only
+those that are loaded), and a hand-crafted `subagent` call is blocked in
+`tool_call` with a reason pointing at `foreman_delegate`. Workers
+(`FOREMAN_PI_SUBAGENT=1`) stay exempt. The `foreman` and `plan-runner` skills
+no longer mention `subagent`/`workflow` as dispatch paths and require `role` and
+`plan_step` on every dispatch (lint in `npm run test:instructions`). The
+`session-reminder` adds a one-line warning if `foreman_delegate` is missing from
+`pi.getAllTools()`. Call rendering shows role and `plan_step` (`plan_slug` when
+expanded); result `details` carry `role`, `plan_step`, `plan_slug`.
+
+**Phase 3 live evidence** (`npm run test:live:phase3`, real `pi --mode rpc` in a
+temp dir with the marker, plus a probe extension command since rpc has no tool-list
+command): active tools = `[read, foreman_delegate]` (grep/find/ls are not in pi's
+default active set, so they are not re-added); `subagent` exists in
+`getAllTools()` but is not active; asked to call `subagent`, the model tried and
+got `Tool subagent not found`. The `tool_call` block itself is only covered by the
+smoke test (the tool is never active live), so that layer is not live-verified.
 
 ## Context filter
 
@@ -258,11 +275,11 @@ release could change its shape without the same compatibility guarantees as
 PLAN.md                          — read this first
 extensions/
   orchestrator-guardrail/        — tool_call block + setActiveTools (foreman's guardrail)
-  session-reminder/               — session_start + before_agent_start reminder
+  session-reminder/               — session_start + before_agent_start reminder (warns if foreman_delegate is not loaded; smoke-test.ts)
   subagent-dispatch/              — adopted+patched upstream subagent example
   model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
   context-filter/                 — context-event pruning of stale task notifications (index.ts, smoke-test.ts, live-rpc.ts)
-  coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts)
+  coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts, live-phase3.ts)
 agents/                           — the 8 ported foreman subagent definitions
 skills/                           — the 4 ported foreman skills
 references/                       — supporting docs the skills point to
@@ -272,7 +289,7 @@ references/                       — supporting docs the skills point to
 
 ```bash
 npm install
-npm test          # typecheck + both smoke tests
+npm test          # typecheck + all smoke/lint tests (live-* scripts are separate)
 ```
 
 ## License

@@ -154,7 +154,7 @@ arrives later as a `<task-notification>`.
    fabricate a result.** Tell the user the audit is running, then END YOUR
    TURN. Do not poll, do not wait, do not re-check. When the audit finishes
    a `<task-notification>` wakes you; only then post `[DONE]`/`[BLOCKED]`.
-4. Do not use `workflow` or `subagent` for this.
+4. `foreman_delegate` is the only dispatch path.
 
 The auditor writes `FOREMAN_AUDIT.md` and reports back a short summary (the
 notification's `summary`, with the full report at its `output` path); relay
@@ -237,9 +237,10 @@ tool you use to delegate is `foreman_delegate`, with this schema:
 `release-manager`, `plan-step-builder`, `codebase-auditor`. It returns
 `{task_id, ack}` immediately — the worker runs in its own background `pi`
 process and that return value is only an acknowledgement, never the result.
-(`subagent` and `workflow` may still be installed in this phase; do not use
-either for dispatch. They block or don't wake you, which is exactly what this
-loop replaces.)
+Every dispatch must carry `role` and `plan_step` (the step number it
+belongs to; for ad-hoc work outside a plan use the next free number in your
+own `[PENDING]` list). `subagent` is not available to you; there is no other
+dispatch path.
 
 The loop:
 

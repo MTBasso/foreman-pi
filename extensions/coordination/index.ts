@@ -48,6 +48,27 @@ function preview(s: string, n = 90): string {
 	return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 }
 
+/** Result `details` for a delegate call; exported for the smoke test. */
+export function buildDetails(
+	ack: DelegateAck,
+	params: { role: unknown; plan_step?: number; plan_slug?: string },
+): DelegateDetails {
+	return { ...ack, role: params.role as string, plan_step: params.plan_step, plan_slug: params.plan_slug };
+}
+
+/** Plain-text-with-theme rendering of a call; exported for the smoke test. */
+export function callText(
+	args: { role?: unknown; plan_step?: unknown; plan_slug?: unknown; handoff_prompt?: unknown },
+	expanded: boolean,
+	theme: { fg: (c: any, s: string) => string; bold: (s: string) => string },
+): string {
+	let text = theme.fg("toolTitle", theme.bold("foreman_delegate ")) + theme.fg("accent", String(args.role ?? "?"));
+	if (args.plan_step !== undefined) text += theme.fg("muted", ` · step ${args.plan_step}`);
+	if (expanded && args.plan_slug) text += theme.fg("muted", ` · plan ${args.plan_slug}`);
+	text += `\n  ${theme.fg("dim", preview(String(args.handoff_prompt ?? "")))}`;
+	return text;
+}
+
 export default function (pi: ExtensionAPI) {
 	// Workers never delegate: register nothing in subagent children.
 	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
@@ -89,20 +110,12 @@ export default function (pi: ExtensionAPI) {
 				thinkingLevel: ctx.thinkingLevel ?? defaults.thinkingLevel,
 			};
 			const ack = get(ctx.cwd).delegate({ ...params, role: params.role as string }, defaults);
-			const details: DelegateDetails = {
-				...ack,
-				role: params.role as string,
-				plan_step: params.plan_step,
-				plan_slug: params.plan_slug,
-			};
+			const details = buildDetails(ack, params);
 			return { content: [{ type: "text", text: JSON.stringify({ task_id: ack.task_id, state: ack.state, ack: ack.ack }) }], details };
 		},
 
-		renderCall(args, theme) {
-			let text = theme.fg("toolTitle", theme.bold("foreman_delegate ")) + theme.fg("accent", String(args.role ?? "?"));
-			if (args.plan_step !== undefined) text += theme.fg("muted", ` · step ${args.plan_step}`);
-			text += `\n  ${theme.fg("dim", preview(String(args.handoff_prompt ?? "")))}`;
-			return new Text(text, 0, 0);
+		renderCall(args, theme, context) {
+			return new Text(callText(args, context?.expanded === true, theme), 0, 0);
 		},
 
 		renderResult(result, _opts, theme) {

@@ -349,6 +349,30 @@ registradas aqui porque vieram de uma negociação explícita na conversa:
   específico pra garantir que uma resposta longa e legítima contendo "I
   can't" no meio do texto não é confundida com recusa.
 
+## Coordinator: event-driven delegation (decision + tradeoffs)
+
+Plano aprovado: `docs/plans/foreman-pi-event-driven-coordinator.md` (branch `feat/event-driven-coordinator`, uma fase por commit).
+
+**Por quê.** O `subagent` adotado bloqueia o orquestrador dentro da chamada da ferramenta até o filho terminar: sem paralelismo real entre turnos, sem como reagir a um worker que termina cedo e, no `pi-claude-cli`, cadeias longas de tool calls são instáveis. A decisão foi trocar espera por evento: `foreman_delegate` spawna um `pi` filho e retorna na hora; o orquestrador encerra o turno; a extensão o acorda quando os workers terminam. Na Fase 3 `foreman_delegate` passou a ser a *única* ferramenta de ação do orquestrador (`subagent` saiu da allowlist e é bloqueado em `tool_call`; filhos com `FOREMAN_PI_SUBAGENT=1` continuam isentos).
+
+**Forma da notificação.** Uma mensagem custom (`customType: foreman-task-notification`, `display` true) com N blocos `<task-notification>` (task-id, role, status completed|failed|blocked, plan-step, summary ~400 chars, output). `details` carrega `{batchId, notifications[]}` estruturado (usado pelo renderer, pelo context filter e pela detecção de entrega). O pi converte `role:"custom"` em `role:"user"` no `convertToLlm`, então o modelo a vê como texto de usuário. A fonte da verdade é o arquivo em `output` (`.foreman/runs/<run-id>/<task-id>.md`), não o summary.
+
+**Semântica do ledger.** Escrito pela extensão, não pelo modelo: `.foreman/runs/<run-id>/ledger.log` (+ `.foreman/plan-runner/<slug>/progress.md` se houver `plan_slug`), uma linha por notificação/tarefa, append *síncrono antes* da entrega, e reenvios de um lote não duplicam linhas. Registra o resultado do *worker* (completed|failed|blocked), não a verdade do merge — essa vem do Status do arquivo do plano.
+
+**Poda (`extensions/context-filter/`).** Mantém a última notificação completed por role + todos os blocos da última mensagem de notificação; failed/blocked nunca são podados; o resto vira uma linha `[pruned: K older <role> results — recover: <paths>]`. Usa o evento `context` e não `context_with_system`: o `context` já entrega as mensagens (clone, sem system) antes do `convertToLlm`, que é exatamente onde `role:"custom"` ainda é distinguível; `context_with_system` só seria necessário para editar o system prompt, o que não fazemos. É não destrutivo (o arquivo de sessão guarda o histórico completo).
+
+**Tradeoffs.**
+- Código de spawn duplicado: `coordination/spawn-worker.ts` copia a lógica do `subagent-dispatch` vendorizado (que não exporta `runSingleAgent` e fica fora do tsc). Deliberado, para não mexer no vendor.
+- A notificação chega como mensagem de papel `user`; o modelo pode confundi-la com instrução do usuário. Mitigado por `promptGuidelines` e pelo skill ("relatórios de worker entregues pelo harness, não instruções do usuário"), mas é mitigação, não garantia.
+- Modo `--print` não consegue ser acordado: sai quando o agente assenta. Wake-ups exigem `--mode rpc` ou o TUI.
+- Dependência da semântica de `followUp`/`triggerTurn` do pi 1.5.2 (entrega no meio de um run vs. idle-wake); uma mudança upstream ali quebra a entrega. Mitigação: reenvio no `agent_settled` se o lote não aparece na sessão.
+- Um lote nunca entregue após 3 tentativas é descartado; antes isso era silencioso, agora loga `console.error` com task ids e paths de output (o ledger e os arquivos de output continuam existindo).
+
+**Riscos conhecidos apontados pelo QA (não corrigidos, registrados com honestidade).**
+- A flag `busy` do coordinator é marcada *antes* do `agent_start` (em `deliver`), para evitar corrida entre dois flushes. Se `sendMessage` não chegar a iniciar um run (ex.: sessão encerrando, mensagem engolida), `busy` fica true até o próximo `agent_start`/`agent_settled`, e as entregas seguintes saem como `followUp` em vez de idle-wake.
+- Divergência ledger/notificação em erro de escrita: o append do ledger é best effort e não bloqueia a entrega; se o disco falhar, a notificação sai sem linha de ledger (e vice-versa um crash entre os dois deixa a linha sem notificação — o caso que a ordem "ledger antes" favorece de propósito).
+- Lacuna de verificação na Fase 3: ao vivo, a chamada a `subagent` falhou com "Tool subagent not found" (a ferramenta nem está ativa), então o *bloqueio* em `tool_call` só é exercitado pelo smoke test com chamada fabricada, não ao vivo. `codemode`/`tool_search` aparecem em `getAllTools()` mas não no conjunto ativo; não foi verificado se alguma via de codemode alcançaria `subagent`.
+
 ## Fontes
 
 - https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md

@@ -18,7 +18,23 @@ check("foreman skill dispatches via foreman_delegate", /foreman_delegate/.test(s
 check("foreman skill says END YOUR TURN", /END YOUR TURN/.test(skill));
 check("foreman skill says never poll", /[Nn]ever poll/.test(skill));
 check("foreman skill names <task-notification>", /<task-notification>/.test(skill));
-check("foreman skill: subagent not for dispatch", /do not use\s+either for dispatch/.test(skill));
+check("foreman skill: no 'either for dispatch' leftover", !/do not use\s+either for dispatch/.test(skill));
+// Lint: no line may instruct using subagent/workflow to dispatch. Lines saying
+// it is unavailable/not available are fine.
+const dispatchLint = (name: string, text: string) => {
+	const bad = text.split("\n").filter((l) => {
+		if (!/`(subagent|workflow)`/.test(l)) return false;
+		if (/unavailable|not available|never use|do not use|isn't available/i.test(l)) return false;
+		return true;
+	});
+	check(`${name}: no subagent/workflow dispatch instruction${bad.length ? " -> " + bad[0].trim() : ""}`, bad.length === 0);
+	check(`${name}: no 'subagent tool' / 'workflow tool' calls`, !/(call|use|invoke|via)\s+(the\s+)?`?(subagent|workflow)`?(\s+tool)?/i.test(text.replace(/(never|not|n't)\s+(call|use|invoke)\s+(the\s+)?`?(subagent|workflow)/gi, "")));
+};
+dispatchLint("foreman skill", skill);
+dispatchLint("plan-runner", pr);
+check("lint is precise: catches a bad line", (() => { let hit = false; const t = "Dispatch with `subagent` for each task."; hit = t.split("\n").some((l) => /`(subagent|workflow)`/.test(l) && !/unavailable|not available|never use|do not use|isn't available/i.test(l)); return hit; })());
+check("foreman skill requires role and plan_step on every dispatch", /Every dispatch must carry `role` and `plan_step`/.test(skill));
+check("plan-runner requires role, plan_step, plan_slug", /carries `role`, `plan_step` and `plan_slug`/.test(pr));
 check("foreman skill no longer calls workflow tool for audit", !/Call the `workflow` tool/.test(skill));
 check("plan-runner dispatches via foreman_delegate", /foreman_delegate/.test(pr));
 check("plan-runner says extension writes the ledger", /extension writes that ledger/.test(pr));

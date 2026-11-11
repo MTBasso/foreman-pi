@@ -83,18 +83,25 @@ async function main() {
 	check("edit removed from active tools", !active.includes("edit"));
 	check("bash removed from active tools", !active.includes("bash"));
 	check("read kept in active tools", active.includes("read"));
-	check("active tools are exactly the allowlist", active.every((t: string) => ["read", "grep", "find", "ls", "subagent", "foreman_delegate"].includes(t)));
+	check("active tools are exactly the allowlist", active.every((t: string) => ["read", "grep", "find", "ls", "foreman_delegate"].includes(t)));
 	check("foreman_delegate kept in active tools", active.includes("foreman_delegate"));
+	check("subagent removed from active tools at turn_start", !active.includes("subagent"));
 
 	// Re-enabling bash/write/edit mid-session is re-stripped next turn and still blocked.
 	api.setActiveTools([...getActiveTools(), "bash", "write", "edit", "subagent", "foreman_delegate"]);
 	await fire(handlers, "turn_start", {}, ctx);
 	check("re-enabled bash/write/edit stripped again", !["bash", "write", "edit"].some((t) => getActiveTools().includes(t)));
-	check("subagent retained", getActiveTools().includes("subagent"));
+	check("subagent removed (not an orchestrator tool)", !getActiveTools().includes("subagent"));
 	check("foreman_delegate survives turn_start", getActiveTools().includes("foreman_delegate"));
 	check("active tools never include bash/write/edit", !["bash", "write", "edit"].some((t) => getActiveTools().includes(t)));
 	r = await fire(handlers, "tool_call", { toolName: "foreman_delegate", input: { role: "qa", handoff_prompt: "x" } }, ctx);
 	check("foreman_delegate call not blocked with marker", r === undefined);
+	r = await fire(handlers, "tool_call", { toolName: "subagent", input: { agent: "qa", task: "x" } }, ctx);
+	check("hand-crafted subagent call blocked", r?.block === true && /foreman_delegate/.test(r.reason));
+	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "a.js", content: "x" } }, ctx);
+	check("write still blocked", r?.block === true);
+	r = await fire(handlers, "tool_call", { toolName: "edit", input: { path: "a.js", edits: [] } }, ctx);
+	check("edit still blocked", r?.block === true);
 	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "ls" } }, ctx);
 	check("bash call still blocked after re-enable", r?.block === true);
 
@@ -108,6 +115,8 @@ async function main() {
 	check("write allowed in subagent child despite marker", r === undefined);
 	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "sed -i s/a/b/ src/app.js" } }, ctx);
 	check("bash allowed in subagent child despite marker", r === undefined);
+	r = await fire(handlers, "tool_call", { toolName: "subagent", input: {} }, ctx);
+	check("subagent call not blocked in child (exempt)", r === undefined);
 	delete process.env.FOREMAN_PI_SUBAGENT;
 
 	rmSync(dir, { recursive: true, force: true });

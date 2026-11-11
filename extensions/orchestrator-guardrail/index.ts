@@ -3,18 +3,22 @@
  *
  * While `.orchestrator-active` exists at the project root, this session is acting
  * as the foreman orchestrator: it must delegate Write/Edit/code-writing-Bash to a
- * subagent instead of doing it directly (see the `foreman` skill).
+ * worker instead of doing it directly (see the `foreman` skill). Its only action
+ * tool is `foreman_delegate` (extensions/coordination/): the blocking `subagent`
+ * tool is removed from the orchestrator's active set and denied in tool_call
+ * (Phase 3 of docs/plans/foreman-pi-event-driven-coordinator.md).
  *
  * Two layers, same as the plan (PLAN.md, section 1):
- *  - Proactive: setActiveTools() restricts to read/grep/find/ls/subagent/foreman_delegate (no bash/write/edit) from this session's own active
+ *  - Proactive: setActiveTools() restricts to read/grep/find/ls/foreman_delegate (no bash/write/edit/subagent) from this session's own active
  *    tool set on every turn while the marker is present, so the model is never
  *    even offered them.
  *  - Reactive: a tool_call handler still blocks write/edit/bash-that-writes as a
  *    backstop, in case active tools were restored mid-turn or bash is used to
  *    route around the missing tools.
  *
- * Subagents are intended to need none of this: each one runs as its own `pi`
- * process (see extensions/subagent-dispatch/), with its own tools from its
+ * Workers are intended to need none of this: each one runs as its own `pi`
+ * process (extensions/coordination/spawn-worker.ts, or subagent-dispatch for
+ * non-orchestrator use), with its own tools from its
  * agent .md frontmatter. There is no agent_id-style distinction to make here,
  * unlike the Claude Code hook this replaces — parent and child are different
  * processes... EXCEPT that when foreman-pi is installed as a package (see
@@ -48,7 +52,7 @@ function isOrchestratorActive(cwd: string): boolean {
  * Tools the orchestrator may have: read-only inspection plus delegation.
  * No bash (opaque, hard to audit), no write/edit (must delegate).
  */
-const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "subagent", "foreman_delegate"];
+const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "foreman_delegate"];
 /** Tools that are always blocked while orchestrating, even if re-enabled. */
 const BLOCKED_TOOLS = ["bash", "write", "edit"];
 
@@ -73,12 +77,21 @@ export default function (pi: ExtensionAPI) {
 			return undefined;
 		}
 
+		if (event.toolName === "subagent") {
+			return {
+				block: true,
+				reason:
+					`An orchestrator skill is active (${MARKER_NAME} present): \`subagent\` is not available to the ` +
+					"orchestrator. Use foreman_delegate (role + handoff_prompt + plan_step), then end your turn.",
+			};
+		}
+
 		if (isToolCallEventType("bash", event)) {
 			return {
 				block: true,
 				reason:
 					`An orchestrator skill is active (${MARKER_NAME} present): bash is not available to the ` +
-					"orchestrator. Inspect with read/grep/find/ls and delegate any command to a subagent.",
+					"orchestrator. Inspect with read/grep/find/ls and delegate any command with foreman_delegate.",
 			};
 		}
 
@@ -89,7 +102,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			return {
 				block: true,
-				reason: `An orchestrator skill is active (${MARKER_NAME} present) and must delegate "${event.toolName}" to a subagent instead of editing files itself. Remove the marker (end orchestrator mode) or delegate this change.`,
+				reason: `An orchestrator skill is active (${MARKER_NAME} present) and must delegate "${event.toolName}" via foreman_delegate instead of editing files itself. Remove the marker (end orchestrator mode) or delegate this change.`,
 			};
 		}
 
