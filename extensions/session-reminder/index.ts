@@ -130,6 +130,20 @@ function gatherOrientation(cwd: string): string {
 	);
 }
 
+/**
+ * One-line warning when the orchestrator's only action tool is missing
+ * (e.g. the coordination extension failed to load): without foreman_delegate
+ * a foreman session cannot delegate at all. Exported for tests.
+ */
+export function missingDelegateWarning(getAllTools: () => { name: string }[]): string {
+	try {
+		if (getAllTools().some((t) => t.name === "foreman_delegate")) return "";
+	} catch {
+		return ""; // tool list unavailable: stay silent rather than guess
+	}
+	return " WARNING: the foreman_delegate tool is not loaded in this session, so you cannot delegate; tell the user the coordination extension failed to load.";
+}
+
 export default function (pi: ExtensionAPI) {
 	let pendingReminder: string | null = null;
 
@@ -143,7 +157,7 @@ export default function (pi: ExtensionAPI) {
 		const stale = isFreshSession ? staleMarkerNote(ctx.cwd) : undefined;
 		const orientation = isFreshSession ? gatherOrientation(ctx.cwd) : undefined;
 
-		pendingReminder = BASE_REMINDER + (stale ?? "") + (orientation ? "\n\n" + orientation : "");
+		pendingReminder = BASE_REMINDER + missingDelegateWarning(() => pi.getAllTools()) + (stale ?? "") + (orientation ? "\n\n" + orientation : "");
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {

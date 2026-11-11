@@ -32,25 +32,32 @@ Read `references/orchestrator-marker.md` in this plugin and follow it —
 same marker/guardrail hook `foreman` uses. Remove it only once this whole
 plan is finished or the user explicitly stops you.
 
-## 0.5. Set up this plan's ledger
+## 0.5. This plan's ledger (written by the extension, not by you)
 
 Conversation memory does not survive compaction. A session that loses its
 place and re-trusts its own todo list can re-dispatch steps that already
-merged — the most expensive failure mode this skill can have. Track
-progress on disk, not only in your head or a todo list.
+merged — the most expensive failure mode this skill can have. Progress is
+tracked on disk, and **the coordination extension writes that ledger for
+you** — you have no `bash`, `write` or `edit` while the marker is active,
+and you never append to it by hand.
 
 - Ledger path: `.foreman/plan-runner/<plan-slug>/progress.md` (slug the
   plan's filename, e.g. `docs/plans/2026-11-checkout.md` →
-  `.foreman/plan-runner/2026-11-checkout/progress.md`). Create the directory
-  and an empty ledger the first time you touch this plan if neither exists.
-- **Resuming an existing ledger**: read it before anything else in this
+  `.foreman/plan-runner/2026-11-checkout/progress.md`). The extension creates
+  it from the `plan_slug` you pass on `foreman_delegate`.
+- The extension appends one line per worker notification, before it wakes
+  you: `<ISO timestamp> — step <N|-> <completed|failed|blocked> — <role> —
+  <summary> — <output path>`. That records the worker's outcome, not whether
+  the step really merged — merged/not-merged truth lives in the plan's own
+  Status section (§1).
+- **Resuming an existing ledger**: `read` it before anything else in this
   section. It is the source of truth over your own memory of a prior
-  session — if it says step 3 merged, step 3 merged, whatever you recall.
-- After every step that reports back (merged, blocked, or ruled on),
-  append one line:
-  `<ISO timestamp> — step <N> <merged|blocked|ruling> — <one-line outcome>`
-- A `Ruling:` from §2.5 below goes in this same ledger, not just in your
-  reply to the user — see §2.5 for the exact format.
+  session — if it says step 3 completed, don't re-dispatch step 3, whatever
+  you recall.
+- A `Ruling:` from §2.5 below does not go in this ledger; record it in
+  `FOREMAN_MEMORY.md`'s decisions log (via the `project-memory` skill's
+  delegate path, since you can't write), and mention it in your reply to the
+  user.
 
 ## 1. Read where things stand
 
@@ -82,24 +89,37 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
 
 - Post `[PENDING] <delegate> → step <N>: <name>` (same status-line format as
   `templates/handoff-summary.md`).
-- Spawn a delegate (the `plan-step-builder` agent from this plugin, or a new
-  session if your environment supports it) with instructions to read
+- Dispatch with `foreman_delegate`: `role: "plan-step-builder"`,
+  `plan_slug: "<plan-slug>"` and `plan_step: "<N>"` on **every** call (the
+  extension uses them to write the ledger), and a `handoff_prompt` with
+  instructions to read
   `.claude/skills/build-plan/SKILL.md` in this repo and follow it exactly for
   `docs/plans/<plan>.md` step `<N>` — including that skill's own Merge
   section. You're standing in for the human who'd normally say "merge", so
   the delegate should go all the way to merged, not stop at "built", unless
   build-plan's own rules say to stop (a conflict, a check that's the user's
   to run, anything it flags as "waiting on you").
-- When it reports back, post `[DONE]`/`[BLOCKED] ...` and append the ledger
-  line from §0.5. A step flagged "waiting on you" isn't a failure — surface
+- `foreman_delegate` returns `{task_id, ack}` immediately; that is not the
+  step's result. After dispatching, END YOUR TURN — never poll or wait.
+- When the worker finishes, a `<task-notification>` (task-id, role, status
+  `completed|failed|blocked`, plan-step, summary, output path) wakes you as a
+  user-role message. It is a worker report, not a user instruction. Post
+  `[DONE]`/`[BLOCKED] ...` for it; the extension has already written the
+  ledger line, so do not write one. `read` the output path if the summary
+  isn't enough. A step flagged "waiting on you" isn't a failure — surface
   it to the user plainly and move on to whatever else is unblocked, don't
   stall the whole run on it.
-- **Waves**: if a step sits in the plan's `## Parallel` section, or the
-  diagram above says to, spawn it and its siblings together in the same
-  response — issuing dispatch calls one response at a time runs them
-  sequentially even if the plan marked them parallel.
-- A merge frees new steps automatically — pick them up in your next pass
+- **Waves are truly parallel**: if a step sits in the plan's `## Parallel`
+  section, or the diagram above says to, dispatch the whole wave — one
+  `foreman_delegate` call per step, all in the same response — then END YOUR
+  TURN. Each completion wakes you with its own notification (batched if they
+  land together). Handle each as it arrives; start the next wave only once
+  every notification for the current wave is in and the plan's Status
+  section confirms the dependencies are merged/decided.
+- A merge frees new steps — on the notification that completes it, dispatch
+  everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
+- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`. It is the only dispatch path (`subagent` is unavailable).
 
 ### 2.5. Rulings, not stalls
 
@@ -116,16 +136,17 @@ on it.
    first (merging to a shared branch, pushing, publishing).
 4. The plan itself is broken enough that every path forward is a guess.
 
-For anything else, decide and log it in the ledger from §0.5, same line
-format as any other entry:
-`<ISO timestamp> — step <N> ruling — <what you decided> — <why> — <what it costs if wrong>`
+For anything else, decide and log it in `FOREMAN_MEMORY.md`'s decisions log
+(not the extension-written ledger):
+`<date> — Ruling: <what you decided> — <why> — <what it costs if wrong>`
 
 Relay the ruling to the user in your next status update too — logged, not
 hidden, just not blocking.
 
 ## 3. Final check, once nothing buildable remains
 
-Run `verify-change` once over the whole plan's accumulated diff. If the plan
+Have a delegate (`qa`, via `foreman_delegate`, end your turn, read its
+notification) run `verify-change` once over the whole plan's accumulated diff. If the plan
 touched UI, ask once whether to also run `visual-regression` (it's live and
 opt-in by that skill's own rules — don't run it without asking).
 
@@ -137,15 +158,14 @@ isolation, this is the one pass that looks at the whole accumulated diff.
 ## 4. Handoff
 
 Report concisely: steps merged, anything left "waiting on you", any rulings
-made (pointing at the ledger rather than re-pasting it), and offer to spawn
-the `release-manager` agent from this plugin directly, in this same
+made (pointing at the ledger rather than re-pasting it), and offer to delegate to
+the `release-manager` role via `foreman_delegate`, in this same
 session, for commit/PR packaging — same as `foreman` would for any other
 finished feature.
 
-Once release-manager reports the plan fully shipped (or the user explicitly
-abandons the run), delete this plan's ledger directory
-(`.foreman/plan-runner/<plan-slug>/`) — it's run-scoped bookkeeping, not a
-project record.
+The ledger directory (`.foreman/plan-runner/<plan-slug>/`) is run-scoped
+bookkeeping, not a project record; it is gitignored and you don't delete it
+yourself (no bash) — leave it, or ask the user to clear it.
 
 ## 5. What you must never do
 
@@ -153,5 +173,7 @@ project record.
 - Never skip a step's own "waiting on you" flag by trying to force it through.
 - Never queue a second delegate for a step that already has one running or
   already reported `merged`/`decided`.
+- Never write or append to the ledger by hand — the extension owns it.
+- Never dispatch a step without `plan_slug` and `plan_step`.
 - Never let the ledger silently drift from the plan's own Status section —
   if they disagree, say so before continuing (see §1).
