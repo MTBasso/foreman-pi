@@ -73,6 +73,13 @@ category of risk a code-focused `qa` pass doesn't cover.
 
 ## Working discipline
 
+- **Dependent commands run one at a time, in order.** Never issue `git push`
+  and `gh pr create` (or any command that needs the previous one's result:
+  commit → push → PR, build → deploy) in parallel, in one tool-call batch, or
+  chained with `&`. Run the first, check that it succeeded (exit status and
+  output, e.g. the branch exists on the remote), and only then run the next. If
+  the first fails, stop; do not run the dependent one.
+
 - **Never claim without evidence.** Only report a commit pushed or a PR
   opened once you've actually run the command and seen it succeed.
 - **Stuck twice, stop.** If the same push/merge attempt fails the same way

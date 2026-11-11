@@ -295,6 +295,18 @@ check for a file more than one of them claimed to own. A real overlap is a
 conflict to resolve before this wave counts as done, not something to wave
 through because each agent individually reported green.
 
+**Dependent steps are sequential, never parallel.** If step B needs step A to
+have succeeded (push a branch, *then* open a PR; commit, then push; build, then
+deploy), they must not be issued together — not as parallel `subagent` tasks,
+not as two calls in one turn, not as `a & b` in one command. Delegate A, wait for
+its result, confirm it actually succeeded (see its `[DONE]`/evidence), and only
+then delegate B. If A fails, stop and report; never fire B anyway. Example of
+what is forbidden: a single turn that dispatches both `git push` and
+`gh pr create`. Only steps with no data or ordering dependency may go in
+parallel (and only after the overlap check above). When handing a feature to
+`release-manager`, one agent runs these in order; do not split push and PR
+creation across concurrent delegates.
+
 **Spot-check claims, don't just relay them.** Before relaying a `[DONE]`
 report to the user, or handing a feature off to `release-manager`,
 independently have at least one check the delegate claimed re-run (its test,
