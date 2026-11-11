@@ -51,6 +51,15 @@ export interface RunPiJsonOptions {
 	killGraceMs?: number;
 }
 
+/**
+ * Env marking a child `pi` as a foreman worker of `role`. FOREMAN_PI_SUBAGENT=1
+ * exempts it from the orchestrator guardrail; FOREMAN_PI_ROLE scopes the
+ * worker-guard extension's write policy (extensions/worker-guard/).
+ */
+export function workerEnv(role: string): Record<string, string> {
+	return { FOREMAN_PI_SUBAGENT: "1", FOREMAN_PI_ROLE: role };
+}
+
 export function getPiInvocation(args: string[]): PiInvocation {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript =

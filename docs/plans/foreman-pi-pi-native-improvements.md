@@ -441,7 +441,7 @@ Status: done
 
 ## Phase 9 — Path-scoped worker write guard
 
-Status: todo
+Status: done
 
 1. **Spawner:** set `FOREMAN_PI_ROLE=<role>` next to `FOREMAN_PI_SUBAGENT=1`.
 2. **`extensions/worker-guard/policy.ts`** (pure, `checkWrite` and `checkBash`) and **`index.ts`** (a `tool_call` handler).

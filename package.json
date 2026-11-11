@@ -38,6 +38,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:guardrail": "tsx extensions/orchestrator-guardrail/smoke-test.ts",
+    "test:worker-guard": "tsx extensions/worker-guard/smoke-test.ts",
     "test:agents": "tsx lib/agents-test.ts",
     "test:spawn": "tsx lib/spawn-test.ts",
     "test:model-policy": "tsx lib/model-policy-test.ts",
@@ -50,7 +51,7 @@
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
     "test:context-filter": "tsx extensions/context-filter/smoke-test.ts",
     "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:i18n && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:i18n && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
     "test:reminder": "tsx extensions/session-reminder/smoke-test.ts",
     "test:live:phase3": "tsx extensions/coordination/live-phase3.ts",
     "test:package": "tsx scripts/check-package.ts"

@@ -271,6 +271,12 @@ Agents declare `tier: strong|mid|cheap` and `thinking: off|minimal|low|medium|hi
 
 `<ROLE>` is the agent name upper-cased with `_` (`plan-step-builder` -> `PLAN_STEP_BUILDER`); `<TIER>` is `STRONG`, `MID` or `CHEAP`. Example: `FOREMAN_MODEL_STRONG=anthropic/claude-opus-4` affects only strong-tier roles.
 
+## Worker write guard
+
+`extensions/worker-guard/` scopes what each foreman worker may write. The spawner sets `FOREMAN_PI_ROLE=<role>` next to `FOREMAN_PI_SUBAGENT=1`; the guard checks every `write`, `edit` and `bash` call of a worker against its role (`qa` and `codebase-auditor` only `.foreman/**` and `FOREMAN_AUDIT.md`, `planner` and `reviewer` read-only, `shipper` only `.foreman/`, dev roles anywhere in the repo except `.git/`, outside paths and real `.env` files). An unknown role fails closed to read-only, and the guard is inactive without both env vars.
+
+It is a heuristic, not a sandbox: interpreters, `make` and `npm run` can still write anywhere. See `references/worker-guard.md` for the full policy and limits.
+
 ## Layout
 
 ```
@@ -280,6 +286,7 @@ extensions/
   session-reminder/               — session_start + before_agent_start reminder (warns if foreman_delegate is not loaded; smoke-test.ts)
   model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
   context-filter/                 — context-event pruning of stale task notifications (index.ts, smoke-test.ts, live-rpc.ts)
+  worker-guard/                   — per-role write/bash policy for workers (policy.ts = pure, index.ts = tool_call handler, smoke-test.ts)
   coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts, live-phase3.ts)
 lib/                              — shared modules: agents.ts (discovery), spawn.ts (child pi spawning), with agents-test.ts / spawn-test.ts
 agents/                           — the 8 ported foreman subagent definitions
