@@ -149,7 +149,7 @@ Status: done
 
 ## Phase 3 — CI
 
-Status: todo
+Status: done
 
 1. **`.github/workflows/ci.yml`**
    - Triggers: push and PR.
