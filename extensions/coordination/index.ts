@@ -9,24 +9,37 @@
  * Children (FOREMAN_PI_SUBAGENT=1) get a no-op extension: workers must not
  * delegate further.
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { t } from "../../lib/i18n.ts";
+import { createModeTracker } from "../../lib/mode.ts";
+import { safeUi, say } from "../../lib/ui.ts";
+import {
+	EMPTY_SNAPSHOT,
+	renderReport,
+	renderWorkersUi,
+	WORKERS_ABORT_EVENT,
+	WORKERS_EVENT,
+	type WorkersSnapshot,
+} from "../../lib/workers.ts";
 import {
 	createCoordinator,
 	type Coordinator,
 	type DelegateAck,
 	type Notification,
+	type SpawnRequest,
+	type WorkerHandle,
 	NOTIFICATION_CUSTOM_TYPE,
 	ROLES,
 	TASK_ENTRY_TYPE,
 } from "./coordinator.ts";
 import { spawnWorker } from "./spawn-worker.ts";
 
-const MARKER_NAME = ".orchestrator-active";
+const STATUS_KEY = "foreman-workers";
+const WIDGET_KEY = "foreman-workers";
+const TICK_MS = 1000;
 
 const DelegateParams = Type.Object({
 	role: StringEnum(ROLES as readonly string[], { description: "Worker role (agent) to run." }),
@@ -70,20 +83,83 @@ export function callText(
 }
 
 export default function (pi: ExtensionAPI) {
+	registerCoordination(pi, spawnWorker);
+}
+
+/** The extension body; `spawn` is injectable so the smoke test never starts a real `pi`. */
+export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest) => WorkerHandle) {
 	// Workers never delegate: register nothing in subagent children.
 	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
 
+	const tracker = createModeTracker(pi);
 	let coord: Coordinator | undefined;
 	let defaults: { model?: string; thinkingLevel?: string } = {};
+	/** Latest context seen, for status/widget updates (may go stale: every use is guarded). */
+	let uiCtx: any;
+	let ticker: ReturnType<typeof setInterval> | undefined;
+	let lastShown = false;
 
-	const get = (cwd: string): Coordinator =>
-		(coord ??= createCoordinator({
-			root: cwd,
-			spawn: spawnWorker,
-			sendMessage: (m, o) => pi.sendMessage(m, o),
-			appendEntry: (t, d) => pi.appendEntry(t, d),
-			isOrchestratorActive: () => existsSync(join(cwd, MARKER_NAME)),
-		}));
+	const snapshot = (): WorkersSnapshot => coord?.snapshot() ?? EMPTY_SNAPSHOT;
+
+	/** Redraw status bar + widget from the current snapshot; clear them when nothing is live. */
+	function refreshUi() {
+		const rendered = renderWorkersUi(snapshot(), Date.now());
+		const live = rendered.status !== undefined;
+		if (live && !ticker) {
+			// Elapsed times move without any state change, so tick while workers are live.
+			ticker = setInterval(refreshUi, TICK_MS);
+			ticker.unref?.();
+		} else if (!live && ticker) {
+			clearInterval(ticker);
+			ticker = undefined;
+		}
+		if (!live && !lastShown) return;
+		lastShown = live;
+		safeUi(uiCtx, (ui) => {
+			ui.setStatus(STATUS_KEY, rendered.status);
+			ui.setWidget(WIDGET_KEY, rendered.widget);
+		});
+	}
+
+	function publish() {
+		pi.events.emit(WORKERS_EVENT, snapshot());
+		refreshUi();
+	}
+
+	const get = (cwd: string): Coordinator => {
+		if (!coord) {
+			coord = createCoordinator({
+				root: cwd,
+				spawn,
+				sendMessage: (m, o) => pi.sendMessage(m, o),
+				appendEntry: (t, d) => pi.appendEntry(t, d),
+				isOrchestratorActive: () => tracker.isActive(),
+			});
+			coord.onChange(publish);
+		}
+		return coord;
+	};
+
+	// foreman-mode asks us to abort every worker (after the user's confirm) and waits for the ack.
+	pi.events.on(WORKERS_ABORT_EVENT, (data) => {
+		const ack = (data as { ack?: () => void } | undefined)?.ack;
+		if (!coord) {
+			ack?.();
+			return;
+		}
+		coord.abortAll().then(
+			() => ack?.(),
+			() => ack?.(),
+		);
+	});
+
+	pi.registerCommand("foreman-status", {
+		description: t("cmd.status.desc"),
+		handler: async (_args, ctx) => {
+			uiCtx = ctx;
+			say(ctx, renderReport(snapshot(), tracker.describe(), Date.now()));
+		},
+	});
 
 	pi.registerTool({
 		name: "foreman_delegate",
@@ -102,8 +178,9 @@ export default function (pi: ExtensionAPI) {
 		parameters: DelegateParams,
 
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (!existsSync(join(ctx.cwd, MARKER_NAME))) {
-				throw new Error(`foreman_delegate is only available while ${MARKER_NAME} is present (orchestrator mode).`);
+			uiCtx = ctx;
+			if (!tracker.isActive()) {
+				throw new Error("foreman_delegate is only available in orchestrator mode: not in orchestrator mode, ask the user to run /foreman.");
 			}
 			defaults = {
 				model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : defaults.model,
@@ -140,7 +217,8 @@ export default function (pi: ExtensionAPI) {
 		return new Text(lines.join("\n") || String(message.content), 0, 0);
 	});
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
+		uiCtx = ctx;
 		coord?.onAgentStart();
 	});
 
@@ -155,7 +233,9 @@ export default function (pi: ExtensionAPI) {
 		coord.onAgentSettled(delivered);
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		uiCtx = ctx;
+		tracker.restore(ctx, event.reason);
 		const entries = (ctx.sessionManager.getEntries() as any[])
 			.filter((e) => e.type === "custom" && e.customType === TASK_ENTRY_TYPE && e.data)
 			.map((e) => e.data);
@@ -163,7 +243,14 @@ export default function (pi: ExtensionAPI) {
 		get(ctx.cwd).recover(entries);
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		coord?.shutdown();
+		if (ticker) clearInterval(ticker);
+		ticker = undefined;
+		safeUi(ctx, (ui) => {
+			ui.setStatus(STATUS_KEY, undefined);
+			ui.setWidget(WIDGET_KEY, undefined);
+		});
+		lastShown = false;
 	});
 }

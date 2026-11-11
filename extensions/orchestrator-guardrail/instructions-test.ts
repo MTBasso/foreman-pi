@@ -2,14 +2,14 @@
  * Mock/lint test: the shipped instructions must forbid parallel dependent
  * commands and writing secrets to disk. Run: npx tsx extensions/orchestrator-guardrail/instructions-test.ts
  */
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
 const pr = readFileSync(new URL("skills/plan-runner/SKILL.md", root), "utf8");
 const rm = readFileSync(new URL("agents/release-manager.md", root), "utf8");
 let failures = 0;
-const check = (l: string, c: boolean) => { console.log(`${c ? "ok " : "FAIL"} - ${l}`); if (!c) failures++; };
+const check = (l: string, c: boolean, _detail?: string) => { console.log(`${c ? "ok " : "FAIL"} - ${l}`); if (!c) failures++; };
 check("skill forbids parallel dependent steps", /Dependent steps are sequential, never parallel/.test(skill));
 check("skill names git push + gh pr create example", /`git push` and\s+`gh pr create`/.test(skill));
 check("release-manager forbids parallel push/PR", /Never issue `git push`\s+and `gh pr create`/.test(rm));
@@ -86,4 +86,29 @@ for (const f of allProse) {
 	const bad = strayPortuguese(readFileSync(new URL(f, root), "utf8"));
 	check(`${f}: no stray Portuguese${bad.length ? " -> " + bad[0].trim() : ""}`, bad.length === 0);
 }
+
+// --- Phase 7: the marker file is gone everywhere ----------------------------
+// Needles are built from pieces so this test file does not contain them itself.
+const needleMarker = [".orchestrator", "active"].join("-");
+const needleRenamed = ["orchestrator", "marker"].join("-");
+const gateFiles = (dir: string): string[] =>
+	readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((e) => {
+		if (e.name === "node_modules" || e.name === ".git" || e.name === ".foreman") return [];
+		return e.isDirectory() ? gateFiles(`${dir}${e.name}/`) : [`${dir}${e.name}`];
+	});
+// README.md is rewritten in Phase 10; PLAN.md, docs/plans/ and CHANGELOG are historical.
+const gated = ["extensions/", "lib/", "scripts/", "skills/", "references/", "templates/", "agents/"].flatMap(gateFiles).concat([".gitignore", "package.json"]);
+const hits = gated.filter((f) => {
+	const t = readFileSync(new URL(f, root), "utf8");
+	return t.includes(needleMarker) || t.includes(needleRenamed);
+});
+check(`grep gate: no '${needleMarker}' or '${needleRenamed}' in code, skills, references, templates${hits.length ? " -> " + hits.join(", ") : ""}`, hits.length === 0);
+check("grep gate scans a meaningful number of files", gated.length > 40, String(gated.length));
+check("references/orchestrator-mode.md exists, the marker doc is gone", existsSync(new URL("references/orchestrator-mode.md", root)) && !existsSync(new URL(`references/${needleRenamed}.md`, root)));
+const modeDoc = readFileSync(new URL("references/orchestrator-mode.md", root), "utf8");
+check("orchestrator-mode.md: commands, env var, /foreman off, only the user leaves", /\/foreman off/.test(modeDoc) && /FOREMAN_PI_MODE/.test(modeDoc) && /\/foreman`/.test(modeDoc) && /Only the user leaves/.test(modeDoc));
+check("skills §0 point at orchestrator-mode.md and the commands, with no touch/gitignore step", /orchestrator-mode\.md/.test(skill) && /orchestrator-mode\.md/.test(pr) && /\/foreman`/.test(skill) && /\/plan-runner/.test(pr) && !/touch \./.test(skill + pr) && !/touch \S*orchestrator/.test(skill + pr));
+check("skills tell the model to ask for /foreman on a not-in-mode refusal", /not-in-mode/.test(skill) && /not-in-mode/.test(pr));
+check(".gitignore no longer lists the marker", !readFileSync(new URL(".gitignore", root), "utf8").includes(needleMarker));
+check("templates/handoff-prompt.md says orchestrator mode does not apply to workers", /About orchestrator mode/.test(readFileSync(new URL("templates/handoff-prompt.md", root), "utf8")));
 if (failures) process.exit(1);

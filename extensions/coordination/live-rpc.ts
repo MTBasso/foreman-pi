@@ -2,8 +2,8 @@
  * Manual live check for the coordinator (NOT part of `npm test`):
  *   npx tsx extensions/coordination/live-rpc.ts
  *
- * Starts `pi --mode rpc --no-session` in a temp dir that contains an
- * .orchestrator-active marker, asks it to call foreman_delegate ONCE (planner,
+ * Starts `pi --mode rpc --no-session` in a temp dir with
+ * FOREMAN_PI_MODE=orchestrator, asks it to call foreman_delegate ONCE (planner,
  * trivial read-only task) and end its turn. Then verifies the event-driven loop:
  *   1. the foreman_delegate tool result arrives BEFORE the worker output file exists
  *   2. agent_settled fires (orchestrator idle, worker still running)
@@ -29,7 +29,6 @@ import { join } from "node:path";
 
 const TIMEOUT_MS = Number(process.env.LIVE_TIMEOUT_MS ?? 300_000);
 const dir = mkdtempSync(join(tmpdir(), "foreman-live-"));
-writeFileSync(join(dir, ".orchestrator-active"), "");
 writeFileSync(join(dir, "hello.txt"), "foreman live test file\n");
 
 const t0 = Date.now();
@@ -67,7 +66,7 @@ const proc = spawn(process.env.LIVE_PI ?? "pi", ["--mode", "rpc", "--no-session"
 	stdio: ["pipe", "pipe", "pipe"],
 	// If this script is itself run from inside a foreman worker, the flag would
 	// turn coordination/guardrail into no-ops for the orchestrator under test.
-	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string },
+	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string, FOREMAN_PI_MODE: "orchestrator" },
 });
 let stderr = "";
 proc.stderr.on("data", (d) => (stderr += d.toString()));

@@ -6,29 +6,40 @@
  * fires once but documents no return value, while `before_agent_start` can
  * inject a message but fires on every run, not just the first.
  *
- * So: detect what to say in `session_start` (reading `.orchestrator-active`'s
- * presence/age is cheap and synchronous), stash it in a closure flag, and
+ * So: detect what to say in `session_start`, stash it in a closure flag, and
  * deliver + clear it on the next `before_agent_start`. This is the pattern
  * Pi's own extensions.md shows for a one-time reminder (the `addedReviewReminder`
  * example) — see PLAN.md §3 for the research trail.
  *
- * Orientation pre-gathering (marker/memory/git/top-level listing) was added
- * after a live run (session 01a1c625) showed the model burning 7+ turns just
- * re-checking whether `.orchestrator-active` exists, never progressing past
- * foreman's own step 0/1 before `pi-claude-cli`'s `--resume` gave up with
- * "No response requested." — the exact multi-round-trip instability already
- * documented in this machine's CLAUDE.md for this provider. No amount of
- * SKILL.md wording fixes a provider-level round-trip reliability bug; the
- * only real mitigation is cutting the number of round trips the model needs
- * before it can act, by doing this cheap synchronous I/O here instead of
- * making the model spend its own tool calls discovering it.
+ * Orientation pre-gathering (memory file/git/top-level listing) exists because
+ * a live run showed the model burning 7+ turns just re-checking basic project
+ * state before `pi-claude-cli`'s `--resume` gave up with "No response
+ * requested." — the multi-round-trip instability already documented in this
+ * machine's CLAUDE.md for this provider. The only real mitigation is cutting
+ * the number of round trips the model needs before it can act, by doing this
+ * cheap synchronous I/O here instead of making the model discover it.
+ *
+ * Orchestrator mode (lib/mode.ts) is session state, so a fresh `startup`/`new`
+ * session is never locked by a leftover. The reminder states the mode (read at
+ * `before_agent_start`, so extension load order does not matter). On `resume`
+ * or `fork` into a session whose restored state is "active", the user is asked
+ * to keep it; a timeout or no UI keeps the restored state (nothing destructive
+ * happens by default).
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { t } from "../../lib/i18n.ts";
+import { createModeTracker, MODE_SET_EVENT } from "../../lib/mode.ts";
 
-const MARKER_NAME = ".orchestrator-active";
+/** How long the resume/fork "keep orchestrator mode?" prompt waits before keeping the restored state. */
+const DEFAULT_KEEP_MODE_TIMEOUT_MS = 30_000;
+
+function keepModeTimeoutMs(): number {
+	const n = Number(process.env.FOREMAN_KEEP_MODE_TIMEOUT_MS);
+	return process.env.FOREMAN_KEEP_MODE_TIMEOUT_MS && Number.isFinite(n) && n > 0 ? n : DEFAULT_KEEP_MODE_TIMEOUT_MS;
+}
 const MEMORY_NAME = "FOREMAN_MEMORY.md";
 
 const BASE_REMINDER =
@@ -36,31 +47,11 @@ const BASE_REMINDER =
 	"grilling+planning+building+QA+release, use the foreman skill (/foreman). " +
 	"For an already-approved plan under docs/plans/, use plan-runner " +
 	"(/plan-runner <plan>). If a prior run went wrong (repeated work, ignored " +
-	"plan, a stall, unexpected cost), use /foreman-diagnose. Don't mention this " +
-	"reminder unless one of these is actually relevant.";
-
-function staleMarkerNote(cwd: string): string | undefined {
-	const marker = join(cwd, MARKER_NAME);
-	if (!existsSync(marker)) return undefined;
-
-	let ageNote = "";
-	try {
-		const ageMs = Date.now() - statSync(marker).mtimeMs;
-		ageNote = ` (created ${Math.round(ageMs / 60000)}m ago)`;
-	} catch {
-		// Non-fatal: the age is a nice-to-have, not required for the warning.
-	}
-
-	return (
-		` NOTE: a ${MARKER_NAME} marker already exists${ageNote}, but this is a ` +
-		"brand-new session with no memory of starting foreman mode here — it is " +
-		"very likely a leftover from a previous session that ended without " +
-		"clearing it (crash, interrupt, or the user just closing the terminal). " +
-		"The orchestrator-guardrail extension will restrict write/edit while that " +
-		"file exists. Before doing any file edit, confirm with the user whether " +
-		"foreman mode should actually still be active; if not, remove it."
-	);
-}
+	"plan, a stall, unexpected cost), use /foreman-diagnose. Orchestrator mode " +
+	"is entered with /foreman (or /plan-runner, /foreman-audit) and left with " +
+	"/foreman off. Converse with the user in the language of their messages " +
+	"(default English). Don't mention this reminder unless one of these is " +
+	"actually relevant.";
 
 function runGit(cwd: string, args: string[]): string | undefined {
 	try {
@@ -76,7 +67,7 @@ function runGit(cwd: string, args: string[]): string | undefined {
 }
 
 /**
- * Everything foreman's own step 0 (marker/references) and step 1 (orient on
+ * Everything foreman's own step 0 (references) and step 1 (orient on
  * the project) would otherwise spend several bash/read tool calls gathering.
  * Doing it here means the model's first turn already has it and can skip
  * straight to acting or asking, instead of re-deriving it one round trip at
@@ -84,9 +75,6 @@ function runGit(cwd: string, args: string[]): string | undefined {
  */
 function gatherOrientation(cwd: string): string {
 	const lines: string[] = [];
-
-	const markerExists = existsSync(join(cwd, MARKER_NAME));
-	lines.push(`.orchestrator-active: ${markerExists ? "present (see note above)" : "absent"}`);
 
 	const memoryPath = join(cwd, MEMORY_NAME);
 	if (existsSync(memoryPath)) {
@@ -145,26 +133,56 @@ export function missingDelegateWarning(getAllTools: () => { name: string }[]): s
 }
 
 export default function (pi: ExtensionAPI) {
+	const tracker = createModeTracker(pi);
 	let pendingReminder: string | null = null;
 
-	pi.on("session_start", async (event, ctx) => {
-		// "startup" and "new" both begin with zero memory of ever running
-		// /foreman in this session — a marker found at that moment is almost
-		// always stale. "resume"/"fork"/"reload" can still be a legitimate
-		// mid-run continuation, so leave those alone (mirrors the bash hook's
-		// startup|clear handling, adapted to Pi's session_start reasons).
-		const isFreshSession = event.reason === "startup" || event.reason === "new";
-		const stale = isFreshSession ? staleMarkerNote(ctx.cwd) : undefined;
-		const orientation = isFreshSession ? gatherOrientation(ctx.cwd) : undefined;
+	/** One orientation line; computed at before_agent_start so extension load order does not matter. */
+	function modeLine(): string {
+		const { active, source } = tracker.describe();
+		return `Orchestrator mode: ${active ? "active" : "inactive"} (${source})` +
+			(active ? "" : "; foreman_delegate refuses until the user runs /foreman");
+	}
 
-		pendingReminder = BASE_REMINDER + missingDelegateWarning(() => pi.getAllTools()) + (stale ?? "") + (orientation ? "\n\n" + orientation : "");
+	/** Resume/fork into an active session: ask whether to keep the mode. Timeout or no UI keeps it. */
+	async function confirmKeepMode(ctx: any) {
+		const controller = new AbortController();
+		let timedOut = false;
+		const timer = setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+		}, keepModeTimeoutMs());
+		let keep = true;
+		try {
+			keep = await ctx.ui.confirm(t("confirm.keepMode.title"), t("confirm.keepMode"), { signal: controller.signal });
+		} catch {
+			keep = true; // prompt unavailable: keep the restored state
+		} finally {
+			clearTimeout(timer);
+		}
+		// foreman-mode is the single writer; ask it to turn the mode off.
+		if (!keep && !timedOut) pi.events.emit(MODE_SET_EVENT, { active: false });
+	}
+
+	pi.on("session_start", async (event, ctx) => {
+		tracker.restore(ctx, event.reason);
+
+		// A fresh session has no memory of ever running /foreman, and gets the
+		// full orientation. resume/fork/reload can be a mid-run continuation.
+		const isFreshSession = event.reason === "startup" || event.reason === "new";
+		const orientation = isFreshSession ? gatherOrientation(ctx.cwd) : undefined;
+		pendingReminder = BASE_REMINDER + missingDelegateWarning(() => pi.getAllTools()) + (orientation ? "\n\n" + orientation : "");
+
+		const src = tracker.source();
+		if ((event.reason === "resume" || event.reason === "fork") && tracker.isActive() && (src === "entry" || src === "event") && ctx.hasUI) {
+			await confirmKeepMode(ctx);
+		}
 	});
 
 	pi.on("before_agent_start", async (event, ctx) => {
 		if (!pendingReminder) return undefined;
 		if (event.messageType !== "user") return undefined; // only inject on the real first turn
 
-		const message = pendingReminder;
+		const message = pendingReminder + "\n\n" + modeLine();
 		pendingReminder = null; // one-shot, same as the Claude Code hook (paid once per session)
 
 		return {

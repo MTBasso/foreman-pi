@@ -28,16 +28,20 @@ extra safety net. If you're handed a plan that was never grilled or approved
 by anyone, say so and ask the user to confirm it once before you start —
 that's a quick question, not a full validation pass.
 
-## 0. Isolated workspace, then mark orchestrator mode active
+## 0. Isolated workspace; orchestrator mode is already on
 
 Read `references/using-worktrees.md` and follow it — detect whether you're
 already isolated, otherwise get the user's consent before creating a
 worktree for this plan's run. Skip it only if the user declines or the
 project gives you no way to create one; work in place then.
 
-Read `references/orchestrator-marker.md` in this plugin and follow it —
-same marker/guardrail hook `foreman` uses. Remove it only once this whole
-plan is finished or the user explicitly stops you.
+Entering orchestrator mode is the `/plan-runner` command's job, not yours:
+do not create files or edit `.gitignore` to mark anything. Read
+`references/orchestrator-mode.md` in this plugin once per session — it is the
+same mode and guardrail `foreman` uses, and only the user ends it, with
+`/foreman off`. If `foreman_delegate` refuses with a not-in-mode error, tell
+the user to run `/foreman`, and never try `bash` or file edits to work around
+it.
 
 ## 0.5. This plan's ledger (written by the extension, not by you)
 
@@ -45,7 +49,7 @@ Conversation memory does not survive compaction. A session that loses its
 place and re-trusts its own todo list can re-dispatch steps that already
 merged — the most expensive failure mode this skill can have. Progress is
 tracked on disk, and **the coordination extension writes that ledger for
-you** — you have no `bash`, `write` or `edit` while the marker is active,
+you** — you have no `bash`, `write` or `edit` while orchestrator mode is on,
 and you never append to it by hand.
 
 - Ledger path: `.foreman/plan-runner/<plan-slug>/progress.md` (slug the

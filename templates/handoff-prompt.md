@@ -41,10 +41,11 @@ fix, etc. — and the done condition.>
 <anything time/scope-boxing the work: files not to touch, patterns not to
 introduce, performance/security notes.>
 
-## About `.orchestrator-active`
-If you notice that marker file in this project, it does not apply to you —
-you are running as your own `pi` process with your own `write`/`edit` access
-from your `tools:` frontmatter, not the orchestrator session. Proceed with
-your task normally; don't ask whether to delete it or pause to confirm. (A
-live test caught a subagent stalling on exactly this question instead of
-just doing the edit — this line exists so you never have to guess.)
+## About orchestrator mode
+Orchestrator mode does not apply to you — you are running as your own `pi`
+process with your own `write`/`edit` access from your `tools:` frontmatter,
+not the orchestrator session. If you notice an old marker file or a
+mention of the mode, ignore it: proceed with your task normally and
+don't ask whether to delete anything or pause to confirm. (A live test caught
+a subagent stalling on exactly this question instead of just doing the edit —
+this line exists so you never have to guess.)

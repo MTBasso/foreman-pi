@@ -293,7 +293,13 @@ Status: done
 
 ## Phase 7 — Session-state orchestrator mode, commands, status/widget (marker removed)
 
-Status: todo
+Status: done
+
+**Step 0 spike result (Ruling, measured on pi 1.5.2's real `createEventBus`, kept as regression tests in `lib/mode-test.ts`):**
+- `emit` is synchronous: handlers start in registration order before `emit` returns.
+- A handler's return value is ignored and its promise is not awaited; a throwing or rejecting handler is logged and isolated.
+- Consequences adopted: mode state handlers are synchronous (so `isActive()` is right after an emit); the `foreman:workers` snapshot is a cache pushed on every change; the abort reply is a callback (`ack`) in the payload plus a bounded wait (7s, longer than the 5s SIGKILL grace; `FOREMAN_ABORT_WAIT_MS` in tests), never an awaited return value. No poll was needed because delivery is synchronous.
+- Resume/fork "No" is a request (`foreman:mode:set`) to foreman-mode, which stays the single writer.
 
 ### Marker removal: design and consequences
 

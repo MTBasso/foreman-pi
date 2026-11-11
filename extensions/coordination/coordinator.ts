@@ -12,6 +12,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
 
 export const ROLES = [
 	"planner",
@@ -130,6 +131,10 @@ interface Task {
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
 	killedByShutdown?: boolean;
+	/** Aborted on request (/foreman off): no notification is sent for it. */
+	aborted?: boolean;
+	startedAt?: number;
+	finishedAt?: number;
 }
 
 interface Batch {
@@ -138,6 +143,8 @@ interface Batch {
 	attempts: number;
 }
 
+/** Finished workers kept in a snapshot (newest first). */
+const SNAPSHOT_FINISHED_MAX = 5;
 const SUMMARY_MAX = 400;
 const LEDGER_SUMMARY_MAX = 200;
 
@@ -318,6 +325,17 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	let stopped = false;
 	let batchSeq = 0;
 
+	const changeListeners = new Set<() => void>();
+	function emitChange() {
+		for (const cb of [...changeListeners]) {
+			try {
+				cb();
+			} catch {
+				// UI/bus listeners must never break scheduling
+			}
+		}
+	}
+
 	let pending: Notification[] = [];
 	let batchTimer: ReturnType<typeof setTimeout> | undefined;
 	const inflight = new Map<string, Batch>();
@@ -386,6 +404,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	function startTask(t: Task) {
 		running++;
 		t.state = "running";
+		t.startedAt = now();
 		writeMeta(t, { started_at: new Date(now()).toISOString() });
 		let handle: WorkerHandle;
 		try {
@@ -433,6 +452,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				}),
 		);
 		persist(t);
+		emitChange();
 	}
 
 	function pump() {
@@ -444,10 +464,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	function finishTask(t: Task, r: WorkerResult) {
 		if (t.timer) clearTimeout(t.timer);
 		running--;
-		if (stopped || t.killedByShutdown) {
+		if (stopped || t.killedByShutdown || t.aborted) {
 			checkIdle();
+			emitChange();
 			return;
 		}
+		t.finishedAt = now();
 
 		const report = finalReport(r.messages);
 		let status: TaskStatus;
@@ -540,6 +562,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		scheduleFlush();
 		pump();
 		checkIdle();
+		emitChange();
 	}
 
 	function scheduleFlush() {
@@ -607,7 +630,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		opts: { model?: string; thinkingLevel?: string } = {},
 	): DelegateAck {
 		if (!isActive()) {
-			throw new Error("foreman_delegate is only available while the orchestrator marker (.orchestrator-active) is present.");
+			throw new Error("foreman_delegate is only available in orchestrator mode: not in orchestrator mode, ask the user to run /foreman.");
 		}
 		if (!(ROLES as readonly string[]).includes(input.role)) {
 			throw new Error(`Unknown role "${input.role}". Valid roles: ${ROLES.join(", ")}.`);
@@ -639,6 +662,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		else {
 			queue.push(t);
 			persist(t);
+			emitChange();
 		}
 		const state = t.state === "running" ? "running" : "queued";
 		return {
@@ -702,6 +726,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					}
 				}
 				t.state = "aborted";
+				t.finishedAt = now();
 				try {
 					writeMeta(t, { finished_at: new Date(now()).toISOString(), error: "orchestrator shut down" });
 				} catch {
@@ -711,6 +736,79 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			}
 		}
 		checkIdle();
+		emitChange();
+	}
+
+	/**
+	 * Abort every running and queued worker on request (/foreman off after the
+	 * user's confirm). Running children get kill() (SIGTERM, SIGKILL after the
+	 * grace period); the returned promise resolves once they have all exited.
+	 * No notification is sent for aborted tasks.
+	 */
+	function abortAll(): Promise<number> {
+		queue.length = 0;
+		const exits: Promise<unknown>[] = [];
+		let count = 0;
+		for (const t of tasks.values()) {
+			if (t.state !== "running" && t.state !== "queued") continue;
+			count++;
+			const wasRunning = t.state === "running";
+			t.aborted = true;
+			if (t.timer) clearTimeout(t.timer);
+			t.state = "aborted";
+			t.finishedAt = now();
+			if (wasRunning && t.handle) {
+				exits.push(t.handle.done.catch(() => undefined));
+				try {
+					t.handle.kill();
+				} catch {
+					// ignore
+				}
+			}
+			try {
+				writeMeta(t, { finished_at: new Date(now()).toISOString(), error: "aborted by user" });
+			} catch {
+				// ignore
+			}
+			persist(t);
+		}
+		emitChange();
+		return Promise.all(exits).then(() => {
+			checkIdle();
+			emitChange();
+			return count;
+		});
+	}
+
+	/** Point-in-time view for the status bar, widget, /foreman-status and the `foreman:workers` event. */
+	function snapshot(): WorkersSnapshot {
+		const running: WorkersSnapshot["running"] = [];
+		const finished: WorkersSnapshot["finished"] = [];
+		let queuedCount = 0;
+		for (const t of tasks.values()) {
+			if (t.state === "running") {
+				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, startedAt: t.startedAt ?? now() });
+			} else if (t.state === "queued") {
+				queuedCount++;
+			} else {
+				finished.push({
+					taskId: t.taskId,
+					role: t.role,
+					state: t.state as FinishedState,
+					planStep: t.planStep,
+					finishedAt: t.finishedAt ?? 0,
+				});
+			}
+		}
+		finished.reverse(); // stable sort below keeps newest first on equal timestamps
+		finished.sort((a, b) => b.finishedAt - a.finishedAt);
+		return { running, queued: queuedCount, finished: finished.slice(0, SNAPSHOT_FINISHED_MAX) };
+	}
+
+	/** Called after every state change; returns an unsubscribe. */
+	function onChange(cb: () => void): () => void {
+		changeListeners.add(cb);
+		return () => changeListeners.delete(cb);
 	}
 
 	/**
@@ -789,6 +887,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		onAgentStart,
 		onAgentSettled,
 		shutdown,
+		abortAll,
+		snapshot,
+		onChange,
 		recover,
 		whenIdle,
 		flush,

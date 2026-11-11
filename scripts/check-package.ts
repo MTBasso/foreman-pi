@@ -29,10 +29,10 @@ const REAL_HOME = os.homedir();
 const REAL_SETTINGS = path.join(process.env.PI_CODING_AGENT_DIR ?? path.join(REAL_HOME, ".pi", "agent"), "settings.json");
 
 // --- expected lists (extend per phase) --------------------------------------
-const EXPECTED_EXTENSIONS = ["context-filter", "coordination", "model-fallback", "orchestrator-guardrail", "session-reminder"];
+const EXPECTED_EXTENSIONS = ["context-filter", "coordination", "foreman-mode", "model-fallback", "orchestrator-guardrail", "session-reminder"];
 const EXPECTED_SKILLS = ["design-preview", "foreman", "plan-runner", "project-memory"];
-/** Slash commands registered by this package's extensions (none yet). */
-const EXPECTED_EXTENSION_COMMANDS: string[] = [];
+/** Slash commands registered by this package's extensions. */
+const EXPECTED_EXTENSION_COMMANDS: string[] = ["foreman", "foreman-audit", "foreman-diagnose", "foreman-status", "plan-runner"];
 const EXPECTED_AGENTS = [
 	"backend-dev",
 	"codebase-auditor",
@@ -43,8 +43,8 @@ const EXPECTED_AGENTS = [
 	"qa-bugfix",
 	"release-manager",
 ];
-const REQUIRED_FILES = ["package.json", "LICENSE", "README.md", "lib/agents.ts", "lib/spawn.ts"];
-const FORBIDDEN = [/(^|\/)smoke-test\.ts$/, /-test\.ts$/, /(^|\/)live-[^/]*\.ts$/, /^agents\/models\.json$/, /(^|\/)node_modules\//, /^\.orchestrator-active$/];
+const REQUIRED_FILES = ["package.json", "LICENSE", "README.md", "lib/agents.ts", "lib/spawn.ts", "lib/mode.ts", "lib/workers.ts", "lib/ui.ts"];
+const FORBIDDEN = [/(^|\/)smoke-test\.ts$/, /-test\.ts$/, /(^|\/)live-[^/]*\.ts$/, /^agents\/models\.json$/, /(^|\/)node_modules\//];
 // ---------------------------------------------------------------------------
 
 let failures = 0;
@@ -134,6 +134,9 @@ async function main() {
 			PI_SKIP_VERSION_CHECK: "1",
 			PI_TELEMETRY: "0",
 		};
+		// A parent worker/orchestrator env must not leak in: the mode commands are no-ops in worker processes.
+		delete env.FOREMAN_PI_SUBAGENT;
+		delete env.FOREMAN_PI_MODE;
 		check("sandbox dirs are outside the real pi dir", ![agentDir, sandboxHome].some((d) => d.startsWith(path.dirname(REAL_SETTINGS))));
 
 		// 2. npm pack + extract + assert contents

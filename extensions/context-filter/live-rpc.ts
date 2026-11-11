@@ -2,7 +2,7 @@
  * Manual live check for the context filter (NOT part of `npm test`):
  *   npx tsx extensions/context-filter/live-rpc.ts
  *
- * Starts `pi --mode rpc --no-session` in a temp dir with an .orchestrator-active marker, plus a
+ * Starts `pi --mode rpc --no-session` in a temp dir with FOREMAN_PI_MODE=orchestrator, plus a
  * test-only helper extension (-e) that logs the FINAL context (context_with_system runs after every
  * `context` handler) and the provider payload (before_provider_request) to a file. Then:
  *   prompt 1: one real foreman_delegate (planner, reads a.txt containing token ALPHA-111)  -> notification 1
@@ -25,7 +25,6 @@ import { join } from "node:path";
 
 const TIMEOUT_MS = Number(process.env.LIVE_TIMEOUT_MS ?? 600_000);
 const dir = mkdtempSync(join(tmpdir(), "foreman-ctx-live-"));
-writeFileSync(join(dir, ".orchestrator-active"), "");
 writeFileSync(join(dir, "a.txt"), "ALPHA-111\n");
 writeFileSync(join(dir, "b.txt"), "BETA-222\n");
 const probeLog = join(dir, "probe.jsonl");
@@ -61,7 +60,7 @@ const note = (s: string) => console.log(`+${((Date.now() - t0) / 1000).toFixed(1
 const proc = spawn(process.env.LIVE_PI ?? "pi", ["--mode", "rpc", "--no-session", "-e", helper], {
 	cwd: dir,
 	stdio: ["pipe", "pipe", "pipe"],
-	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string, FOREMAN_CONTEXT_DEBUG: "1", FOREMAN_CONTEXT_PRUNE: "true" },
+	env: { ...process.env, FOREMAN_PI_SUBAGENT: undefined as unknown as string, FOREMAN_PI_MODE: "orchestrator", FOREMAN_CONTEXT_DEBUG: "1", FOREMAN_CONTEXT_PRUNE: "true" },
 });
 let stderr = "";
 proc.stderr.on("data", (d) => (stderr += d.toString()));

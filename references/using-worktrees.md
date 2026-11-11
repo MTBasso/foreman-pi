@@ -54,8 +54,7 @@ If they agree:
 
 State plainly, once and in the user's language: "Working in worktree
 `<path>`, branch `<name>`." (or, if working in place: "No worktree — working
-directly on the current branch, as agreed.") Everything downstream (the `.orchestrator-active`
-marker, the ledger in plan-runner's §0.5, any delegate spawned) happens
+directly on the current branch, as agreed.") Everything downstream (orchestrator mode, the ledger in plan-runner's §0.5, any delegate spawned) happens
 relative to this workspace.
 
 ## Cleanup

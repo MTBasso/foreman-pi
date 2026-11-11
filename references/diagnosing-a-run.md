@@ -65,7 +65,7 @@ pad the report with "no evidence either way" for things you never looked at.
 - **Stalls**: did the run stop and wait on the user for something that
   "Rulings, not stalls" (§2.5/§3.5 in `plan-runner`/`foreman`) says should
   have been decided and logged instead? Cite the stop point.
-- **Guardrail friction**: did `.orchestrator-active` block something it
+- **Guardrail friction**: did the orchestrator guardrail block something it
   shouldn't have (see `references/guardrail-troubleshooting.md`)? Cite the
   denial.
 - **Cost/time**: if the complaint is about cost or duration, count actual

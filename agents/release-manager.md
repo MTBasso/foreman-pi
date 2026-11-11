@@ -43,7 +43,7 @@ category of risk a code-focused `qa` pass doesn't cover.
   missing, say so once and skip the scan rather than blocking the release on
   it.
 - Run `agentshield scan --path .` over the repo. This plugin's own
-  `.orchestrator-active`-gated hook and the agent files under `agents/` are
+  mode-gated guardrail extension and the agent files under `agents/` are
   exactly the kind of surface it's built to check, same as any other
   project's.
 - A **secret, credential, or an unsafe hook/MCP/permission config** found is
