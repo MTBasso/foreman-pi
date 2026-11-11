@@ -14,7 +14,9 @@
     "test:coordination": "tsx extensions/coordination/smoke-test.ts",
     "test:live:coordination": "tsx extensions/coordination/live-rpc.ts",
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:fallback && npm run test:coordination && npm run test:instructions"
+    "test:context-filter": "tsx extensions/context-filter/smoke-test.ts",
+    "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:instructions"
   },
   "repository": {
     "type": "git",
