@@ -117,7 +117,7 @@ Status: done
 
 ## Phase 2 — Packaging manifest, author, real install check
 
-Status: todo
+Status: done
 
 1. **`package.json`**
    - Add `pi: {extensions:["./extensions/*/index.ts"], skills:["./skills"]}`.

@@ -4,7 +4,36 @@
   "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see PLAN.md.",
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "foreman",
+    "orchestrator"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/*/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "extensions",
+    "lib",
+    "agents",
+    "skills",
+    "references",
+    "templates",
+    "README.md",
+    "README.pt-BR.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "!**/smoke-test.ts",
+    "!**/*-test.ts",
+    "!**/live-*.ts",
+    "!agents/models.json"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -19,20 +48,25 @@
     "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
     "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:spawn && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
     "test:reminder": "tsx extensions/session-reminder/smoke-test.ts",
-    "test:live:phase3": "tsx extensions/coordination/live-phase3.ts"
+    "test:live:phase3": "tsx extensions/coordination/live-phase3.ts",
+    "test:package": "tsx scripts/check-package.ts"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/MTBasso/foreman-pi.git"
   },
-  "author": "",
+  "author": "Matheus Basso <matheusbasso@proton.me>",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/MTBasso/foreman-pi/issues"
   },
   "homepage": "https://github.com/MTBasso/foreman-pi#readme",
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.5.2",

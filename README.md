@@ -10,6 +10,14 @@ itself) to [Pi](https://github.com/earendil-works/pi)
 architecture mapping, and the open questions this port is making calls on.
 This README only covers what exists in this repo right now and how to run it.
 
+## Install
+
+Install from git or a local checkout with `pi install git:github.com/MTBasso/foreman-pi`
+or `pi install ./foreman-pi`; the `pi` manifest in `package.json` registers the
+extensions and skills. `npm run test:package` packs the tarball and installs it
+into a throwaway sandbox (never your real `~/.pi`) to prove the published
+layout loads.
+
 ## Status
 
 | Piece | Status |
