@@ -78,6 +78,12 @@ async function main() {
 	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "npm test > out.log 2>&1" } }, ctx);
 	check("bash redirect to .log allowed with marker", r === undefined);
 
+	// Regression: a live `pi` session caught this bypassing the guardrail when
+	// `.txt` was in ALLOWED_BASH_TARGET_PATTERNS (meant for "spot-check" output,
+	// but .txt is a real content format, not a safe signal).
+	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "echo 'hacked' > existing.txt" } }, ctx);
+	check("bash redirect to .txt blocked with marker", r?.block === true);
+
 	// 5. turn_start proactively drops write/edit from active tools.
 	await fire(handlers, "turn_start", {}, ctx);
 	const active = getActiveTools();

@@ -38,9 +38,14 @@ const WRITE_COMMAND_PATTERNS: RegExp[] = [
 	/\bdd\b[^|;&]*\bof=/,
 ];
 
-// Redirecting a spot-check's output to a log/report file, or discarding it,
-// is bookkeeping, not an implementation change.
-const ALLOWED_BASH_TARGET_PATTERNS: RegExp[] = [/\/dev\/null/, /\.(log|out|txt)(\s|$)/];
+// Redirecting a spot-check's output to a log file, or discarding it, is
+// bookkeeping, not an implementation change. Deliberately narrow: `.txt` and
+// `.out` were in this list until a live test caught `echo hacked > existing.txt`
+// sailing through under the "spot-check output" exception — `.txt` in
+// particular is a real content format (docs, data, config), not a safe
+// signal that a redirect is log-only. Only `.log` and `/dev/null` are
+// unambiguous enough to allowlist by extension alone.
+const ALLOWED_BASH_TARGET_PATTERNS: RegExp[] = [/\/dev\/null/, /\.log(\s|$)/];
 
 function markerPath(cwd: string): string {
 	return join(cwd, MARKER_NAME);
