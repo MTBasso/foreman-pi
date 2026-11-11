@@ -20,6 +20,7 @@ This README only covers what exists in this repo right now and how to run it.
 | `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. `templates/handoff-prompt.md` now also tells a delegated subagent explicitly that `.orchestrator-active` doesn't apply to it, after a live test caught a subagent pausing to ask instead of just acting on an ambiguous marker file. |
 | `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`), and `planner`/`frontend-dev` confirmed to actually run correctly end to end in a live child process (see above). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
 | `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
+| `extensions/coordination/` | **Phase 1 built, smoke-tested and verified live.** `foreman_delegate` tool + event-driven coordinator: spawns workers as child `pi` processes, returns immediately, and wakes the orchestrator with a `foreman-task-notification` message when they finish. Logic covered by `npm run test:coordination`; real end-to-end check in `npm run test:live:coordination` (see "Coordination" below). `subagent` remains available to the orchestrator until Phase 3. |
 | `templates/`, `commands/` equivalents | **Not started.** |
 | Packaging for real install (`pi install ./foreman-pi` or via npm) | **Verified by accident, not by design**: this repo is in fact installed as a package on the machine this verification ran on (`~/.pi/agent/settings.json` lists `https://github.com/MTBasso/foreman-pi` under `packages`), and its extensions and agents are confirmed auto-discovered in every `pi` invocation — that's exactly what surfaced the subagent-exemption bug above. `pi install ./foreman-pi` itself (the local-path install flow) has still not been run explicitly in this verification pass. |
 
@@ -122,6 +123,76 @@ this explicitly, so it never has to guess.
   working above. Worth keeping in mind for real orchestrator usage: prefer
   short, decisive turns over "try it yourself first" framing.
 
+## Coordination (event-driven delegation)
+
+`extensions/coordination/` adds `foreman_delegate`, a non-blocking alternative
+to `subagent`. The orchestrator dispatches work, ends its turn, and is woken
+when workers finish instead of waiting inside a tool call.
+
+**Tool schema** (`foreman_delegate`):
+
+| Param | Type | Notes |
+|---|---|---|
+| `role` | enum | `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`, `release-manager`, `plan-step-builder`, `codebase-auditor` |
+| `handoff_prompt` | string | complete, self-contained prompt for the worker |
+| `plan_step` | number, optional | plan step this task belongs to (ledger) |
+| `plan_slug` | string, optional | `docs/plans/<slug>.md`; first non-empty value is latched for the run |
+
+It returns synchronously with `{task_id, run_id, state: running|queued, ack}`;
+the ack tells the orchestrator to end its turn and not poll. Only available
+while `.orchestrator-active` exists; workers (`FOREMAN_PI_SUBAGENT=1`) never
+get the tool.
+
+**Notification shape.** Completions are debounced and delivered as ONE custom
+message (`customType: foreman-task-notification`) holding N blocks:
+
+```
+<task-notification>
+task-id: t1-planner
+role: planner
+status: completed        # completed | failed | blocked
+plan-step: 2             # or -
+summary: <first ~400 chars of the worker's final report>
+output: .foreman/runs/<run-id>/t1-planner.md
+</task-notification>
+```
+
+`blocked` means the report's first line starts with `[BLOCKED]`; `failed`
+covers non-zero exit, signal, timeout, spawn error, or empty output. The full
+report is at `output`.
+
+**Ledger semantics.** The ledger is written by the extension, not the model:
+`.foreman/runs/<run-id>/ledger.log` (plus `.foreman/plan-runner/<slug>/progress.md`
+when a `plan_slug` is latched) gets one line per task, appended synchronously
+*before* the notification is delivered, so a crash between the two never loses
+the record. Re-sends of an undelivered batch do not duplicate ledger lines. A
+batch that is never delivered after 3 attempts is dropped with a
+`console.error` warning naming its task ids and output paths.
+
+**Env vars:**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FOREMAN_MAX_WORKERS` | 4 | concurrent workers; extra delegates queue |
+| `FOREMAN_BATCH_MS` | 300 | debounce window for batching completions |
+| `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | per-worker timeout (0 disables) |
+
+**Limitation: `--print` mode cannot host wake-ups.** Print mode exits once the
+agent settles, so there is nothing alive to receive a notification. Use a
+long-lived mode such as `--mode rpc` (or the interactive TUI).
+
+**Live-run evidence.** `extensions/coordination/live-rpc.ts` was run 3 times
+against a real `pi --mode rpc` session. 2 of 3 passed; the first run failed
+because the script's check was too strict: the notification arrived as a
+mid-run `followUp` (the orchestrator was still busy) rather than as a fresh
+run, and the script only accepted the latter. The script was fixed to accept
+both delivery paths; the two later runs passed. Observed event order on the
+idle-wake path: the `foreman_delegate` tool result returned ~2.7s before the
+worker finished, then `agent_settled`, then a new `agent_start` triggered by
+the `foreman-task-notification` message.
+
+`subagent` is still available to the orchestrator until Phase 3.
+
 ## Why adopt the example instead of writing a dispatcher from scratch
 
 PLAN.md's open question 1 asked whether to fork
@@ -151,6 +222,7 @@ extensions/
   session-reminder/               — session_start + before_agent_start reminder
   subagent-dispatch/              — adopted+patched upstream subagent example
   model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
+  coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts)
 agents/                           — the 8 ported foreman subagent definitions
 skills/                           — the 4 ported foreman skills
 references/                       — supporting docs the skills point to

@@ -18,7 +18,7 @@ type Handler = (event: any, ctx: any) => Promise<any>;
 
 function makeFakeApi() {
 	const handlers: Record<string, Handler[]> = {};
-	let activeTools = ["read", "write", "edit", "bash", "grep", "find", "ls"];
+	let activeTools = ["read", "write", "edit", "bash", "grep", "find", "ls", "subagent", "foreman_delegate"];
 	const api = {
 		on(event: string, handler: Handler) {
 			(handlers[event] ??= []).push(handler);
@@ -41,6 +41,8 @@ async function fire(handlers: Record<string, Handler[]>, event: string, payload:
 }
 
 async function main() {
+	const savedSubagentEnv = process.env.FOREMAN_PI_SUBAGENT;
+	delete process.env.FOREMAN_PI_SUBAGENT;
 	const dir = mkdtempSync(join(tmpdir(), "foreman-pi-smoke-"));
 	const ctx = { cwd: dir };
 	const { api, handlers, getActiveTools } = makeFakeApi();
@@ -81,13 +83,18 @@ async function main() {
 	check("edit removed from active tools", !active.includes("edit"));
 	check("bash removed from active tools", !active.includes("bash"));
 	check("read kept in active tools", active.includes("read"));
-	check("active tools are exactly the allowlist", active.every((t: string) => ["read", "grep", "find", "ls", "subagent"].includes(t)));
+	check("active tools are exactly the allowlist", active.every((t: string) => ["read", "grep", "find", "ls", "subagent", "foreman_delegate"].includes(t)));
+	check("foreman_delegate kept in active tools", active.includes("foreman_delegate"));
 
 	// Re-enabling bash/write/edit mid-session is re-stripped next turn and still blocked.
-	api.setActiveTools([...getActiveTools(), "bash", "write", "edit", "subagent"]);
+	api.setActiveTools([...getActiveTools(), "bash", "write", "edit", "subagent", "foreman_delegate"]);
 	await fire(handlers, "turn_start", {}, ctx);
 	check("re-enabled bash/write/edit stripped again", !["bash", "write", "edit"].some((t) => getActiveTools().includes(t)));
 	check("subagent retained", getActiveTools().includes("subagent"));
+	check("foreman_delegate survives turn_start", getActiveTools().includes("foreman_delegate"));
+	check("active tools never include bash/write/edit", !["bash", "write", "edit"].some((t) => getActiveTools().includes(t)));
+	r = await fire(handlers, "tool_call", { toolName: "foreman_delegate", input: { role: "qa", handoff_prompt: "x" } }, ctx);
+	check("foreman_delegate call not blocked with marker", r === undefined);
 	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "ls" } }, ctx);
 	check("bash call still blocked after re-enable", r?.block === true);
 
@@ -104,6 +111,7 @@ async function main() {
 	delete process.env.FOREMAN_PI_SUBAGENT;
 
 	rmSync(dir, { recursive: true, force: true });
+	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
 
 	if (failures > 0) {
 		console.error(`\n${failures} check(s) failed`);

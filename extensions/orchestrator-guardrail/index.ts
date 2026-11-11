@@ -6,7 +6,7 @@
  * subagent instead of doing it directly (see the `foreman` skill).
  *
  * Two layers, same as the plan (PLAN.md, section 1):
- *  - Proactive: setActiveTools() restricts to read/grep/find/ls/subagent (no bash/write/edit) from this session's own active
+ *  - Proactive: setActiveTools() restricts to read/grep/find/ls/subagent/foreman_delegate (no bash/write/edit) from this session's own active
  *    tool set on every turn while the marker is present, so the model is never
  *    even offered them.
  *  - Reactive: a tool_call handler still blocks write/edit/bash-that-writes as a
@@ -48,7 +48,7 @@ function isOrchestratorActive(cwd: string): boolean {
  * Tools the orchestrator may have: read-only inspection plus delegation.
  * No bash (opaque, hard to audit), no write/edit (must delegate).
  */
-const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "subagent"];
+const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "subagent", "foreman_delegate"];
 /** Tools that are always blocked while orchestrating, even if re-enabled. */
 const BLOCKED_TOOLS = ["bash", "write", "edit"];
 
