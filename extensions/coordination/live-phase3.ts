@@ -1,6 +1,7 @@
 /**
  * Live Phase 3 check over `pi --mode rpc` in a temp dir with the marker.
- *  1. Runs one orchestrator turn that asks the model to call `subagent`.
+ *  1. Runs one orchestrator turn that asks the model to call `subagent` (a tool
+ *     that no longer ships with foreman-pi; this checks it stays unavailable).
  *  2. Runs a probe extension command (/probe-tools) that dumps pi.getActiveTools()
  *     and pi.getAllTools() names (there is no RPC command for the tool list).
  *  Expect: foreman_delegate active, subagent absent from the active set; any

@@ -12,6 +12,5 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["extensions/**/*.ts", "agents/**/*.ts"],
-  "exclude": ["extensions/subagent-dispatch/index.ts"]
+  "include": ["extensions/**/*.ts", "lib/**/*.ts", "scripts/**/*.ts"]
 }

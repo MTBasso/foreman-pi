@@ -1,19 +1,16 @@
 /**
- * Agent discovery and configuration
+ * Agent discovery and configuration.
  *
- * ADAPTED from @earendil-works/pi-coding-agent's examples/extensions/subagent/
- * (see UPSTREAM-README.md in this directory for the original). foreman-pi's
- * only change here: agents also load from a `packageAgentsDir` bundled next
- * to this extension (foreman's own backend-dev/frontend-dev/qa/etc.), tagged
- * `source: "package"` rather than `"project"` so they don't trip the
- * project-agent confirmation gate in index.ts (that gate exists for
- * arbitrary repo-local agents a project could inject; package agents are
- * something the user explicitly installed, same trust level as `"user"`).
- * See PLAN.md open question 1.
+ * Loads agent definitions (markdown files with YAML frontmatter) from three
+ * places: the user's agent dir (`<agentDir>/agents`), the nearest project
+ * `.pi/agents`, and foreman-pi's own bundled `agents/` directory (tagged
+ * `source: "package"`). Package agents have the lowest precedence, so a
+ * same-named user or project agent overrides the bundled one.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
@@ -135,8 +132,8 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
-/** foreman-pi's own bundled agents, shipped next to this extension. */
-const PACKAGE_AGENTS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "..", "agents");
+/** foreman-pi's own bundled agents, shipped at the package root. */
+const PACKAGE_AGENTS_DIR = fileURLToPath(new URL("../agents", import.meta.url));
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");

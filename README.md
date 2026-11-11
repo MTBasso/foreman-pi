@@ -16,7 +16,7 @@ This README only covers what exists in this repo right now and how to run it.
 |---|---|
 | `extensions/orchestrator-guardrail/` | **Built, tested, and verified live in a real `pi` session (2026-11-11).** `tool_call` block + `setActiveTools`. 13/13 logic checks pass (`npm run test:guardrail`). Live-tested against a real `pi 1.5.2` session with a sandbox `.orchestrator-active` marker: `write`/`edit` confirmed removed from the active toolset before the model could call them, and `bash` with `sed -i` / `printf ... > file` / `echo ... > file` confirmed blocked reactively with the extension's own denial reason. **One real bug found and fixed by this testing**: `.txt`/`.out` were on the "safe spot-check redirect" allowlist, letting `echo hacked > existing.txt` overwrite a real file undetected — narrowed to `.log`/`/dev/null` only, with a regression test for the exact command that leaked through. |
 | `extensions/session-reminder/` | **Built**, matching Pi's own documented `session_start`/`before_agent_start` pattern for a one-shot reminder. Not yet run live. |
-| `extensions/subagent-dispatch/` | **Adopted + patched, and verified live (2026-11-11).** A real `pi --no-session -p --mode json` run dispatched the `planner` agent, confirmed (via the JSON `toolResult` event) that a genuine child `pi` process spawned, read files in its own cwd, and returned real output to the parent — both for a trivial read (`package.json`'s `name` field) and for an actual feature-planning task (a structured, multi-step plan for a `/health` endpoint, reasoning from the real state of the sandbox directory). **One real bug found and fixed**: because this repo is installed as a package, Pi's default extension discovery loaded `orchestrator-guardrail` into the dispatcher's own child processes too, so a subagent sharing the orchestrator's cwd got its `edit` tool wrongly pulled out from under it mid-task — see "Subagent exemption bug" below. |
+| `lib/` (`agents.ts`, `spawn.ts`) | **Built and tested** (`npm run test:agents`, `npm run test:spawn`). Shared agent discovery (bundled `agents/*.md` tagged `source: "package"`) and child-`pi` spawning, used by `extensions/coordination/`. Replaces the vendored `subagent-dispatch` example, which was removed. |
 | `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. `templates/handoff-prompt.md` now also tells a delegated subagent explicitly that `.orchestrator-active` doesn't apply to it, after a live test caught a subagent pausing to ask instead of just acting on an ambiguous marker file. |
 | `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`), and `planner`/`frontend-dev` confirmed to actually run correctly end to end in a live child process (see above). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
 | `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
@@ -249,25 +249,10 @@ it). Not yet exercised: a provider that rejects adjacency (plan fallback: replac
 stubs instead of removing). An assistant message that echoed the old result's content
 is deliberately left alone.
 
-## Why adopt the example instead of writing a dispatcher from scratch
+## Agent discovery and spawning
 
-PLAN.md's open question 1 asked whether to fork
-`examples/extensions/subagent/` or write our own. Decision: adopt it
-(`extensions/subagent-dispatch/index.ts` and `agents.ts` are copies of the
-upstream example — see `UPSTREAM-README.md` in that directory for the
-original docs), with exactly one functional change, documented inline in
-both files: `discoverAgents` also loads `agents/*.md` bundled next to this
-package (tagged `source: "package"`), so foreman-pi's own agents are found
-without the user having to copy files into `~/.pi/agent/agents/` or
-`.pi/agents/` by hand.
-
-Reasoning: the upstream example is ~1,400 lines handling process spawning,
-JSON-mode parsing, parallel/chain dispatch, and TUI rendering — reusing a
-tested implementation and keeping the diff to one well-contained, documented
-change is lower-risk than re-deriving all of that. The tradeoff (also in
-PLAN.md): this is example code, not a core-maintained API, so a future Pi
-release could change its shape without the same compatibility guarantees as
-`ExtensionAPI` itself.
+`lib/agents.ts` discovers agents (bundled `agents/*.md`, user, and project) and `lib/spawn.ts` runs a worker as a child `pi --mode json` process; `extensions/coordination/spawn-worker.ts` wires them into `foreman_delegate`.
+The vendored upstream `subagent` example was removed, so the standalone `subagent` tool no longer ships.
 
 ## Layout
 
@@ -276,10 +261,10 @@ PLAN.md                          — read this first
 extensions/
   orchestrator-guardrail/        — tool_call block + setActiveTools (foreman's guardrail)
   session-reminder/               — session_start + before_agent_start reminder (warns if foreman_delegate is not loaded; smoke-test.ts)
-  subagent-dispatch/              — adopted+patched upstream subagent example
   model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
   context-filter/                 — context-event pruning of stale task notifications (index.ts, smoke-test.ts, live-rpc.ts)
   coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts, live-phase3.ts)
+lib/                              — shared modules: agents.ts (discovery), spawn.ts (child pi spawning), with agents-test.ts / spawn-test.ts
 agents/                           — the 8 ported foreman subagent definitions
 skills/                           — the 4 ported foreman skills
 references/                       — supporting docs the skills point to
