@@ -191,32 +191,105 @@ instalado como devDependency deste repo (tipos reais de
 — não apenas a doc resumida. Ver `README.md` ("Status" e "O que não foi
 verificado ainda") pro estado exato de cada peça.
 
-- **Fase 0 — prova de conceito do guardrail. ✅ feito.** `extensions/orchestrator-guardrail/`
-  implementa `tool_call` block + `setActiveTools`, com 10/10 checks de lógica
-  passando (`npm run test:guardrail`) contra os tipos reais. **Não testado**
-  ainda dentro de uma sessão `pi` de verdade (sem runtime `pi` disponível
-  neste ambiente) — próximo passo real da Fase 0.
+- **Fase 0 — prova de conceito do guardrail. ✅ feito E verificado ao vivo
+  em 2026-11-11.** `extensions/orchestrator-guardrail/` implementa
+  `tool_call` block + `setActiveTools`, com 13/13 checks de lógica passando
+  (`npm run test:guardrail`) contra os tipos reais. Com `pi` 1.5.2 disponível
+  neste ambiente, rodamos sessões `pi --no-session -p --mode json` reais
+  (não apenas os fakes do smoke test) carregando a extensão via `--extension`
+  contra um diretório sandbox com `.orchestrator-active` presente, e
+  confirmamos ao vivo:
+  - `write` chamado pelo modelo retorna `"Tool write not found"` — a camada
+    proativa (`setActiveTools` em `turn_start`) já removeu a tool antes do
+    modelo tentar.
+  - `edit` igualmente ausente; o modelo cai de volta pra `read`.
+  - `bash` com `sed -i`, `printf ... > arquivo` e `echo ... > arquivo` são
+    bloqueados pela camada reativa (`tool_call`), com a razão exata do
+    `index.ts` devolvida como erro da tool.
+  - **Bug real encontrado e corrigido**: `ALLOWED_BASH_TARGET_PATTERNS`
+    incluía `.txt`/`.out` como "redirect de spot-check seguro" — isso deixava
+    `echo hacked > existing.txt` passar direto, sobrescrevendo o arquivo de
+    verdade (confirmado: o conteúdo virou `hacked`). `.txt` é um formato de
+    conteúdo real, não um sinal confiável de "é só log". Corrigido pra só
+    `.log` e `/dev/null`; teste de regressão adicionado no smoke test com o
+    comando exato que vazou.
 - **Fase 1 — portar skills. ✅ feito.** `SKILL.md` de `foreman`, `plan-runner`,
   `design-preview`, `project-memory` copiados pra `skills/` (convenção de
   pacote do Pi, descoberta automática sem manifesto — ver `packages.md`).
   Menções específicas do Claude Code (Artifact tool, `PreToolUse`,
   `NotebookEdit`, "Agent tool"/"create a new session") reescritas pros
   primitivos reais do Pi.
-- **Fase 2 — portar agentes + dispatcher de sub-agente. ✅ feito** (ver
-  `README.md`, "Why adopt the example"). Decisão da pergunta aberta 1:
-  adotar `examples/extensions/subagent/` (copiado pra
-  `extensions/subagent-dispatch/`) em vez de escrever do zero, com uma
-  mudança funcional documentada (agentes empacotados em `agents/*.md` são
-  descobertos junto dos de usuário/projeto, `source: "package"`). 8 agentes
-  portados (`backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`,
-  `plan-step-builder`, `release-manager`, `codebase-auditor`), confirmados
-  descobertos pelo dispatcher real (`npm run test:agents`).
+- **Fase 2 — portar agentes + dispatcher de sub-agente. ✅ feito E
+  verificado ao vivo em 2026-11-11** (ver `README.md`, "Why adopt the
+  example"). Decisão da pergunta aberta 1: adotar
+  `examples/extensions/subagent/` (copiado pra `extensions/subagent-dispatch/`)
+  em vez de escrever do zero, com uma mudança funcional documentada (agentes
+  empacotados em `agents/*.md` são descobertos junto dos de usuário/projeto,
+  `source: "package"`). 8 agentes portados (`backend-dev`, `frontend-dev`,
+  `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`,
+  `codebase-auditor`), confirmados descobertos pelo dispatcher real
+  (`npm run test:agents`).
+
+  Verificação ao vivo: um `pi --no-session -p --mode json` real, só com
+  `extensions/subagent-dispatch/` carregada, chamou a tool `subagent` com
+  `agent: "planner"`, confirmamos no log JSON (`message_end` com
+  `role: "toolResult"`) que um processo `pi` filho de fato subiu, rodou o
+  agente `planner` ported, leu `package.json` e devolveu o `name` correto
+  (`foreman-pi`) pro processo pai — não é só "a lógica de discovery passa no
+  smoke test", é "o subprocesso sobe e volta com resultado real". `agentScope`
+  só aceita `"user"|"project"|"both"` (não `"package"`), mas isso não importa:
+  agentes do pacote carregam independente do scope (ver `agents.ts`).
+
+  **Bug real encontrado e corrigido** durante o teste de integração completo
+  (guardrail + dispatch juntos, Fase 3 abaixo): o processo filho do dispatcher
+  **também** carregava `orchestrator-guardrail` por padrão — porque este
+  repo está instalado como pacote (`~/.pi/agent/settings.json`), a descoberta
+  automática de extensões do Pi carrega as extensões do pacote em *toda*
+  invocação de `pi` na máquina, não só na sessão explicitamente marcada como
+  orquestradora. O filho compartilha o cwd do pai, então via o mesmo
+  `.orchestrator-active` e teve sua própria `edit` tool removida no meio da
+  tarefa — contradizendo a suposição documentada ("sub-agente, sendo outro
+  processo, nunca carrega essa restrição"). `--no-extensions` no filho não
+  serve de solução geral: nenhum dos 8 agentes porta `model:` próprio, então
+  todos herdam o modelo da sessão pai — que nesta instalação é o modelo
+  virtual `foreman/hybrid` do `model-fallback`, que só existe se as extensões
+  do pacote carregarem. Corrigido com uma flag de ambiente
+  (`FOREMAN_PI_SUBAGENT=1`, setada pelo `spawn()` do dispatcher) que o
+  guardrail usa pra nunca se considerar ativo num processo filho, marcador
+  ou não. Confirmado ao vivo: com o fix, um `frontend-dev` sub-agente editou
+  `greet.js` com sucesso enquanto `.orchestrator-active` seguia presente no
+  diretório.
 - **Fase 3 — portar o guardrail completo + reminder de sessão. ✅ feito.**
   `extensions/session-reminder/` combina `session_start` (detecta marcador
   obsoleto num `startup`/`new`) + `before_agent_start` (injeta o aviso uma
   vez), como documentado na seção 3 abaixo. `references/orchestrator-marker.md`
   e `references/guardrail-troubleshooting.md` reescritos pra terminologia
   do Pi.
+
+  **Ciclo completo verificado ao vivo em 2026-11-11** (guardrail +
+  subagent-dispatch juntos, numa sessão `pi --no-session -p --mode json`
+  real, cwd compartilhado com `.orchestrator-active` presente):
+  1. Modelo tenta `edit` → tool ausente (removida proativamente); tenta
+     `bash` com redirecionamento → bloqueado reativamente com a razão do
+     `index.ts`.
+  2. Modelo chama `subagent` (`agent: "frontend-dev"`, `agentScope: "both"`).
+  3. O processo filho real sobe, lê `greet.js`, chama sua própria `edit` tool
+     — e, com o fix `FOREMAN_PI_SUBAGENT` da Fase 2, a edição é aplicada de
+     verdade: `greet.js` ganhou a linha `// greeting helper` no disco, com
+     `.orchestrator-active` presente durante todo o teste.
+  4. O resultado (sucesso/falha da edição) volta pro processo pai via stdout
+     JSON do filho, igual ao teste da Fase 2.
+
+  Nuance observada, não um bug: sem uma instrução explícita dizendo "o
+  marcador não te afeta, prossiga", o modelo rodando como sub-agente às vezes
+  prefere perguntar ("devo apagar o marcador?") em vez de agir, por cautela
+  genérica sobre um arquivo de convenção que ele reconhece do próprio
+  treinamento — isso é julgamento do modelo, não a extensão bloqueando nada
+  (confirmado comparando os dois casos: quando a extensão de fato bloqueia,
+  a tool resultante é removida/nega com a razão do `index.ts`; quando é só
+  cautela do modelo, não há remoção de tool nem `isError`, só um texto
+  perguntando). Vale uma frase no prompt do `foreman`/`plan-runner` deixando
+  isso explícito pro sub-agente nunca precisar adivinhar.
 - **Fase 4 — portar comandos de slash.** Não iniciada. `/foreman`,
   `/foreman-status`, `/foreman-audit`, `/foreman-diagnose`, `/plan-runner`
   via `pi.registerCommand(...)`.

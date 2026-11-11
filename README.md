@@ -14,14 +14,14 @@ This README only covers what exists in this repo right now and how to run it.
 
 | Piece | Status |
 |---|---|
-| `extensions/orchestrator-guardrail/` | **Built + tested.** `tool_call` block + `setActiveTools`. 10/10 logic checks pass against the real `@earendil-works/pi-coding-agent` types. Not yet run inside a live `pi` session (no `pi` runtime available in the environment this was built in — see "What's not verified yet" below). |
+| `extensions/orchestrator-guardrail/` | **Built, tested, and verified live in a real `pi` session (2026-11-11).** `tool_call` block + `setActiveTools`. 13/13 logic checks pass (`npm run test:guardrail`). Live-tested against a real `pi 1.5.2` session with a sandbox `.orchestrator-active` marker: `write`/`edit` confirmed removed from the active toolset before the model could call them, and `bash` with `sed -i` / `printf ... > file` / `echo ... > file` confirmed blocked reactively with the extension's own denial reason. **One real bug found and fixed by this testing**: `.txt`/`.out` were on the "safe spot-check redirect" allowlist, letting `echo hacked > existing.txt` overwrite a real file undetected — narrowed to `.log`/`/dev/null` only, with a regression test for the exact command that leaked through. |
 | `extensions/session-reminder/` | **Built**, matching Pi's own documented `session_start`/`before_agent_start` pattern for a one-shot reminder. Not yet run live. |
-| `extensions/subagent-dispatch/` | **Adopted + patched**, not written from scratch — see "Why adopt the example" below. One documented, tested change: bundled `agents/*.md` are discovered alongside user/project agents. |
-| `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. |
-| `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
+| `extensions/subagent-dispatch/` | **Adopted + patched, and verified live (2026-11-11).** A real `pi --no-session -p --mode json` run dispatched the `planner` agent, confirmed (via the JSON `toolResult` event) that a genuine child `pi` process spawned, read files in its own cwd, and returned real output to the parent — both for a trivial read (`package.json`'s `name` field) and for an actual feature-planning task (a structured, multi-step plan for a `/health` endpoint, reasoning from the real state of the sandbox directory). **One real bug found and fixed**: because this repo is installed as a package, Pi's default extension discovery loaded `orchestrator-guardrail` into the dispatcher's own child processes too, so a subagent sharing the orchestrator's cwd got its `edit` tool wrongly pulled out from under it mid-task — see "Subagent exemption bug" below. |
+| `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. `templates/handoff-prompt.md` now also tells a delegated subagent explicitly that `.orchestrator-active` doesn't apply to it, after a live test caught a subagent pausing to ask instead of just acting on an ambiguous marker file. |
+| `agents/` (8 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `release-manager`, `codebase-auditor`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`), and `planner`/`frontend-dev` confirmed to actually run correctly end to end in a live child process (see above). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
 | `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
 | `templates/`, `commands/` equivalents | **Not started.** |
-| Packaging for real install (`pi install ./foreman-pi` or via npm) | **Not verified.** The directory layout follows the documented package convention (`extensions/`, `skills/`, conventional discovery, no manifest needed) but has not actually been installed into a `pi` session. |
+| Packaging for real install (`pi install ./foreman-pi` or via npm) | **Verified by accident, not by design**: this repo is in fact installed as a package on the machine this verification ran on (`~/.pi/agent/settings.json` lists `https://github.com/MTBasso/foreman-pi` under `packages`), and its extensions and agents are confirmed auto-discovered in every `pi` invocation — that's exactly what surfaced the subagent-exemption bug above. `pi install ./foreman-pi` itself (the local-path install flow) has still not been run explicitly in this verification pass. |
 
 ## Model fallback (false-positive testing, not a refusal bypass)
 
@@ -53,36 +53,64 @@ talks to providers the same way it talks to Anthropic, via `OPENAI_API_KEY`
 exact catalog ids with `/models` inside `pi` or https://pi.dev/models before
 relying on the defaults.
 
-## What's not verified yet
+## Live verification (2026-11-11)
 
-This was built and tested against the **real type definitions and real
-example code** shipped in the `@earendil-works/pi-coding-agent@1.5.2` npm
-package (installed as a devDependency here specifically to check against —
-see `package.json`) — not guessed from documentation summaries. Every claim
-in PLAN.md about event shapes, `tool_call` blocking, `setActiveTools`, and
-the subagent frontmatter format was confirmed by reading the actual `.d.ts`
-files and the actual `examples/extensions/` source in that package.
+With `pi` 1.5.2 actually available, this was the first pass that ran these
+extensions inside real `pi --no-session -p --mode json` sessions instead of
+just the faked-API smoke tests. Summary (details inline in PLAN.md's "Fases
+— status"):
 
-What has **not** been done, because this environment has no way to run a
-live `pi` TUI/session:
+- **Guardrail**: confirmed blocking `write`/`edit`/bash-redirect/`sed -i` in
+  a real session with `.orchestrator-active` present, end to end. Found and
+  fixed a real bypass (`.txt`/`.out` redirect targets wrongly treated as safe).
+- **Subagent dispatch**: confirmed spawning a real child `pi` process for
+  both `planner` (produced an actual structured plan from the real directory
+  state) and `frontend-dev` (actually edited a file on disk).
+- **Integration**: confirmed the full cycle — orchestrator's own `edit`/`bash`
+  attempts blocked, delegates via `subagent`, the child process makes the
+  real edit. Found and fixed a real cross-contamination bug (next section).
 
-- Actually loading these extensions into a running `pi` session with
-  `pi --extension` and confirming the guardrail blocks a real `write` tool
-  call end to end.
-- Actually dispatching a subagent through `extensions/subagent-dispatch/`
-  and confirming it spawns a real child `pi` process, runs one of the 8
-  ported agents, and returns a result.
-- Installing this directory as a package with `pi install ./foreman-pi` and
-  confirming auto-discovery actually finds everything the way the
-  conventional-directory docs say it should.
+### Subagent exemption bug (found + fixed)
 
-The smoke tests in this repo (`npm test`) exercise the actual logic
-(`extensions/orchestrator-guardrail/index.ts`'s `tool_call` handler,
-`extensions/subagent-dispatch/agents.ts`'s `discoverAgents`) directly against
-the real types, with faked `ExtensionAPI`/`ExtensionContext` objects — they
-prove the logic is correct, not that Pi's runtime will drive it the way the
-fakes assume. Treat "builds and typechecks against the real API, logic
-verified standalone" as the actual state, not "confirmed working in Pi."
+The architecture doc (PLAN.md §1) assumed the guardrail never needs to tell
+orchestrator from subagent apart, because they're different `pi` processes
+and the subagent "never carries this restriction in the first place." That
+assumption breaks under this repo's actual, intended install path: once
+`foreman-pi` is registered as a package (`~/.pi/agent/settings.json`), Pi's
+default extension discovery loads `orchestrator-guardrail` into *every* `pi`
+invocation on the machine — including the child processes
+`subagent-dispatch` spawns. The child shares the orchestrator's cwd, so it
+saw the same `.orchestrator-active` marker and had its own `edit` tool
+removed mid-task (confirmed live: a `frontend-dev` subagent reported "the
+edit tool was taken away after I read greet.js").
+
+`--no-extensions` on the child isn't a general fix: none of the 8 ported
+agents pin their own `model:`, so they all inherit the orchestrator's model —
+on this install, that's the `model-fallback` extension's virtual
+`foreman/hybrid` model, which doesn't exist without that extension loaded.
+
+The actual fix: `subagent-dispatch` now sets `FOREMAN_PI_SUBAGENT=1` on every
+child it spawns (`extensions/subagent-dispatch/index.ts`'s `spawn()` call),
+and `orchestrator-guardrail` treats that env var as "never active," marker or
+no marker (`extensions/orchestrator-guardrail/index.ts`'s `isOrchestratorActive`).
+Verified live afterward: a `frontend-dev` subagent successfully edited a file
+on disk while `.orchestrator-active` was present in the shared cwd the whole
+time.
+
+Separately, a live test also caught the *model itself* (not the guardrail)
+pausing to ask "should I delete this marker?" instead of just acting, when
+given an ambiguous task that didn't say the marker was irrelevant to it —
+`templates/handoff-prompt.md` now has a line telling a delegated subagent
+this explicitly, so it never has to guess.
+
+### Still not run
+
+- `pi install ./foreman-pi` as an explicit local-path install command (this
+  machine already had the package registered from before this session, so
+  the install flow itself, as opposed to its *effect*, wasn't exercised here).
+- `extensions/session-reminder/` and `extensions/model-fallback/` live
+  (both still only have the faked-API smoke tests passing).
+- The slash-command equivalents (Fase 4) — not started at all yet.
 
 ## Why adopt the example instead of writing a dispatcher from scratch
 
