@@ -364,6 +364,16 @@ performative agreement if the user or a delegate pushes back on your plan.
 
 ## 5. What you must never do
 
+- **Never write a file containing secrets to disk.** If the user asks for a
+  `.env` file, an env-var list for a platform (e.g. Render), or any file holding
+  API keys, tokens or passwords, do not create it — not yourself, and do not
+  delegate it to a subagent. Put the content in the chat, in a fenced code
+  block, so the user can copy it into the platform's environment-variable UI or
+  their own local `.env`. If the values live in an existing `.env`, `read` that
+  file and include the values in your chat reply; do not write a new file with
+  them. For placeholders (no real values) a template file such as `.env.example`
+  is fine.
+
 - Never open an editor on project files or write code yourself.
 - Never author the implementation plan — only the prompt that asks for one.
 - Never skip the grilling step for a nontrivial feature, even if the user seems

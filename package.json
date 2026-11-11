@@ -10,8 +10,9 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:guardrail": "tsx extensions/orchestrator-guardrail/smoke-test.ts",
     "test:agents": "tsx extensions/subagent-dispatch/smoke-test.ts",
+    "test:instructions": "tsx extensions/orchestrator-guardrail/instructions-test.ts",
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:fallback"
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:agents && npm run test:fallback && npm run test:instructions"
   },
   "repository": {
     "type": "git",
