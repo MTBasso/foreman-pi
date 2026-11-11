@@ -34,7 +34,7 @@
  * extension can exempt them.
  */
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { isToolCallEventType, type ExtensionAPI, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 
 const MARKER_NAME = ".orchestrator-active";
@@ -96,8 +96,8 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-			const path = event.input.path;
-			if (path.endsWith("FOREMAN_MEMORY.md")) {
+			// Exempt only the project-root FOREMAN_MEMORY.md, not that filename elsewhere.
+			if (resolve(ctx.cwd, event.input.path) === join(ctx.cwd, "FOREMAN_MEMORY.md")) {
 				return undefined;
 			}
 			return {

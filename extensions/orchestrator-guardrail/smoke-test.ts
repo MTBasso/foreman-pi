@@ -69,6 +69,14 @@ async function main() {
 	// 3. FOREMAN_MEMORY.md exception still allowed.
 	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "FOREMAN_MEMORY.md", content: "x" } }, ctx);
 	check("FOREMAN_MEMORY.md write allowed with marker", r === undefined);
+	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: join(dir, "FOREMAN_MEMORY.md"), content: "x" } }, ctx);
+	check("absolute root FOREMAN_MEMORY.md write allowed with marker", r === undefined);
+	r = await fire(handlers, "tool_call", { toolName: "edit", input: { path: "FOREMAN_MEMORY.md", edits: [] } }, ctx);
+	check("FOREMAN_MEMORY.md edit allowed with marker", r === undefined);
+	for (const path of ["sub/FOREMAN_MEMORY.md", "/tmp/FOREMAN_MEMORY.md"]) {
+		r = await fire(handlers, "tool_call", { toolName: "write", input: { path, content: "x" } }, ctx);
+		check(`non-root ${path} write blocked with marker`, r?.block === true);
+	}
 
 	// 4. bash is blocked outright, read-only or not.
 	for (const command of ["sed -i s/a/b/ src/app.js", "npm test", "cat package.json", "echo x > a.txt"]) {
