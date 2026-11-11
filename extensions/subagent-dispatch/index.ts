@@ -504,6 +504,16 @@ async function runSingleAgent(
 					cwd: effectiveCwd,
 					shell: false,
 					stdio: ["ignore", "pipe", "pipe"],
+					// Flag this process as a subagent child for orchestrator-guardrail
+					// (see FOREMAN_PI_SUBAGENT in that extension's index.ts). Needed
+					// because when foreman-pi is installed as a package, its
+					// extensions auto-discover into every `pi` invocation on this
+					// machine by default -- including this child -- so the guardrail
+					// would otherwise see the parent's .orchestrator-active marker
+					// (same cwd) and wrongly restrict the child's write/edit too.
+					// Confirmed live: without this, a frontend-dev subagent's edit
+					// tool was pulled out from under it mid-task.
+					env: { ...process.env, FOREMAN_PI_SUBAGENT: "1" },
 				});
 			} catch (error) {
 				finish({

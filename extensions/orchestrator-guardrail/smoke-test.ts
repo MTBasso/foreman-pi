@@ -91,6 +91,18 @@ async function main() {
 	check("edit removed from active tools", !active.includes("edit"));
 	check("bash kept in active tools", active.includes("bash"));
 
+	// Regression: a live `pi` session confirmed that when foreman-pi is
+	// installed as a package, this extension auto-loads into subagent-dispatch's
+	// child `pi` processes too (default extension discovery), not just the
+	// orchestrator. subagent-dispatch sets FOREMAN_PI_SUBAGENT=1 on each child
+	// specifically so this extension can tell the two apart and exempt the child.
+	process.env.FOREMAN_PI_SUBAGENT = "1";
+	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "src/app.js", content: "x" } }, ctx);
+	check("write allowed in subagent child despite marker", r === undefined);
+	r = await fire(handlers, "tool_call", { toolName: "bash", input: { command: "sed -i s/a/b/ src/app.js" } }, ctx);
+	check("sed -i allowed in subagent child despite marker", r === undefined);
+	delete process.env.FOREMAN_PI_SUBAGENT;
+
 	rmSync(dir, { recursive: true, force: true });
 
 	if (failures > 0) {

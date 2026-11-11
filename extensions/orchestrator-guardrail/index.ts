@@ -13,10 +13,21 @@
  *    backstop, in case active tools were restored mid-turn or bash is used to
  *    route around the missing tools.
  *
- * Subagents need none of this: each one runs as its own `pi` process (see
- * extensions/subagent-dispatch/), with its own tools from its agent .md
- * frontmatter. There is no agent_id-style distinction to make here, unlike the
- * Claude Code hook this replaces — parent and child are different processes.
+ * Subagents are intended to need none of this: each one runs as its own `pi`
+ * process (see extensions/subagent-dispatch/), with its own tools from its
+ * agent .md frontmatter. There is no agent_id-style distinction to make here,
+ * unlike the Claude Code hook this replaces — parent and child are different
+ * processes... EXCEPT that when foreman-pi is installed as a package (see
+ * README.md's packaging section), Pi's default extension discovery loads
+ * this extension into *every* `pi` invocation on the machine, including the
+ * subagent-dispatch child processes themselves (they don't pass
+ * --no-extensions, since they still need other installed extensions, e.g.
+ * the model-fallback virtual model agents inherit by default). Without the
+ * check below, a child sharing the orchestrator's cwd would see the same
+ * `.orchestrator-active` marker and get wrongly restricted — confirmed live,
+ * a frontend-dev subagent's `edit` tool vanished mid-task. subagent-dispatch
+ * sets FOREMAN_PI_SUBAGENT=1 on every child it spawns specifically so this
+ * extension can exempt them.
  */
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -52,6 +63,7 @@ function markerPath(cwd: string): string {
 }
 
 function isOrchestratorActive(cwd: string): boolean {
+	if (process.env.FOREMAN_PI_SUBAGENT === "1") return false;
 	return existsSync(markerPath(cwd));
 }
 
