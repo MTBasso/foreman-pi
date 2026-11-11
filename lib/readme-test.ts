@@ -120,14 +120,12 @@ function walk(dir: string): string[] {
 		return e.isDirectory() ? walk(full) : [path.relative(ROOT, full).split(path.sep).join("/")];
 	});
 }
-const isTest = (f: string) => /(^|\/)(smoke-test|instructions-test|live-[^/]*|[^/]*-test)\.ts$/.test(f);
 const scanned = walk(ROOT).filter(
 	(f) =>
 		/\.(md|ts|json|yml|yaml)$/.test(f) &&
 		f !== "package-lock.json" &&
 		!f.startsWith(".claude/") &&
-		!HISTORICAL.some((h) => f === h || f.startsWith(h)) &&
-		!isTest(f),
+		!HISTORICAL.some((h) => f === h || f.startsWith(h)),
 );
 check("grep gate scans the docs and source", scanned.includes("README.md") && scanned.includes("lib/roles.ts") && scanned.includes("skills/foreman/SKILL.md"));
 for (const [label, re] of STALE) {

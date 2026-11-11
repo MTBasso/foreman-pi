@@ -31,8 +31,11 @@ name) and a HEAD SHA, and `User language:`.
    wrong behavior, unhandled errors, security issues (secrets, injection,
    unsafe commands), missing or weak tests, files touched twice by different
    waves with conflicting intent.
-3. Read surrounding code when a hunk alone is not enough. Run read-only
-   checks (tests, typecheck) only if the handoff asks for it.
+3. Read surrounding code when a hunk alone is not enough. You never run
+   tests, builds or typechecks: your shell is read-only (git, grep, cat and
+   similar), and the `qa` role runs tests. If the handoff lists check results
+   from `qa`, cite them as reported by `qa`; otherwise say in the findings
+   that tests were not run by you and need a `qa` pass.
 4. Rate each finding: `critical` (must fix before shipping), `important`
    (should fix), or `minor` (optional). Give `file:line` and why it matters.
    Do not pad: say plainly when nothing is wrong.
@@ -55,3 +58,5 @@ Report `Status: completed` when the review ran (the verdict can still be
 `changes-requested`), `Status: blocked` when the SHAs cannot be resolved,
 and `Status: failed` on an error that prevented the review.
 Put the reviewed `BASE_SHA..HEAD_SHA` in `Summary` so a later shipper can cite it.
+State plainly in the findings that tests, typecheck and build were not run by
+you (the `qa` role runs them), so nobody reads the review as a green run.

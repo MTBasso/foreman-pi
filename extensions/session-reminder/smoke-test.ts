@@ -61,6 +61,23 @@ function ctxFor(opts: { cwd?: string; branch?: any[]; hasUI?: boolean; confirm?:
 const remind = async (h: Record<string, any>, ctx: any) => (await h.before_agent_start({ messageType: "user" }, ctx))?.message?.content as string | undefined;
 
 async function main() {
+	// Workers get no reminder at all: nothing registered, so no text and no foreman_delegate warning.
+	{
+		process.env.FOREMAN_PI_SUBAGENT = "1";
+		const s = setup();
+		await extension(s.api);
+		check("subagent worker: extension registers no handlers", Object.keys(s.handlers).length === 0, Object.keys(s.handlers).join());
+		resetEnv();
+		const s2 = setup();
+		await extension(s2.api);
+		check("non-worker session still registers the reminder handlers", typeof s2.handlers.session_start === "function" && typeof s2.handlers.before_agent_start === "function");
+		process.env.FOREMAN_PI_SUBAGENT = "0";
+		const s3 = setup();
+		await extension(s3.api);
+		check("FOREMAN_PI_SUBAGENT=0 is not a worker", typeof s3.handlers.before_agent_start === "function");
+		resetEnv();
+	}
+
 	// Basic: warning and base text.
 	{
 		const s = setup();
@@ -109,8 +126,7 @@ async function main() {
 		process.env.FOREMAN_PI_SUBAGENT = "1";
 		const s4 = setup([{ name: "foreman_delegate" }]);
 		await extension(s4.api);
-		await s4.handlers.session_start({ reason: "startup" }, ctxFor({}).ctx);
-		check("line: worker process is inactive (subagent) even with env=orchestrator", /Orchestrator mode: inactive \(subagent\)/.test((await remind(s4.handlers, {})) ?? ""));
+		check("worker process (even with env=orchestrator) gets no reminder and no mode line", s4.handlers.session_start === undefined && s4.handlers.before_agent_start === undefined);
 		resetEnv();
 	}
 

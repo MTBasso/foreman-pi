@@ -31,6 +31,37 @@ redirects, skips heredoc bodies, and recurses into `$(...)`, backticks and
 `sh -c '...'`. It denies `eval`, process substitution, unbalanced quotes,
 `sudo`, and any redirect or path argument built from `$VAR`, a glob or `~`.
 
+Details worth knowing:
+
+- `VAR=$(cmd)` and ``VAR=`cmd` `` assignments are allowed; the inner command is
+  parsed and judged like any other. A dynamic command *name* (`$(echo rm) x`,
+  `$CMD x`) stays denied.
+- Wrappers are unwrapped with their options, so `time -p rm -rf x`,
+  `exec -a name rm ...`, `env -u V`, `nice -n 5`, `timeout -k 5 10`, `nohup`,
+  `command` and `builtin` judge the real command. `env -S` is denied (its
+  string is a command line the guard cannot see).
+- Read-only roles: `sed` is parsed as sed (addresses, `s` delimiter and flags,
+  `-e`/`--expression`/attached forms). Any `w`, `W`, `e` command or `s///w`,
+  `s///e` flag, `-i`/`--in-place` and `-f` is denied, as is a script built from
+  a variable. `xxd` is not on the allowlist (it can write its second operand).
+  The reviewer never runs tests (`npm`, `node`, `tsx` are not allowed); `qa` does.
+- `find`: scoped roles (`qa`, `codebase-auditor`, `shipper`) may not use
+  `-delete`, `-exec`, `-execdir`, `-ok`, `-okdir`, `-fprint*` or `-fls`. Dev and
+  builder roles may use `-delete` only with literal start paths inside the repo
+  (not the repo root, not `.git`) or inside the temp dir; `-exec`/`-execdir`/
+  `-ok`/`-okdir` run the given command through this same policy as if typed
+  directly (`{}` counts as unresolvable), and `-execdir` commands may not use
+  `..`. `-fprint*`/`-fls` targets are path-checked.
+- `cd` is tracked within a command string: later relative paths resolve against
+  the new directory, so `cd .foreman && echo x > f` is allowed for `qa` and
+  `cd src && echo x > f` is not. `( ... )`, `$( ... )`, a pipeline and a
+  background `cd x &` are scoped (they do not change the parent's directory).
+  A `cd` to something unresolvable (`$VAR`, `~`, a glob, no argument, `cd -`,
+  `pushd`/`popd`), a `cd` that is conditional (`a && cd x; ...`, inside
+  `if`/`while`/`case`) or one whose target does not exist yet, followed by a
+  command outside its `&&` chain, makes the directory unknown, and every later
+  relative path is denied. Absolute paths still resolve.
+
 ## Honest limits
 
 This is a heuristic guard, not a sandbox.
@@ -38,7 +69,12 @@ This is a heuristic guard, not a sandbox.
 - Interpreters and build tools write anywhere: `node script.js`,
   `python x.py`, `make`, `npm run ...`, `git` hooks, `awk`, `tar`, `curl -o`.
   Only commands the parser can see are judged.
-- Shell functions, `source`d files and scripts are not followed.
+- Shell functions, `source`d files and scripts are not followed. A `cd` inside a
+  function body is not modelled either (only `case`/`select`/`function` heads
+  make later `cd`s fail closed); `CDPATH` is ignored, and a `cd` into a
+  directory the worker cannot enter is assumed to succeed.
+- `sed` in non-read-only roles is only checked for `-i`; its `w` commands are
+  not path-checked there.
 - Dev roles' non-`rm` mutating commands (`cp`, `mv`, ...) are checked only when
   the argument is literal; `rm -r` and redirects fail closed on unresolvable ones.
 - A path can change between the check and the write (time-of-check/time-of-use).

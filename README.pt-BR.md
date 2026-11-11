@@ -11,8 +11,9 @@ conta própria.
 
 Versão 0.2.0. Veja o [CHANGELOG.md](CHANGELOG.md) (em inglês) para o que mudou.
 O contexto de design e a pesquisa de viabilidade original estão em
-[PLAN.md](PLAN.md); o plano de implementação da 0.2.0 é
-[docs/plans/foreman-pi-pi-native-improvements.md](docs/plans/foreman-pi-pi-native-improvements.md).
+[PLAN.md](https://github.com/MTBasso/foreman-pi/blob/main/PLAN.md); o plano de implementação da 0.2.0 é
+[docs/plans/foreman-pi-pi-native-improvements.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/plans/foreman-pi-pi-native-improvements.md).
+(Esses dois arquivos ficam no repositório e não fazem parte do pacote publicado.)
 
 ## Instalação
 
@@ -267,7 +268,7 @@ timeout 20 pi --no-session --print --verbose "hi" 2>&1 | grep -iE "error|failed 
 
 Sem saída significa que as extensões carregaram sem erro. As notas históricas
 de verificação ao vivo do port 0.1.x estão em
-[docs/verification-log.md](docs/verification-log.md) (em inglês).
+[docs/verification-log.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/verification-log.md) (em inglês).
 
 ## Estrutura
 

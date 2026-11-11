@@ -1,14 +1,14 @@
 /**
  * Real install check for the packed foreman-pi tarball (`npm run test:package`).
  *
- *   1. hash the REAL ~/.pi/agent/settings.json
+ *   1. hash the REAL ~/.pi/agent/{settings,auth,models}.json (a missing file hashes as "absent")
  *   2. `npm pack`, extract, assert the tarball contents
  *   3. build a sandbox env (PI_CODING_AGENT_DIR, HOME, offline/no-telemetry flags)
  *   4. `pi install <extracted dir>` + `pi list`
  *   5. `pi --mode rpc --no-session` + `get_commands` (skills from the package, no load errors)
  *   6. `pi --list-models` still lists `foreman hybrid` (model-fallback loads)
  *   7. import lib/agents.ts from the extracted copy, assert the package agents
- *   8. re-hash the real settings: must be unchanged
+ *   8. re-hash them: all must be unchanged
  *
  * Never writes to the real pi dir: every `pi`/`npm` child runs with a sandbox
  * HOME and PI_CODING_AGENT_DIR under a temp dir that is removed in `finally`.
@@ -26,7 +26,9 @@ import { fileURLToPath } from "node:url";
 
 const REPO = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REAL_HOME = os.homedir();
-const REAL_SETTINGS = path.join(process.env.PI_CODING_AGENT_DIR ?? path.join(REAL_HOME, ".pi", "agent"), "settings.json");
+const REAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR ?? path.join(REAL_HOME, ".pi", "agent");
+/** Files in the real agent dir that must be byte-identical before and after (read-only: never written here). */
+const WATCHED_FILES = ["settings.json", "auth.json", "models.json"];
 
 // --- expected lists (extend per phase) --------------------------------------
 const EXPECTED_EXTENSIONS = ["context-filter", "coordination", "foreman-mode", "model-fallback", "orchestrator-guardrail", "session-reminder", "worker-guard"];
@@ -116,8 +118,8 @@ function rpc(env: NodeJS.ProcessEnv, cwd: string, command: object, timeoutMs = 3
 }
 
 async function main() {
-	// 1. real settings hash
-	const before = hashFile(REAL_SETTINGS);
+	// 1. real agent-dir hashes
+	const before = Object.fromEntries(WATCHED_FILES.map((f) => [f, hashFile(path.join(REAL_AGENT_DIR, f))]));
 	const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "foreman-check-package-"));
 	try {
 		const sandboxHome = path.join(tmp, "home");
@@ -138,7 +140,7 @@ async function main() {
 		// A parent worker/orchestrator env must not leak in: the mode commands are no-ops in worker processes.
 		delete env.FOREMAN_PI_SUBAGENT;
 		delete env.FOREMAN_PI_MODE;
-		check("sandbox dirs are outside the real pi dir", ![agentDir, sandboxHome].some((d) => d.startsWith(path.dirname(REAL_SETTINGS))));
+		check("sandbox dirs are outside the real pi dir", ![agentDir, sandboxHome].some((d) => d.startsWith(REAL_AGENT_DIR)));
 
 		// 2. npm pack + extract + assert contents
 		const pack = run("npm", ["pack", REPO, "--pack-destination", packDir, "--json", "--ignore-scripts"], env, work);
@@ -236,9 +238,11 @@ console.log(JSON.stringify(r.agents.map((a: any) => ({ name: a.name, source: a.s
 		}
 	} finally {
 		fs.rmSync(tmp, { recursive: true, force: true });
-		// 8. real settings unchanged
-		const after = hashFile(REAL_SETTINGS);
-		check("real settings.json unchanged", after === before, `${before} -> ${after}`);
+		// 8. real agent-dir files unchanged
+		for (const f of WATCHED_FILES) {
+			const after = hashFile(path.join(REAL_AGENT_DIR, f));
+			check(`real ${f} unchanged`, after === before[f], `${before[f]} -> ${after}`);
+		}
 	}
 }
 

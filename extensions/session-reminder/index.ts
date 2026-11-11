@@ -133,6 +133,9 @@ export function missingDelegateWarning(getAllTools: () => { name: string }[]): s
 }
 
 export default function (pi: ExtensionAPI) {
+	// Workers (FOREMAN_PI_SUBAGENT=1, see lib/spawn.ts workerEnv) are not orchestrator sessions: no reminder,
+	// and no false "foreman_delegate not loaded" warning (workers never get that tool).
+	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
 	const tracker = createModeTracker(pi);
 	let pendingReminder: string | null = null;
 

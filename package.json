@@ -1,7 +1,7 @@
 {
   "name": "foreman-pi",
   "version": "0.2.0",
-  "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see PLAN.md.",
+  "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see https://github.com/MTBasso/foreman-pi.",
   "type": "module",
   "keywords": [
     "pi-package",

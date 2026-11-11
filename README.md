@@ -9,9 +9,10 @@ orchestrator session that grills, plans, builds, tests and ships, always
 delegating to dedicated worker agents and never editing code itself.
 
 Version 0.2.0. See [CHANGELOG.md](CHANGELOG.md) for what changed. Design
-background and the original viability research are in [PLAN.md](PLAN.md)
+background and the original viability research are in [PLAN.md](https://github.com/MTBasso/foreman-pi/blob/main/PLAN.md)
 (Portuguese); the 0.2.0 implementation plan is
-[docs/plans/foreman-pi-pi-native-improvements.md](docs/plans/foreman-pi-pi-native-improvements.md).
+[docs/plans/foreman-pi-pi-native-improvements.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/plans/foreman-pi-pi-native-improvements.md).
+(These two files live in the repository and are not part of the published package.)
 
 ## Install
 
@@ -281,7 +282,7 @@ timeout 20 pi --no-session --print --verbose "hi" 2>&1 | grep -iE "error|failed 
 ```
 
 No output means the extensions loaded cleanly. Historical live-run notes from
-the 0.1.x port are kept in [docs/verification-log.md](docs/verification-log.md).
+the 0.1.x port are kept in [docs/verification-log.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/verification-log.md).
 
 ## Layout
 

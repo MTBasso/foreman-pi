@@ -140,11 +140,12 @@ async function main() {
 	check("on again: restricted immediately", getActiveTools().join() === "read,grep,find,ls,foreman_delegate", getActiveTools().join());
 	events.emit(MODE_EVENT, { active: true });
 
-	// Regression: a live `pi` session confirmed that when foreman-pi is
-	// installed as a package, this extension auto-loads into subagent-dispatch's
-	// child `pi` processes too (default extension discovery), not just the
-	// orchestrator. subagent-dispatch sets FOREMAN_PI_SUBAGENT=1 on each child
-	// specifically so this extension can tell the two apart and exempt the child.
+	// Regression: when foreman-pi is installed as a package, this extension
+	// auto-loads into the worker `pi` processes that foreman_delegate spawns too
+	// (default extension discovery), not just the orchestrator. The coordination
+	// extension sets FOREMAN_PI_SUBAGENT=1 on each worker (lib/spawn.ts
+	// `workerEnv`) specifically so this extension can tell the two apart and
+	// exempt the worker.
 	process.env.FOREMAN_PI_SUBAGENT = "1";
 	r = await fire(handlers, "tool_call", { toolName: "write", input: { path: "src/app.js", content: "x" } }, ctx);
 	check("write allowed in subagent child despite orchestrator mode", r === undefined);

@@ -21,8 +21,8 @@ implementers, so paste everything it needs; do not tell it to go find it.
 ## Known loose ends
 <anything flagged BLOCKED, deferred or out of scope, so the reviewer does not flag it as a surprise>
 
-## Checks to run
-<none, or the read-only checks to run (tests, typecheck)>
+## QA results to cite
+<the qa role's reported results for this range (tests, typecheck), or "none yet". The reviewer is read-only and never runs tests; it reports them as not run by itself.>
 
 ## User language
 User language: <en | pt-BR — taken from the user's messages, default en>.
