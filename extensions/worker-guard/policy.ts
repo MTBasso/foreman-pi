@@ -224,6 +224,8 @@ interface PState {
 	scope: number;
 	nextScope: number;
 	scopeParent: Map<number, number>;
+	/** A `name() { ... }` function definition was seen (its body is not modelled). */
+	funcDef?: boolean;
 }
 class ParseError extends Error {}
 
@@ -545,6 +547,7 @@ function parseInto(src: string, depth: number, st: PState): void {
 				checkArithmetic(src.slice(i + 1, e));
 				i = e + 1;
 			} else {
+				if (cur.words.length === 1 && /^[ \t]*\)/.test(src.slice(i + 1))) st.funcDef = true;
 				endCmd(false, ";", true);
 				scopeStack.push(st.scope);
 				const parent = st.scope;
@@ -601,33 +604,44 @@ interface Unwrapped {
 	wrappers: string[];
 	/** Set when a wrapper option hides a command that cannot be checked (env -S). */
 	opaque?: string;
+	/** `env -C DIR` / `--chdir=DIR`: the wrapped command runs in DIR (a dynamic word means unknown). */
+	chdir?: Word;
 }
 
 /** Drop leading `if`/`then`/`time -p`/`!`... words; `cond` is true when the command may not run. */
-function stripHead(input: Word[]): { words: Word[]; cond: boolean } {
+function stripHead(input: Word[]): { words: Word[]; cond: boolean; neg: boolean } {
 	let words = [...input];
 	let cond = false;
+	let neg = false;
 	for (;;) {
 		const t = words.length && !words[0].dynamic ? words[0].text : undefined;
 		if (t === "function") words = words.slice(2);
 		else if (t !== undefined && HEAD_STRIP.has(t)) {
 			if (COND_HEAD.has(t)) cond = true;
+			if (t === "!") neg = true;
 			words.shift();
 			if (t === "time") while (words.length && !words[0].dynamic && (words[0].text === "-p" || words[0].text === "--")) words.shift();
 		} else break;
 	}
-	return { words, cond };
+	return { words, cond, neg };
 }
+
+const UNKNOWN_DIR: Word = { text: "", dynamic: true, glob: false, tilde: false };
 
 function unwrap(words: Word[]): Unwrapped | undefined {
 	const wrappers: string[] = [];
 	let opaque: string | undefined;
+	let chdir: Word | undefined;
+	const setChdir = (w: Word | undefined) => {
+		// a second -C is relative to the first; treat it as unknown rather than composing
+		chdir = chdir || !w ? UNKNOWN_DIR : w;
+	};
 	let i = 0;
 	for (;;) {
 		// A dynamic word is still an assignment when its literal prefix is NAME= (`BASE=$(git ...)`);
 		// the substitution inside was already parsed and policed when the word was scanned.
 		while (i < words.length && ASSIGN.test(words[i].text)) i++;
-		if (i >= words.length) return opaque ? { name: words[words.length - 1], args: [], wrappers, opaque } : undefined;
+		if (i >= words.length) return opaque ? { name: words[words.length - 1], args: [], wrappers, opaque, chdir } : undefined;
 		const w = words[i];
 		const base = w.dynamic ? "" : path.basename(w.text);
 		if (!w.dynamic && WRAPPERS.has(base)) {
@@ -641,11 +655,14 @@ function unwrap(words: Word[]): Unwrapped | undefined {
 				if (opt === "--") break;
 				if (base === "env" && (opt === "--split-string" || opt.startsWith("--split-string=") || /^-[A-Za-z]*S/.test(opt))) opaque = `"env ${opt}" runs a command line that cannot be checked`;
 				if (opt.startsWith("--")) {
+					if (base === "env" && opt.startsWith("--chdir=")) setChdir({ text: opt.slice(8), dynamic: false, glob: false, tilde: false });
+					else if (base === "env" && opt === "--chdir") setChdir(words[i]);
 					if (!opt.includes("=") && withArg.includes(opt)) i++;
 				} else {
 					// short cluster: an arg-taking letter consumes the rest of the cluster, or the next word
 					for (let k = 1; k < opt.length; k++) {
 						if (shortArg.has(opt[k])) {
+							if (base === "env" && opt[k] === "C") setChdir(k === opt.length - 1 ? words[i] : { text: opt.slice(k + 1), dynamic: false, glob: false, tilde: false });
 							if (k === opt.length - 1) i++;
 							break;
 						}
@@ -655,7 +672,7 @@ function unwrap(words: Word[]): Unwrapped | undefined {
 			if (base === "timeout" && i < words.length) i++;
 			continue;
 		}
-		return { name: w, args: words.slice(i + 1), wrappers, opaque };
+		return { name: w, args: words.slice(i + 1), wrappers, opaque, chdir };
 	}
 }
 
@@ -924,6 +941,14 @@ function sedProblem(args: Word[], readonly: boolean): string | undefined {
 const FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 const FIND_FPRINT = new Set(["-fprint", "-fprint0", "-fprintf", "-fls"]);
 
+/** True when an exec'd command is a plain read-only one (so `{}` operands cannot make it write). */
+function execReadOnly(ctx: Ctx, sub: Word[]): boolean {
+	const un = unwrap(sub);
+	if (!un || un.wrappers.length || un.chdir || un.name.dynamic) return false;
+	const name = path.basename(un.name.text);
+	return name !== "find" && readonlyProblem({ ...ctx, kind: "readonly" }, name, un.args) === undefined;
+}
+
 /**
  * `find` can delete, run commands and write files. Scoped roles may use none of that. Dev/builder roles may
  * `-delete` only under an in-repo (or temp) start path that is not the repo root, and `-exec`/`-execdir`/`-ok`
@@ -945,6 +970,7 @@ function findProblem(ctx: Ctx, args: Word[], cmd: Cmd, all: Cmd[], depth: number
 		starts.push(w);
 	}
 	let deleting = false;
+	let what = "-delete";
 	for (let i = k; i < args.length; i++) {
 		const w = args[i];
 		if (w.dynamic) continue;
@@ -968,19 +994,23 @@ function findProblem(ctx: Ctx, args: Word[], cmd: Cmd, all: Cmd[], depth: number
 			const subCmd: Cmd = { words: sub, redirects: [], pipeline: cmd.pipeline, pipeIn: false, scope: cmd.scope, sepBefore: ";", sepAfter: ";" };
 			const p = evalCmd(ctx, subCmd, all, depth + 1);
 			if (p) return `"find ${t}" command: ${p}`;
+			if (sub.some((x) => x.text.includes("{}")) && !execReadOnly(ctx, sub)) {
+				deleting = true;
+				what = t;
+			}
 			i = j;
 		}
 	}
 	if (deleting) {
 		const roots = starts.length ? starts : [{ text: ".", dynamic: false, glob: false, tilde: false }];
 		for (const w of roots) {
-			if (unresolvable(w)) return `"find -delete" start path "${w.text}" contains a variable, glob, ~ or substitution and cannot be resolved`;
+			if (unresolvable(w)) return `"find ${what}" start path "${w.text}" contains a variable, glob, ~ or substitution and cannot be resolved`;
 			const abs = resolveArg(ctx, w.text);
-			if (abs === null) return `"find -delete" start path "${w.text}" could not be resolved`;
+			if (abs === null) return `"find ${what}" start path "${w.text}" could not be resolved`;
 			if (inside(ctx.root, abs)) {
-				if (abs === ctx.root) return '"find -delete" would delete the repository root contents';
-				if (path.relative(ctx.root, abs).split(path.sep).includes(".git")) return '"find -delete" would delete inside .git';
-			} else if (!inside(ctx.tmp, abs, true)) return `"find -delete" start path "${w.text}" resolves outside the repository (${abs})`;
+				if (abs === ctx.root) return `"find ${what}" would act on the repository root contents`;
+				if (path.relative(ctx.root, abs).split(path.sep).includes(".git")) return `"find ${what}" would act inside .git`;
+			} else if (!inside(ctx.tmp, abs, true)) return `"find ${what}" start path "${w.text}" resolves outside the repository (${abs})`;
 		}
 	}
 	return undefined;
@@ -1135,7 +1165,7 @@ function readonlyProblem(ctx: Ctx, name: string, args: Word[]): string | undefin
 function scopedProblem(ctx: Ctx, name: string, args: Word[], un: Unwrapped): string | undefined {
 	if (un.wrappers.includes("xargs")) return "xargs can run any command on unknown paths and is not allowed";
 	if (name === "sed") {
-		const p = sedProblem(args, false);
+		const p = sedProblem(args, true);
 		if (p) return p;
 	}
 	if (name === "perl" && args.some((w) => !w.dynamic && /^-[A-Za-z]*i/.test(w.text))) return "perl -i edits files in place and is not allowed";
@@ -1214,6 +1244,7 @@ function evalCmd(ctx: Ctx, cmd: Cmd, all: Cmd[], depth: number): string | undefi
 	const un = unwrap(words);
 	if (!un) return undefined;
 	if (un.opaque) return un.opaque;
+	if (un.chdir) ctx = { ...ctx, cwd: cdTarget(ctx.cwd, ctx.root, [un.chdir]).dir };
 	if (un.name.dynamic) return "the command name is built from a variable or substitution and cannot be checked";
 	const name = path.basename(un.name.text);
 	const args = un.args;
@@ -1276,7 +1307,7 @@ function evalScript(ctx: Ctx, script: string, depth: number): string | undefined
 		return e instanceof ParseError ? `the command could not be parsed safely (${e.message})` : "the command could not be parsed safely";
 	}
 	// Control flow we do not model (`case`, `select`, function bodies): any cd makes the cwd unknown.
-	const complex = st.cmds.some((c) => c.words.length > 0 && !c.words[0].dynamic && ["case", "select", "function"].includes(c.words[0].text));
+	const complex = st.cmds.some((c) => c.words.length > 0 && !c.words[0].dynamic && ["case", "select", "function"].includes(c.words[0].text)) || st.funcDef === true;
 	const states = new Map<number, CwdState>();
 	const stateOf = (scope: number): CwdState => {
 		let s = states.get(scope);
@@ -1304,19 +1335,20 @@ function evalScript(ctx: Ctx, script: string, depth: number): string | undefined
 
 /** Update the tracked cwd for a `cd` (or pushd/popd) command. */
 function applyCd(ctx: Ctx, cmd: Cmd, st: PState, state: CwdState, complex: boolean): void {
-	const { words, cond: condHead } = stripHead(cmd.words);
+	const { words, cond: condHead, neg } = stripHead(cmd.words);
 	const un = unwrap(words);
 	if (!un || un.name.dynamic || !CD_NAMES.has(path.basename(un.name.text))) return;
 	const inPipeline = st.cmds.filter((c) => c.pipeline === cmd.pipeline).length > 1;
 	if (inPipeline || cmd.sepAfter === "&" || cmd.sepAfter === "|") return; // runs in a subshell
 	const name = path.basename(un.name.text);
 	const t = name === "cd" || name === "chdir" ? cdTarget(ctx.cwd, ctx.root, un.args) : { dir: null, exists: false };
-	if (t.dir === null || complex) {
+	// After `||` or `!` a following `&&` runs only when the cd did NOT succeed, so no cwd can be assumed.
+	if (t.dir === null || complex || neg || cmd.sepBefore === "||") {
 		state.cwd = null;
 		state.tentative = false;
 		return;
 	}
-	const conditional = condHead || cmd.sepBefore === "&&" || cmd.sepBefore === "||";
+	const conditional = condHead || cmd.sepBefore === "&&";
 	if (t.exists && !conditional) {
 		state.cwd = t.dir;
 		state.tentative = false;

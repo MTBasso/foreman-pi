@@ -516,6 +516,34 @@ runBash("cd", [
 	["planner", "cd src && echo x > f", true],
 ]);
 
+// --- review round 2: cd after ||/!, find -exec {}, env -C, name() bodies, sed w for scoped roles ---------------------
+runBash("round2", [
+	["qa", "true || cd .foreman && echo x > f", true],
+	["qa", "! cd .foreman/nope && echo x > f", true],
+	["qa", "cd .foreman && echo x > f", false],
+	["qa", "true && cd .foreman && echo x > f", false],
+	["backend-dev", "false || cd src && echo x > a.txt", true],
+	["backend-dev", "find / -type f -exec rm -f {} +", true],
+	["backend-dev", "find ../ -exec rm -f {} \\;", true],
+	["backend-dev", "find . -exec rm -f {} +", true],
+	["frontend-dev", "find . -exec rm -f {} +", true],
+	["qa-bugfix", "find / -type f -exec rm -f {} +", true],
+	["backend-dev", "find src -name '*.tmp' -exec rm -f {} +", false],
+	["backend-dev", "find . -name '*.ts' -exec grep -l foo {} +", false],
+	["backend-dev", "env -C /etc tee hosts", true],
+	["frontend-dev", "env --chdir=/etc tee hosts", true],
+	["backend-dev", "env -C $D tee hosts", true],
+	["backend-dev", "env -C src tee a.ts", false],
+	["backend-dev", "env --chdir src tee a.ts", false],
+	["backend-dev", "f() { cd /etc; }; cd " + repo + "; f; echo x > hosts", true],
+	["qa", "f() { cd .foreman; }; f; echo x > f", true],
+	["qa", "sed -n 's/x/y/w src/a.ts' existing.txt", true],
+	["qa", "sed -n 's/x/y/w .foreman/a.txt' existing.txt", true],
+	["qa", "sed -n 's/x/y/p' existing.txt", false],
+	["codebase-auditor", "sed -n 's/x/y/w src/a.ts' existing.txt", true],
+	["shipper", "sed -n 's/x/y/w src/a.ts' existing.txt", true],
+]);
+
 // --- review fixes: wrapper option parsing ----------------------------------------------------------------------------
 runBash("wrappers", [
 	["backend-dev", "time -p rm -rf src", true],
