@@ -188,8 +188,7 @@ Pesquisa de payload do `session_start`/`before_agent_start` e desenvolvimento
 inicial feitos em 2026-11-10, direto contra `@earendil-works/pi-coding-agent@1.5.2`
 instalado como devDependency deste repo (tipos reais de
 `dist/core/extensions/types.d.ts`, exemplos reais em `examples/extensions/`)
-— não apenas a doc resumida. Ver `README.md` ("Status" e "O que não foi
-verificado ainda") pro estado exato de cada peça.
+— não apenas a doc resumida. Ver `README.md` e `docs/verification-log.md` pro estado de cada peça.
 
 - **Fase 0 — prova de conceito do guardrail. ✅ feito E verificado ao vivo
   em 2026-11-11.** `extensions/orchestrator-guardrail/` implementa
@@ -290,16 +289,40 @@ verificado ainda") pro estado exato de cada peça.
   cautela do modelo, não há remoção de tool nem `isError`, só um texto
   perguntando). Vale uma frase no prompt do `foreman`/`plan-runner` deixando
   isso explícito pro sub-agente nunca precisar adivinhar.
-- **Fase 4 — portar comandos de slash.** Não iniciada. `/foreman`,
-  `/foreman-status`, `/foreman-audit`, `/foreman-diagnose`, `/plan-runner`
-  via `pi.registerCommand(...)`.
-- **Fase 5 — empacotamento.** Parcialmente resolvida: a pergunta aberta 2
-  tem resposta (convenção de diretórios `extensions/`/`skills/`, sem
-  manifesto `pi` necessário — ver `packages.md`), mas **nunca testamos**
-  `pi install ./foreman-pi` de verdade nem confirmamos que a descoberta
-  automática encontra tudo como a doc promete.
-- **Fase 6 — paridade de testes.** Não iniciada além dos smoke tests
-  ad-hoc (`npm test`) escritos pra esta fase 0-3.
+- **Fase 4 — portar comandos de slash. ✅ feito na 0.2.0.** `/foreman`,
+  `/foreman off`, `/foreman-status`, `/foreman-audit`, `/foreman-diagnose`,
+  `/plan-runner` via `pi.registerCommand(...)`, com barra de status e widget.
+  Nota de design: o modo é estado de sessão (entrada `foreman-mode`, evento
+  `foreman:mode`, override `FOREMAN_PI_MODE`); `/foreman off` só aborta
+  workers após confirmação explícita e recusa sem UI.
+- **Fase 5 — empacotamento. ✅ feito na 0.2.0.** Manifesto `pi` +
+  `files`/`engines` no `package.json`; `npm run test:package` empacota o
+  tarball, roda `pi install` + `pi list` num sandbox e confirma a descoberta
+  (skills, comandos, agentes, `foreman hybrid`). CI no GitHub Actions.
+  Nota de design: o sandbox usa `HOME` e `PI_CODING_AGENT_DIR` temporários e
+  confere que o `settings.json` real não mudou.
+- **Fase 6 — paridade de testes. ✅ feito na 0.2.0.** `npm test` encadeia
+  typecheck e os testes de guardrail, worker-guard, agentes, spawn, política
+  de modelo, i18n, README/docs, modo, comandos, fallback, coordenação, filtro
+  de contexto, lembrete e instruções; os scripts `test:live:*` seguem manuais.
+  Nota de design: o teste de README confere a seção de fallback byte a byte
+  contra a `main` (com sha256 fixado para checkouts rasos) e as listas de
+  papéis/comandos contra o código.
+
+### Nota de 2026-11-11: remoção do dispatcher e do marcador (0.2.0)
+
+- O dispatcher vendorizado `extensions/subagent-dispatch/` foi removido; a
+  descoberta de agentes e o spawn de `pi` filho vivem em `lib/agents.ts` e
+  `lib/spawn.ts`, usados por `extensions/coordination/` (`foreman_delegate`).
+  O agente `release-manager` virou `shipper`, sem alias, e ganhou o par
+  `reviewer`. O "quirk de typecheck" abaixo diz respeito ao dispatcher e hoje
+  é só histórico.
+- O arquivo `.orchestrator-active` foi removido por completo: nada mais o lê
+  ou escreve. O modo orquestrador é estado de sessão (ver Fase 4). As
+  descrições de marcador nas Fases 0 a 3 acima são o registro histórico do
+  que foi verificado ao vivo na 0.1.x; o texto completo dessa verificação
+  está em `docs/verification-log.md`. Um arquivo antigo que sobrar é ignorado
+  e pode ser apagado.
 
 ## Descoberta de desenvolvimento: quirk de typecheck no dispatcher adotado
 

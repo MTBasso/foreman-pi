@@ -1,6 +1,6 @@
 {
   "name": "foreman-pi",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pi port of the foreman orchestrator plugin (grill, plan, build, test, ship via subagents, never implementing itself) -- see PLAN.md.",
   "type": "module",
   "keywords": [
@@ -14,7 +14,8 @@
     ],
     "skills": [
       "./skills"
-    ]
+    ],
+    "changelogPath": "./CHANGELOG.md"
   },
   "engines": {
     "node": ">=22.19.0"
@@ -43,6 +44,7 @@
     "test:spawn": "tsx lib/spawn-test.ts",
     "test:model-policy": "tsx lib/model-policy-test.ts",
     "test:i18n": "tsx lib/i18n-test.ts",
+    "test:readme": "tsx lib/readme-test.ts",
     "test:mode": "tsx lib/mode-test.ts",
     "test:foreman-mode": "tsx extensions/foreman-mode/smoke-test.ts",
     "test:instructions": "tsx extensions/orchestrator-guardrail/instructions-test.ts",
@@ -51,7 +53,7 @@
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
     "test:context-filter": "tsx extensions/context-filter/smoke-test.ts",
     "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:i18n && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:i18n && npm run test:readme && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
     "test:reminder": "tsx extensions/session-reminder/smoke-test.ts",
     "test:live:phase3": "tsx extensions/coordination/live-phase3.ts",
     "test:package": "tsx scripts/check-package.ts"

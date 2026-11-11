@@ -1,37 +1,220 @@
 # foreman-pi
 
-Port in progress of [`foreman`](https://github.com/MTBasso/foreman) (a Claude
-Code plugin: one orchestrator session that grills, plans, builds, tests, and
-ships, always delegating to dedicated subagents and never editing code
-itself) to [Pi](https://github.com/earendil-works/pi)
-(`@earendil-works/pi-coding-agent`).
+🇧🇷 Português: [README.pt-BR.md](README.pt-BR.md)
 
-**Read [PLAN.md](PLAN.md) first.** It has the viability research, the
-architecture mapping, and the open questions this port is making calls on.
-This README only covers what exists in this repo right now and how to run it.
+A [Pi](https://github.com/earendil-works/pi) package
+(`@earendil-works/pi-coding-agent`) that ports
+[`foreman`](https://github.com/MTBasso/foreman), a Claude Code plugin: one
+orchestrator session that grills, plans, builds, tests and ships, always
+delegating to dedicated worker agents and never editing code itself.
+
+Version 0.2.0. See [CHANGELOG.md](CHANGELOG.md) for what changed. Design
+background and the original viability research are in [PLAN.md](PLAN.md)
+(Portuguese); the 0.2.0 implementation plan is
+[docs/plans/foreman-pi-pi-native-improvements.md](docs/plans/foreman-pi-pi-native-improvements.md).
 
 ## Install
 
-Install from git or a local checkout with `pi install git:github.com/MTBasso/foreman-pi`
-or `pi install ./foreman-pi`; the `pi` manifest in `package.json` registers the
-extensions and skills. `npm run test:package` packs the tarball and installs it
-into a throwaway sandbox (never your real `~/.pi`) to prove the published
-layout loads.
+```bash
+pi install git:github.com/MTBasso/foreman-pi   # from git
+pi install ./foreman-pi                         # or from a local checkout
+```
 
-## Status
+The `pi` manifest in `package.json` registers the extensions in
+`extensions/*/index.ts` and the skills in `skills/`. Agents (`agents/*.md`),
+references and templates are found relative to the installed package.
+`npm run test:package` packs the tarball and installs it into a throwaway
+sandbox (never your real `~/.pi`) to prove the published layout loads.
 
-| Piece | Status |
+## Quick start
+
+1. Start `pi` in your project and run `/foreman`. This turns on orchestrator
+   mode and starts the foreman workflow: it grills you about the task, plans,
+   and delegates the work.
+2. In orchestrator mode the session itself cannot edit: `write`, `edit` and
+   `bash` are removed and denied. The only action tool is `foreman_delegate`.
+3. Workers run as separate `pi` processes in the background. When they finish
+   you are woken with a `foreman-task-notification` message.
+4. `/foreman-status` shows the mode and the workers; `/foreman off` leaves the
+   mode.
+
+For an already-approved plan under `docs/plans/`, use `/plan-runner <plan>`.
+
+| Command | What it does |
 |---|---|
-| `extensions/orchestrator-guardrail/` | **Built, tested, and verified live in a real `pi` session (2026-11-11).** `tool_call` block + `setActiveTools`. 13/13 logic checks pass (`npm run test:guardrail`). Live-tested against a real `pi 1.5.2` session with a sandbox `.orchestrator-active` marker: `write`/`edit` confirmed removed from the active toolset before the model could call them, and `bash` with `sed -i` / `printf ... > file` / `echo ... > file` confirmed blocked reactively with the extension's own denial reason. **One real bug found and fixed by this testing**: `.txt`/`.out` were on the "safe spot-check redirect" allowlist, letting `echo hacked > existing.txt` overwrite a real file undetected — narrowed to `.log`/`/dev/null` only, with a regression test for the exact command that leaked through. |
-| `extensions/session-reminder/` | **Built**, matching Pi's own documented `session_start`/`before_agent_start` pattern for a one-shot reminder. Not yet run live. |
-| `lib/` (`agents.ts`, `spawn.ts`) | **Built and tested** (`npm run test:agents`, `npm run test:spawn`). Shared agent discovery (bundled `agents/*.md` tagged `source: "package"`) and child-`pi` spawning, used by `extensions/coordination/`. Replaces the vendored `subagent-dispatch` example, which was removed. |
-| `skills/` (`foreman`, `plan-runner`, `project-memory`, `design-preview`) | **Ported.** Content carried over from the original plugin; Claude-Code-specific mentions (Artifact tool, PreToolUse, NotebookEdit, "Agent tool") were rewritten for Pi's actual primitives. `templates/handoff-prompt.md` now also tells a delegated subagent explicitly that `.orchestrator-active` doesn't apply to it, after a live test caught a subagent pausing to ask instead of just acting on an ambiguous marker file. |
-| `agents/` (9 files: `backend-dev`, `frontend-dev`, `qa`, `qa-bugfix`, `planner`, `plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper`) | **Ported.** Frontmatter `tools:` remapped to Pi's native tool names (`Read`→`read`, `Glob`→`find`, etc. — Pi has no `NotebookEdit`, so nothing needed dropping). Confirmed discoverable by the real dispatcher (`npm run test:agents`), and `planner`/`frontend-dev` confirmed to actually run correctly end to end in a live child process (see above). Bodies not yet re-read end to end for Claude-Code-specific assumptions beyond the obvious ones. |
-| `extensions/model-fallback/` | **Built + tested.** `registerVirtualModel` ("foreman/hybrid") + `agent_end`/`agent_settled` retry trigger. 8/8 logic checks pass (`npm run test:fallback`). See "Model fallback" below — this is NOT a refusal-bypass tool, by design. Not yet run against a real model response. |
-| `extensions/coordination/` | **Phase 1 built, smoke-tested and verified live.** `foreman_delegate` tool + event-driven coordinator: spawns workers as child `pi` processes, returns immediately, and wakes the orchestrator with a `foreman-task-notification` message when they finish. Logic covered by `npm run test:coordination`; real end-to-end check in `npm run test:live:coordination` (see "Coordination" below). **Phase 3 done:** `foreman_delegate` is the orchestrator's only action tool (`subagent` removed from its allowlist and blocked in `tool_call`). |
-| `extensions/context-filter/` | **Phase 2 built, smoke-tested and verified live.** `context` handler that prunes stale `foreman-task-notification` results (keeps the latest per role plus the last notification; failed/blocked never pruned; older ones collapse to `[pruned: K older <role> results — recover: <paths>]`). Logic covered by `npm run test:context-filter`; real check in `npm run test:live:context-filter` (see "Context filter" below). |
-| `templates/`, `commands/` equivalents | **Not started.** |
-| Packaging for real install (`pi install ./foreman-pi` or via npm) | **Verified by accident, not by design**: this repo is in fact installed as a package on the machine this verification ran on (`~/.pi/agent/settings.json` lists `https://github.com/MTBasso/foreman-pi` under `packages`), and its extensions and agents are confirmed auto-discovered in every `pi` invocation — that's exactly what surfaced the subagent-exemption bug above. `pi install ./foreman-pi` itself (the local-path install flow) has still not been run explicitly in this verification pass. |
+| `/foreman [task]` | Enter orchestrator mode and start the foreman workflow. |
+| `/foreman off` | Leave the mode and restore tools. If workers are running it asks for confirmation before aborting them; with no UI it refuses. |
+| `/foreman-status` | Show mode and worker status (no model call). |
+| `/foreman-audit` | Enter orchestrator mode and run a read-only codebase audit. |
+| `/foreman-diagnose` | Diagnose why a foreman or plan-runner run went wrong. Does not change the mode. |
+| `/plan-runner <plan>` | Enter orchestrator mode and run an approved plan from `docs/plans/`. |
+
+## Architecture
+
+| Piece | Role |
+|---|---|
+| `extensions/foreman-mode/` | The slash commands, the status bar entry and the worker widget. Owns the persisted mode entry. |
+| `extensions/orchestrator-guardrail/` | While the mode is on: drops `bash`/`write`/`edit` from the active tools and denies them in `tool_call`. Writes to the project-root `FOREMAN_MEMORY.md` pass. |
+| `extensions/coordination/` | The `foreman_delegate` tool and the event-driven coordinator: spawns workers, queues, batches completions, writes the ledger, parses the report contract. `/foreman-status` lives here. |
+| `extensions/context-filter/` | Prunes stale `foreman-task-notification` messages before each LLM call. |
+| `extensions/session-reminder/` | One-shot session reminder (mode state, `foreman_delegate` availability, project memory) and the resume/fork "keep orchestrator mode?" prompt. |
+| `extensions/worker-guard/` | Per-role write/bash policy inside worker processes. |
+| `extensions/model-fallback/` | The virtual `foreman/hybrid` model. See "Model fallback" below. |
+| `lib/` | Shared modules: `roles.ts`, `agents.ts` (discovery), `spawn.ts` (child `pi`), `model-policy.ts`, `mode.ts`, `i18n.ts`, `workers.ts`, `ui.ts`. |
+| `agents/`, `skills/`, `references/`, `templates/` | Worker definitions, the orchestrator skills, supporting docs and the handoff template. |
+
+Delegation is non-blocking. `foreman_delegate` returns at once with
+`{task_id, run_id, state: running|queued, ack}`, the orchestrator ends its
+turn, and the coordinator wakes it when workers finish. Completions are
+debounced into one message holding N blocks:
+
+```
+<task-notification>
+task-id: t1-planner
+role: planner
+status: completed        # completed | failed | blocked
+plan-step: 2             # or -
+summary: <first ~400 chars of the worker's report>
+output: .foreman/runs/<run-id>/t1-planner.md
+</task-notification>
+```
+
+The ledger is written by the extension, not the model:
+`.foreman/runs/<run-id>/ledger.log` (plus `.foreman/plan-runner/<slug>/progress.md`
+when a `plan_slug` is given) gets one line per task, appended *before* the
+notification is delivered. `--print` mode cannot host wake-ups (the process
+exits once the agent settles); use `--mode rpc` or the interactive TUI.
+
+`foreman_delegate` parameters:
+
+| Param | Type | Notes |
+|---|---|---|
+| `role` | enum | `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`, `plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper` |
+| `handoff_prompt` | string | Complete, self-contained prompt for the worker. |
+| `plan_step` | number, optional | Plan step this task belongs to (ledger). |
+| `plan_slug` | string, optional | `docs/plans/<slug>.md`; the first non-empty value is latched for the run. |
+
+## Roles
+
+Defined once in `lib/roles.ts`. The `agents/` directory holds one file per role: `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`, `plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper`.
+
+| Role | Tier | What it does |
+|---|---|---|
+| `planner` | strong | Reads the project and produces a structured plan. Read-only. |
+| `frontend-dev` | mid | Implements UI work. |
+| `backend-dev` | mid | Implements backend work. |
+| `qa` | cheap | Tests and verifies; writes only under `.foreman/`. |
+| `qa-bugfix` | mid | Fixes bugs found by QA. |
+| `plan-step-builder` | mid | Builds one step of an approved plan (lighter worker-guard profile). |
+| `codebase-auditor` | cheap | Read-only audit; writes only `.foreman/` and `FOREMAN_AUDIT.md`. |
+| `reviewer` | strong | Reviews changes. Read-only. |
+| `shipper` | mid | Commits, pushes and opens PRs; writes only under `.foreman/`. |
+
+The 0.1.x release role was replaced by `shipper`, with no alias for the old
+name.
+
+## Model tiers and environment variables
+
+Agents declare `tier: strong|mid|cheap` and
+`thinking: off|minimal|low|medium|high|xhigh|max` in their frontmatter. No
+model ids ship; invalid values are ignored. `lib/model-policy.ts` resolves
+them when a worker is spawned and records the choice as `model`/`thinking` in
+the per-task meta JSON.
+
+- Model: `FOREMAN_MODEL_<ROLE>` > frontmatter `model:` > `FOREMAN_MODEL_<TIER>` >
+  inherit the session model (so `foreman/hybrid` passes through unchanged).
+- Thinking: `FOREMAN_THINKING_<ROLE>` > frontmatter `thinking:` > the session
+  thinking level.
+
+`<ROLE>` is the agent name upper-cased with `_` (`plan-step-builder` becomes
+`PLAN_STEP_BUILDER`); `<TIER>` is `STRONG`, `MID` or `CHEAP`. Example:
+`FOREMAN_MODEL_STRONG=anthropic/claude-opus-4` affects only strong-tier roles.
+An explicit model bypasses the `foreman/hybrid` fallback layer.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `FOREMAN_LANG` | from `LC_ALL`/`LC_MESSAGES`/`LANG` | UI language: `en` or `pt-BR`. See "Language". |
+| `FOREMAN_PI_MODE` | unset | `orchestrator` forces the mode on, `off` forces it off (RPC, print, live runs). |
+| `FOREMAN_MODEL_<ROLE>` / `FOREMAN_MODEL_<TIER>` | unset | Model override per role or tier. |
+| `FOREMAN_THINKING_<ROLE>` | unset | Thinking-level override per role. |
+| `FOREMAN_MAX_WORKERS` | 4 | Concurrent workers; extra delegations queue. |
+| `FOREMAN_BATCH_MS` | 300 | Debounce window for batching completions. |
+| `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | Per-worker timeout (0 disables). |
+| `FOREMAN_ABORT_WAIT_MS` | 7000 | How long `/foreman off` waits for workers to stop after confirming. |
+| `FOREMAN_KEEP_MODE_TIMEOUT_MS` | 30000 | How long the resume/fork "keep orchestrator mode?" prompt waits. |
+| `FOREMAN_CONTEXT_PRUNE` | true | `false` disables notification pruning. |
+| `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | Completed results kept per role. |
+| `FOREMAN_CONTEXT_DEBUG` | off | `1` logs before/after/pruned counts to stderr. |
+| `FOREMAN_PRIMARY_MODEL` / `FOREMAN_FALLBACK_MODEL` | `claude-sonnet-4-5` / `gpt-4o-mini` | `foreman/hybrid` model ids. See "Model fallback". |
+| `FOREMAN_PI_SUBAGENT`, `FOREMAN_PI_ROLE` | set by the spawner | Mark a worker process and its role. Not meant to be set by hand. |
+
+## Worker report contract
+
+Every worker ends its final message with this block. Only the English keywords
+are parsed; the prose inside the fields can be in any language.
+
+```
+--- foreman-report ---
+Status: completed|failed|blocked
+Summary: ...
+Files: ...
+Rulings: ...
+Blocked-on: ...
+--- end foreman-report ---
+```
+
+The last well-formed block wins. The notification carries the parsed fields
+plus a `contract` value: `ok`, `missing` (non-empty report with no block) or
+`malformed` (a block was present but unusable). A legacy `[BLOCKED]` first line
+still means blocked. `failed` also covers a non-zero exit, signal, timeout,
+spawn error or empty output. The full report is always at the `output` path.
+
+## Mode state
+
+Orchestrator mode is session state, not a file. It comes from, in order:
+
+1. `FOREMAN_PI_SUBAGENT=1`: always inactive (workers are never restricted).
+2. `FOREMAN_PI_MODE`: `orchestrator` or `off` forces the state.
+3. The newest persisted `foreman-mode` session entry (also announced on the
+   `foreman:mode` event bus), so the mode survives `/reload`, resume and fork.
+4. Default: inactive.
+
+A new session (`startup` or `new`) always starts inactive. On resume or fork
+of a session that was in the mode, the user is asked whether to keep it; no
+answer keeps the restored state. See
+[references/orchestrator-mode.md](references/orchestrator-mode.md).
+
+## Worker guard
+
+`extensions/worker-guard/` scopes what each worker may write. The spawner sets
+`FOREMAN_PI_ROLE=<role>` next to `FOREMAN_PI_SUBAGENT=1`; the guard checks every
+`write`, `edit` and `bash` call of a worker against its role (`qa` and
+`codebase-auditor` only `.foreman/**` and `FOREMAN_AUDIT.md`, `planner` and
+`reviewer` read-only, `shipper` only `.foreman/`, dev roles anywhere in the repo
+except `.git/`, outside paths and real `.env` files). An unknown role fails
+closed to read-only, and the guard is inactive without both env vars.
+
+**Honest limits.** It is a heuristic, not a sandbox: it parses shell text, so
+interpreters, `make`, `npm run` and scripts can still write anywhere, and a
+path can change between check and write. It does not stop a model from
+reporting wrong results. Full policy and limits:
+[references/worker-guard.md](references/worker-guard.md).
+
+## Language
+
+Extension UI strings (command descriptions, notifications, status bar, widget,
+`/foreman-status`) come from `lib/i18n.ts`, in English or Brazilian Portuguese.
+Pi has no locale setting, so the locale is detected from the environment:
+`FOREMAN_LANG`, then `LC_ALL`, `LC_MESSAGES`, `LANG` (the first non-empty one
+wins; `pt*` gives `pt-BR`, `en*` and anything else give `en`). An invalid
+`FOREMAN_LANG` is ignored.
+
+The UI locale and the conversation language are separate. The UI follows the
+environment locale. The agent conversation follows the language of your
+messages: skills and agents tell the model to reply in your language. Prompts,
+guardrail reasons, notification blocks and the report contract keywords stay in
+English. If you write to the agent in Portuguese but your `LANG` is English, set
+`FOREMAN_LANG=pt-BR` to get Portuguese UI strings.
 
 ## Model fallback (false-positive testing, not a refusal bypass)
 
@@ -63,242 +246,57 @@ talks to providers the same way it talks to Anthropic, via `OPENAI_API_KEY`
 exact catalog ids with `/models` inside `pi` or https://pi.dev/models before
 relying on the defaults.
 
-## Live verification (2026-11-11)
-
-With `pi` 1.5.2 actually available, this was the first pass that ran these
-extensions inside real `pi --no-session -p --mode json` sessions instead of
-just the faked-API smoke tests. Summary (details inline in PLAN.md's "Fases
-— status"):
-
-- **Guardrail**: confirmed blocking `write`/`edit`/bash-redirect/`sed -i` in
-  a real session with `.orchestrator-active` present, end to end. Found and
-  fixed a real bypass (`.txt`/`.out` redirect targets wrongly treated as safe).
-- **Subagent dispatch**: confirmed spawning a real child `pi` process for
-  both `planner` (produced an actual structured plan from the real directory
-  state) and `frontend-dev` (actually edited a file on disk).
-- **Integration**: confirmed the full cycle — orchestrator's own `edit`/`bash`
-  attempts blocked, delegates via `subagent`, the child process makes the
-  real edit. Found and fixed a real cross-contamination bug (next section).
-
-### Subagent exemption bug (found + fixed)
-
-The architecture doc (PLAN.md §1) assumed the guardrail never needs to tell
-orchestrator from subagent apart, because they're different `pi` processes
-and the subagent "never carries this restriction in the first place." That
-assumption breaks under this repo's actual, intended install path: once
-`foreman-pi` is registered as a package (`~/.pi/agent/settings.json`), Pi's
-default extension discovery loads `orchestrator-guardrail` into *every* `pi`
-invocation on the machine — including the child processes
-`subagent-dispatch` spawns. The child shares the orchestrator's cwd, so it
-saw the same `.orchestrator-active` marker and had its own `edit` tool
-removed mid-task (confirmed live: a `frontend-dev` subagent reported "the
-edit tool was taken away after I read greet.js").
-
-`--no-extensions` on the child isn't a general fix: none of the 8 ported
-agents pin their own `model:`, so they all inherit the orchestrator's model —
-on this install, that's the `model-fallback` extension's virtual
-`foreman/hybrid` model, which doesn't exist without that extension loaded.
-
-The actual fix: `subagent-dispatch` now sets `FOREMAN_PI_SUBAGENT=1` on every
-child it spawns (`extensions/subagent-dispatch/index.ts`'s `spawn()` call),
-and `orchestrator-guardrail` treats that env var as "never active," marker or
-no marker (`extensions/orchestrator-guardrail/index.ts`'s `isOrchestratorActive`).
-Verified live afterward: a `frontend-dev` subagent successfully edited a file
-on disk while `.orchestrator-active` was present in the shared cwd the whole
-time.
-
-Separately, a live test also caught the *model itself* (not the guardrail)
-pausing to ask "should I delete this marker?" instead of just acting, when
-given an ambiguous task that didn't say the marker was irrelevant to it —
-`templates/handoff-prompt.md` now has a line telling a delegated subagent
-this explicitly, so it never has to guess.
-
-### Still not run
-
-- `pi install ./foreman-pi` as an explicit local-path install command (this
-  machine already had the package registered from before this session, so
-  the install flow itself, as opposed to its *effect*, wasn't exercised here).
-- `extensions/session-reminder/` and `extensions/model-fallback/` live
-  (both still only have the faked-API smoke tests passing).
-- The slash-command equivalents (Fase 4) — not started at all yet.
-- A single orchestrator session doing "try the edit myself, get blocked, then
-  delegate" as one uninterrupted flow: the session that was asked to do this
-  (guardrail confirmed blocking `edit`/`write` mid-session, per its own
-  `toolsRemoved` event) stalled for 14+ minutes after that and had to be
-  killed, never producing a `subagent` tool call. This is the documented
-  `pi-claude-cli` instability with long sequential tool-use chains (see the
-  root `CLAUDE.md`'s "~/.pi (Pi coding agent config)" gotchas), not a bug in
-  either extension — both halves of the flow are independently confirmed
-  working above. Worth keeping in mind for real orchestrator usage: prefer
-  short, decisive turns over "try it yourself first" framing.
-
-## Coordination (event-driven delegation)
-
-`extensions/coordination/` adds `foreman_delegate`, a non-blocking alternative
-to `subagent`. The orchestrator dispatches work, ends its turn, and is woken
-when workers finish instead of waiting inside a tool call.
-
-**Tool schema** (`foreman_delegate`):
-
-| Param | Type | Notes |
-|---|---|---|
-| `role` | enum | `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`, `plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper` |
-| `handoff_prompt` | string | complete, self-contained prompt for the worker |
-| `plan_step` | number, optional | plan step this task belongs to (ledger) |
-| `plan_slug` | string, optional | `docs/plans/<slug>.md`; first non-empty value is latched for the run |
-
-It returns synchronously with `{task_id, run_id, state: running|queued, ack}`;
-the ack tells the orchestrator to end its turn and not poll. Only available
-while `.orchestrator-active` exists; workers (`FOREMAN_PI_SUBAGENT=1`) never
-get the tool.
-
-**Notification shape.** Completions are debounced and delivered as ONE custom
-message (`customType: foreman-task-notification`) holding N blocks:
-
-```
-<task-notification>
-task-id: t1-planner
-role: planner
-status: completed        # completed | failed | blocked
-plan-step: 2             # or -
-summary: <first ~400 chars of the worker's final report>
-output: .foreman/runs/<run-id>/t1-planner.md
-</task-notification>
-```
-
-`blocked` means the report's first line starts with `[BLOCKED]`; `failed`
-covers non-zero exit, signal, timeout, spawn error, or empty output. The full
-report is at `output`.
-
-**Ledger semantics.** The ledger is written by the extension, not the model:
-`.foreman/runs/<run-id>/ledger.log` (plus `.foreman/plan-runner/<slug>/progress.md`
-when a `plan_slug` is latched) gets one line per task, appended synchronously
-*before* the notification is delivered, so a crash between the two never loses
-the record. Re-sends of an undelivered batch do not duplicate ledger lines. A
-batch that is never delivered after 3 attempts is dropped with a
-`console.error` warning naming its task ids and output paths.
-
-**Env vars:**
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `FOREMAN_MAX_WORKERS` | 4 | concurrent workers; extra delegates queue |
-| `FOREMAN_BATCH_MS` | 300 | debounce window for batching completions |
-| `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | per-worker timeout (0 disables) |
-
-**Limitation: `--print` mode cannot host wake-ups.** Print mode exits once the
-agent settles, so there is nothing alive to receive a notification. Use a
-long-lived mode such as `--mode rpc` (or the interactive TUI).
-
-**Live-run evidence.** `extensions/coordination/live-rpc.ts` was run 3 times
-against a real `pi --mode rpc` session. The first run failed because of an
-over-strict script check (since fixed): the notification arrived as a mid-run
-`followUp` (the orchestrator was still busy) rather than as a fresh run, and the
-script only accepted the latter. The script was fixed to accept both delivery
-paths; runs 2 and 3 then passed. Observed event order on the idle-wake path: the
-`foreman_delegate` tool result returned ~2.7s before the worker finished, then
-`agent_settled`, then a new `agent_start` triggered by the
-`foreman-task-notification` message.
-
-**Phase 3: `subagent` removed from the orchestrator.** While `.orchestrator-active`
-exists, the active tool set is `read`/`grep`/`find`/`ls`/`foreman_delegate` (only
-those that are loaded), and a hand-crafted `subagent` call is blocked in
-`tool_call` with a reason pointing at `foreman_delegate`. Workers
-(`FOREMAN_PI_SUBAGENT=1`) stay exempt. The `foreman` and `plan-runner` skills
-no longer mention `subagent`/`workflow` as dispatch paths and require `role` and
-`plan_step` on every dispatch (lint in `npm run test:instructions`). The
-`session-reminder` adds a one-line warning if `foreman_delegate` is missing from
-`pi.getAllTools()`. Call rendering shows role and `plan_step` (`plan_slug` when
-expanded); result `details` carry `role`, `plan_step`, `plan_slug`.
-
-**Phase 3 live evidence** (`npm run test:live:phase3`, real `pi --mode rpc` in a
-temp dir with the marker, plus a probe extension command since rpc has no tool-list
-command): active tools = `[read, foreman_delegate]` (grep/find/ls are not in pi's
-default active set, so they are not re-added); `subagent` exists in
-`getAllTools()` but is not active; asked to call `subagent`, the model tried and
-got `Tool subagent not found`. The `tool_call` block itself is only covered by the
-smoke test (the tool is never active live), so that layer is not live-verified.
-
 ## Context filter
 
-`extensions/context-filter/` hooks the `context` event (before each LLM call; pi
-passes handlers a clone, so the stored transcript is untouched) and trims old
-`foreman-task-notification` messages so long orchestrations don't accumulate every
-worker report. Only those messages are in scope; user/assistant/tool/system
-messages and other custom messages are never modified. Rules: keep the latest
-`FOREMAN_CONTEXT_KEEP_PER_ROLE` completed results per role plus every block of the
-last notification in the transcript; `failed`/`blocked` blocks are never pruned;
-pruned blocks are replaced by one collapsed line per role
-(`[pruned: K older <role> results — recover: <output paths>]`, in a single
-`foreman-context-pruned` custom message where the first pruned content was);
-mixed batched messages are rebuilt without the pruned blocks. `details.notifications`
-is parsed first, with a regex fallback over the `<task-notification>` blocks.
+`extensions/context-filter/` hooks the `context` event (pi hands it a clone,
+so the stored transcript is untouched) and trims old
+`foreman-task-notification` messages so long orchestrations do not accumulate
+every worker report. Only those messages are in scope. It keeps the latest
+`FOREMAN_CONTEXT_KEEP_PER_ROLE` completed results per role plus every block of
+the last notification; `failed` and `blocked` blocks are never pruned; pruned
+blocks collapse into one line per role
+(`[pruned: K older <role> results — recover: <output paths>]`).
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `FOREMAN_CONTEXT_PRUNE` | true | set to `false` to disable pruning |
-| `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | completed results kept per role |
-| `FOREMAN_CONTEXT_DEBUG` | off | `1` logs `messages before/after/pruned-or-rebuilt` to stderr on each LLM call |
+## Tests and CI
 
-Note `after` can equal `before`: a pruned message is replaced by the collapsed line.
-The filter uses `context` (not `context_with_system`), so the system prompt is never
-visible to it.
+```bash
+npm install
+npm test               # typecheck + every smoke/lint test (live-* scripts are separate)
+npm run test:package   # pack, install into a sandbox, check discovery
+```
 
-**Live-run evidence.** `npm run test:live:context-filter` (real `pi --mode rpc`, two
-sequential real planner delegations, a test-only probe extension logging the final
-context and provider payload) passed: the LLM call following notification 2 showed
-the older planner result replaced by `[pruned: 1 older planner results — recover:
-.foreman/runs/<run>/t1-planner.md]` (debug log: `before=12 after=12 pruned-or-rebuilt=1`),
-the older notification text was gone from every notification message, and the turn
-completed with no provider error. The pruned line sits between two assistant
-messages, so pruning created no adjacent user-role messages (the only adjacent pair
-in the context, user → session-reminder, predates the filter and the provider accepts
-it). Not yet exercised: a provider that rejects adjacency (plan fallback: replace with
-stubs instead of removing). An assistant message that echoed the old result's content
-is deliberately left alone.
+`npm test` includes `test:readme`, which checks that the Model fallback
+section of this README is byte-identical to the one on `main`, that the role
+and command lists in both READMEs match the code, and that no stale references
+(the removed release role, the removed vendored dispatcher, the removed marker file) remain outside
+historical docs. The `test:live:*` scripts drive a real `pi` and are run by
+hand. CI (`.github/workflows/ci.yml`) runs `npm ci`, typecheck, `npm test` and
+the package check on every push and pull request.
 
-## Agent discovery and spawning
+Before releasing, run the load check from a scratch directory:
 
-`lib/agents.ts` discovers agents (bundled `agents/*.md`, user, and project) and `lib/spawn.ts` runs a worker as a child `pi --mode json` process; `extensions/coordination/spawn-worker.ts` wires them into `foreman_delegate`.
-The vendored upstream `subagent` example was removed, so the standalone `subagent` tool no longer ships.
+```bash
+cd /tmp && mkdir -p pi-verify && cd pi-verify
+timeout 20 pi --no-session --print --verbose "hi" 2>&1 | grep -iE "error|failed to load"
+```
 
-### Per-agent model tier and thinking
-
-Agents declare `tier: strong|mid|cheap` and `thinking: off|minimal|low|medium|high|xhigh|max` in their frontmatter (no model ids ship; invalid values are ignored). `lib/model-policy.ts` resolves them when a worker is spawned, and the choice is recorded as `model`/`thinking` in the per-task meta JSON.
-
-- Model: `FOREMAN_MODEL_<ROLE>` > frontmatter `model:` > `FOREMAN_MODEL_<TIER>` > inherit the session model (unchanged, so `foreman/hybrid` passes through).
-- Thinking: `FOREMAN_THINKING_<ROLE>` > frontmatter `thinking:` > the session thinking level.
-
-`<ROLE>` is the agent name upper-cased with `_` (`plan-step-builder` -> `PLAN_STEP_BUILDER`); `<TIER>` is `STRONG`, `MID` or `CHEAP`. Example: `FOREMAN_MODEL_STRONG=anthropic/claude-opus-4` affects only strong-tier roles.
-
-## Worker write guard
-
-`extensions/worker-guard/` scopes what each foreman worker may write. The spawner sets `FOREMAN_PI_ROLE=<role>` next to `FOREMAN_PI_SUBAGENT=1`; the guard checks every `write`, `edit` and `bash` call of a worker against its role (`qa` and `codebase-auditor` only `.foreman/**` and `FOREMAN_AUDIT.md`, `planner` and `reviewer` read-only, `shipper` only `.foreman/`, dev roles anywhere in the repo except `.git/`, outside paths and real `.env` files). An unknown role fails closed to read-only, and the guard is inactive without both env vars.
-
-It is a heuristic, not a sandbox: interpreters, `make` and `npm run` can still write anywhere. See `references/worker-guard.md` for the full policy and limits.
+No output means the extensions loaded cleanly. Historical live-run notes from
+the 0.1.x port are kept in [docs/verification-log.md](docs/verification-log.md).
 
 ## Layout
 
 ```
-PLAN.md                          — read this first
-extensions/
-  orchestrator-guardrail/        — tool_call block + setActiveTools (foreman's guardrail)
-  session-reminder/               — session_start + before_agent_start reminder (warns if foreman_delegate is not loaded; smoke-test.ts)
-  model-fallback/                 — Claude→GPT retry on a detected refusal (false-positive testing only)
-  context-filter/                 — context-event pruning of stale task notifications (index.ts, smoke-test.ts, live-rpc.ts)
-  worker-guard/                   — per-role write/bash policy for workers (policy.ts = pure, index.ts = tool_call handler, smoke-test.ts)
-  coordination/                   — foreman_delegate + event-driven coordinator (coordinator.ts = pure logic, index.ts = pi wiring, spawn-worker.ts, smoke-test.ts, live-rpc.ts, live-phase3.ts)
-lib/                              — shared modules: agents.ts (discovery), spawn.ts (child pi spawning), with agents-test.ts / spawn-test.ts
-agents/                           — the 8 ported foreman subagent definitions
-skills/                           — the 4 ported foreman skills
-references/                       — supporting docs the skills point to
-```
-
-## Running the checks
-
-```bash
-npm install
-npm test          # typecheck + all smoke/lint tests (live-* scripts are separate)
+PLAN.md                  design notes and phase status (Portuguese)
+CHANGELOG.md             release notes
+extensions/              foreman-mode, orchestrator-guardrail, coordination,
+                         context-filter, session-reminder, worker-guard, model-fallback
+lib/                     shared modules and their tests
+agents/                  the 9 worker definitions
+skills/                  foreman, plan-runner, project-memory, design-preview
+references/              supporting docs the skills point to
+templates/               handoff prompt template
+scripts/                 check-package.ts
+docs/                    plans/ and verification-log.md
 ```
 
 ## License

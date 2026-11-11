@@ -495,7 +495,7 @@ Status: done
 
 ## Phase 10 — Docs and release
 
-Status: todo
+Status: done
 
 1. **`README.md`** (English). It contains install, quick start, architecture, the roles table, tiers and env vars, the report contract, mode state, the worker guard and its limits, the tests and CI, and a link to the pt-BR README at the top.
    - **Model fallback section:** byte-identical (lines 28–57). Check by diffing against `git show main:README.md`.
