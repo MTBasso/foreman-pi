@@ -230,7 +230,7 @@ Blocked-on: <what/who, or none>
 
 ## Phase 5 — Per-agent model tier and thinking
 
-Status: todo
+Status: done
 
 Today `agents.ts` parses `model:` only. `spawn-worker.ts` passes `--thinking` only when the agent has no `model`.
 

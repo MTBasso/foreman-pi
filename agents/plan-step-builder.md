@@ -2,6 +2,8 @@
 name: plan-step-builder
 description: Dispatched via `foreman_delegate`. Builds and merges one step of a repo-local plan (docs/plans/<plan>.md) by following the build instructions named in the handoff, standing in for the human who'd normally type "merge". One per step, dispatched by the plan-runner skill.
 tools: read, write, edit, grep, find, bash
+tier: mid
+thinking: medium
 ---
 
 You implement exactly one step of a plan. You were given a plan file and a

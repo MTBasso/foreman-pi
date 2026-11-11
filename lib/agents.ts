@@ -13,6 +13,18 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
+export const MODEL_TIERS = ["strong", "mid", "cheap"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+export function isThinkingLevel(v: unknown): v is ThinkingLevel {
+	return typeof v === "string" && (THINKING_LEVELS as readonly string[]).includes(v);
+}
+export function isModelTier(v: unknown): v is ModelTier {
+	return typeof v === "string" && (MODEL_TIERS as readonly string[]).includes(v);
+}
+
 export type AgentScope = "user" | "project" | "both";
 
 export interface AgentConfig {
@@ -20,6 +32,11 @@ export interface AgentConfig {
 	description: string;
 	tools?: string[];
 	model?: string;
+	/** Named model tier; resolved to a model by lib/model-policy.ts (no ids ship). */
+	tier?: ModelTier;
+	thinking?: ThinkingLevel;
+	/** Notes about ignored/invalid frontmatter (e.g. an unknown thinking level). */
+	notes?: string[];
 	systemPrompt: string;
 	source: "user" | "project" | "package";
 	filePath: string;
@@ -43,6 +60,8 @@ type AgentFrontmatter = {
 	description?: unknown;
 	tools?: unknown;
 	model?: unknown;
+	tier?: unknown;
+	thinking?: unknown;
 };
 
 /**
@@ -98,11 +117,26 @@ function loadAgentsFromDir(dir: string, source: "user" | "project" | "package"):
 			continue;
 		}
 
+		const notes: string[] = [];
+		let tier: ModelTier | undefined;
+		if (frontmatter.tier !== undefined) {
+			if (isModelTier(frontmatter.tier)) tier = frontmatter.tier;
+			else notes.push(`ignored invalid tier ${JSON.stringify(frontmatter.tier)} (expected ${MODEL_TIERS.join("|")})`);
+		}
+		let thinking: ThinkingLevel | undefined;
+		if (frontmatter.thinking !== undefined) {
+			if (isThinkingLevel(frontmatter.thinking)) thinking = frontmatter.thinking;
+			else notes.push(`ignored invalid thinking ${JSON.stringify(frontmatter.thinking)} (expected ${THINKING_LEVELS.join("|")})`);
+		}
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: parseToolList(frontmatter.tools),
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
+			tier,
+			thinking,
+			notes: notes.length > 0 ? notes : undefined,
 			systemPrompt: body,
 			source,
 			filePath,

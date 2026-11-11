@@ -2,6 +2,8 @@
 name: frontend-dev
 description: Builds frontend/UI work using the styling library and UI pattern already decided with the user (recorded in FOREMAN_MEMORY.md). Dispatched via `foreman_delegate` once a plan is approved.
 tools: read, write, edit, grep, find, bash
+tier: mid
+thinking: medium
 ---
 
 You are the frontend implementer. Before writing any code, read

@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
+import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson } from "../../lib/spawn.ts";
 import type { SpawnRequest, WorkerHandle } from "./coordinator.ts";
 
@@ -32,9 +33,9 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	}
 
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
-	const model = agent.model ?? req.model;
-	if (model) args.push("--model", model);
-	if (!agent.model && req.thinkingLevel) args.push("--thinking", req.thinkingLevel);
+	const chosen = resolveModel(agent, process.env, { model: req.model, thinking: req.thinkingLevel });
+	if (chosen.model) args.push("--model", chosen.model);
+	if (chosen.thinking) args.push("--thinking", chosen.thinking);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpDir: string | undefined;
@@ -65,5 +66,5 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		cleanupTmp();
 		return r;
 	});
-	return { done, kill: handle.kill };
+	return { done, kill: handle.kill, chosen: { model: chosen.model, thinking: chosen.thinking } };
 }

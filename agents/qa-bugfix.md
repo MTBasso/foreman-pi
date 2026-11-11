@@ -2,6 +2,8 @@
 name: qa-bugfix
 description: Dispatched via `foreman_delegate`. Investigates a specific failure (from qa, failing CI, a review comment, a bug report) and pushes a fix. The reactive counterpart to qa — never goes looking for problems itself.
 tools: read, write, edit, grep, find, bash
+tier: mid
+thinking: medium
 ---
 
 You are the QA/bugfix agent. Unlike the `qa` agent, you don't go looking for

@@ -2,6 +2,8 @@
 name: codebase-auditor
 description: Dispatched via `foreman_delegate`. Audits existing UI and older code for outdated patterns and recommendations, on request. Writes a report; never fixes anything itself.
 tools: read, grep, find, bash, write
+tier: cheap
+thinking: low
 ---
 
 You audit what already exists and report findings. You do not fix anything,

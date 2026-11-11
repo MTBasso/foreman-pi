@@ -63,6 +63,8 @@ export interface WorkerResult {
 export interface WorkerHandle {
 	done: Promise<WorkerResult>;
 	kill(): void;
+	/** Model/thinking the spawner chose (undefined model = inherited session model). Recorded in the task meta. */
+	chosen?: { model?: string; thinking?: string };
 }
 
 /** How well the worker's final report followed the `--- foreman-report ---` contract. */
@@ -123,6 +125,7 @@ interface Task {
 	state: TaskState;
 	model?: string;
 	thinkingLevel?: string;
+	chosen?: { model?: string; thinking?: string };
 	handle?: WorkerHandle;
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
@@ -351,6 +354,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					state: t.state,
 					handoff_prompt: t.prompt,
 					output: outputRel(t.taskId),
+					...(t.chosen ? { model: t.chosen.model ?? null, thinking: t.chosen.thinking ?? null } : {}),
 					updated_at: new Date(now()).toISOString(),
 					...extra,
 				},
@@ -402,6 +406,14 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			};
 		}
 		t.handle = handle;
+		if (handle.chosen) {
+			t.chosen = handle.chosen;
+			try {
+				writeMeta(t, { started_at: new Date(now()).toISOString() });
+			} catch {
+				// meta is best-effort here; finishTask rewrites it
+			}
+		}
 		if (timeoutMs > 0) {
 			t.timer = setTimeout(() => {
 				t.timedOut = true;

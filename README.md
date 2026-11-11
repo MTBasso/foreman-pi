@@ -262,6 +262,15 @@ is deliberately left alone.
 `lib/agents.ts` discovers agents (bundled `agents/*.md`, user, and project) and `lib/spawn.ts` runs a worker as a child `pi --mode json` process; `extensions/coordination/spawn-worker.ts` wires them into `foreman_delegate`.
 The vendored upstream `subagent` example was removed, so the standalone `subagent` tool no longer ships.
 
+### Per-agent model tier and thinking
+
+Agents declare `tier: strong|mid|cheap` and `thinking: off|minimal|low|medium|high|xhigh|max` in their frontmatter (no model ids ship; invalid values are ignored). `lib/model-policy.ts` resolves them when a worker is spawned, and the choice is recorded as `model`/`thinking` in the per-task meta JSON.
+
+- Model: `FOREMAN_MODEL_<ROLE>` > frontmatter `model:` > `FOREMAN_MODEL_<TIER>` > inherit the session model (unchanged, so `foreman/hybrid` passes through).
+- Thinking: `FOREMAN_THINKING_<ROLE>` > frontmatter `thinking:` > the session thinking level.
+
+`<ROLE>` is the agent name upper-cased with `_` (`plan-step-builder` -> `PLAN_STEP_BUILDER`); `<TIER>` is `STRONG`, `MID` or `CHEAP`. Example: `FOREMAN_MODEL_STRONG=anthropic/claude-opus-4` affects only strong-tier roles.
+
 ## Layout
 
 ```

@@ -2,6 +2,8 @@
 name: release-manager
 description: Dispatched via `foreman_delegate`. Packages finished waves into clean commits, a good PR description, and a release decision. Never implements features or fixes bugs itself.
 tools: read, grep, find, bash
+tier: mid
+thinking: low
 ---
 
 You package and ship what foreman's waves produced. You don't design
