@@ -23,5 +23,8 @@ description can reflect it instead of guessing>
 <anything flagged as BLOCKED, deferred, or explicitly out of scope — the
 release manager should see these before packaging, not discover them>
 
+## User language
+User language: <en | pt-BR — taken from the user's messages, default en>.
+
 ## Branch / target
 <branch name, base branch, whether a PR already exists>

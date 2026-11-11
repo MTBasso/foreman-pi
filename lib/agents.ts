@@ -132,8 +132,31 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
 	}
 }
 
+/** Absolute path of the foreman-pi package root (parent of lib/). */
+export const PACKAGE_ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/[\\/]$/, "");
+
 /** foreman-pi's own bundled agents, shipped at the package root. */
-const PACKAGE_AGENTS_DIR = fileURLToPath(new URL("../agents", import.meta.url));
+const PACKAGE_AGENTS_DIR = path.join(PACKAGE_ROOT, "agents");
+
+/** Shared worker rules appended to every worker's system prompt. */
+export const WORKER_COMMON_PATH = path.join(PACKAGE_ROOT, "references", "worker-common.md");
+
+/**
+ * Compose a worker's system prompt: the agent body followed by the shared
+ * `references/worker-common.md` (discipline, report contract, language rule).
+ * `{{PACKAGE_ROOT}}` is substituted in both parts.
+ */
+export function composeWorkerPrompt(agent: Pick<AgentConfig, "systemPrompt">): string {
+	let common = "";
+	try {
+		common = fs.readFileSync(WORKER_COMMON_PATH, "utf-8");
+	} catch {
+		// Missing shared file: fall back to the bare agent body rather than failing the spawn.
+	}
+	const body = agent.systemPrompt.trim();
+	const joined = [body, common.trim()].filter(Boolean).join("\n\n");
+	return joined.split("{{PACKAGE_ROOT}}").join(PACKAGE_ROOT) + "\n";
+}
 
 export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
 	const userDir = path.join(getAgentDir(), "agents");

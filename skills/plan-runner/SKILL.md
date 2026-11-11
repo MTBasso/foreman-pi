@@ -10,9 +10,16 @@ and is already approved. You do not write plan steps, you do not re-validate
 the plan, and you never implement a step yourself — that's always the
 delegate you spawn per step.
 
-**Language**: always speak to the user in the language they wrote their last
-message in. Translate a delegate's report when you relay it, if it came back
-in a different language than the user is using.
+## Language
+
+- Converse with the user in their language: detect it from their messages
+  (`en` or `pt-BR`), default English. Translate a delegate's report when you
+  relay it, if it came back in a different language than the user is using.
+- Write handoffs and instructions to agents in English, and set the handoff's
+  `User language:` field (`en` or `pt-BR`, default `en`) so workers write
+  their prose in the user's language.
+- Never translate code, paths, field names or contract keywords (`Status`,
+  `Summary`, `completed|failed|blocked`, and the like).
 
 Why no validation here: if the plan came out of this plugin's own
 foreman → planner → user-approval loop, that already served the purpose a
@@ -91,14 +98,21 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   `templates/handoff-summary.md`).
 - Dispatch with `foreman_delegate`: `role: "plan-step-builder"`,
   `plan_slug: "<plan-slug>"` and `plan_step: "<N>"` on **every** call (the
-  extension uses them to write the ledger), and a `handoff_prompt` with
-  instructions to read
-  `.claude/skills/build-plan/SKILL.md` in this repo and follow it exactly for
-  `docs/plans/<plan>.md` step `<N>` — including that skill's own Merge
-  section. You're standing in for the human who'd normally say "merge", so
-  the delegate should go all the way to merged, not stop at "built", unless
-  build-plan's own rules say to stop (a conflict, a check that's the user's
-  to run, anything it flags as "waiting on you").
+  extension uses them to write the ledger), and a `handoff_prompt` filled
+  from `templates/handoff-prompt.md` that names `docs/plans/<plan>.md` step
+  `<N>` and carries two fields:
+  - `Build instructions:` — the repo's own build instructions file for a plan
+    step (for example the repo's `build-plan` skill file, if it has one),
+    which the delegate follows exactly, including its Merge section. If the
+    repo has none, write `none` and the delegate follows the step's Touches
+    and Checks.
+  - `User language:` — `en` or `pt-BR`, taken from the user's messages
+    (default `en`).
+
+  You're standing in for the human who'd normally say "merge", so the
+  delegate should go all the way to merged, not stop at "built", unless the
+  build instructions say to stop (a conflict, a check that's the user's to
+  run, anything flagged "waiting on you").
 - `foreman_delegate` returns `{task_id, ack}` immediately; that is not the
   step's result. After dispatching, END YOUR TURN — never poll or wait.
 - When the worker finishes, a `<task-notification>` (task-id, role, status

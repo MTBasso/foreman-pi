@@ -65,6 +65,9 @@ export interface WorkerHandle {
 	kill(): void;
 }
 
+/** How well the worker's final report followed the `--- foreman-report ---` contract. */
+export type ReportContract = "ok" | "missing" | "malformed";
+
 export interface Notification {
 	taskId: string;
 	role: string;
@@ -74,6 +77,11 @@ export interface Notification {
 	summary: string;
 	/** Path relative to the project root. */
 	output: string;
+	/** From the worker's report block; absent when the contract was not met. */
+	files?: string[];
+	rulings?: string[];
+	blockedOn?: string;
+	contract?: ReportContract;
 }
 
 export interface SendOptions {
@@ -175,6 +183,103 @@ export function summarize(report: string): string {
 	return truncate(collapse(stripped), SUMMARY_MAX);
 }
 
+export interface ParsedReport {
+	/** Undefined only when the report is empty. */
+	status: TaskStatus | undefined;
+	summary: string;
+	files: string[];
+	rulings: string[];
+	blockedOn: string;
+	contract: ReportContract;
+}
+
+const BLOCK_START = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*foreman-report[ \t]*-{3}[ \t]*$/i;
+const BLOCK_END = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*end[ \t]+foreman-report[ \t]*-{3}[ \t]*$/i;
+// English keywords only: localized keys ("Estado:", "Resumo:") are never labels.
+const FIELD_LABEL = /^[ \t]*(status|summary|files|rulings|blocked-on)[ \t]*:(.*)$/i;
+const NONE = /^(none|-|n\/a)?$/i;
+
+interface BlockCandidate {
+	lines: string[];
+	terminated: boolean;
+}
+
+function parseBlockBody(lines: string[]): Omit<ParsedReport, "contract"> | undefined {
+	const fields: Record<string, string[]> = {};
+	let current: string | undefined;
+	for (const line of lines) {
+		const m = FIELD_LABEL.exec(line);
+		if (m) {
+			current = m[1].toLowerCase();
+			fields[current] = [m[2]];
+		} else if (current) {
+			fields[current].push(line);
+		}
+	}
+	const value = (k: string) => (fields[k] ?? []).join("\n").trim();
+	const status = value("status").toLowerCase();
+	if (status !== "completed" && status !== "failed" && status !== "blocked") return undefined;
+	const files = value("files")
+		.split(/[,\n]/)
+		.map((s) => s.trim())
+		.filter((s) => !NONE.test(s));
+	const rulings = value("rulings")
+		.split("\n")
+		.map((s) => s.trim().replace(/^[-*]\s+/, ""))
+		.filter((s) => !NONE.test(s));
+	const blockedOn = value("blocked-on");
+	return {
+		status,
+		summary: collapse(value("summary")),
+		files,
+		rulings,
+		blockedOn: NONE.test(blockedOn) ? "" : blockedOn,
+	};
+}
+
+/**
+ * Parse a worker's final report. Pure and language-agnostic: only the English
+ * field names and Status values are keywords (case-insensitive); prose in any
+ * language inside the fields is never interpreted.
+ *
+ * Chain: last well-formed block wins; else a legacy `[BLOCKED]` first line
+ * means blocked; else a non-empty report is completed with `contract` missing
+ * (or malformed when a block was present but unusable).
+ */
+export function parseFinalBlock(report: string): ParsedReport {
+	const text = report.replace(/\r\n?/g, "\n");
+	const candidates: BlockCandidate[] = [];
+	let open: BlockCandidate | undefined;
+	for (const line of text.split("\n")) {
+		if (BLOCK_END.test(line)) {
+			if (open) {
+				open.terminated = true;
+				candidates.push(open);
+				open = undefined;
+			}
+		} else if (BLOCK_START.test(line)) {
+			if (open) candidates.push(open);
+			open = { lines: [], terminated: false };
+		} else if (open) {
+			open.lines.push(line);
+		}
+	}
+	if (open) candidates.push(open);
+
+	let sawMalformed = false;
+	for (let i = candidates.length - 1; i >= 0; i--) {
+		const c = candidates[i];
+		const parsed = c.terminated ? parseBlockBody(c.lines) : undefined;
+		if (parsed) return { ...parsed, contract: "ok" };
+		sawMalformed = true;
+	}
+
+	const contract: ReportContract = sawMalformed ? "malformed" : "missing";
+	if (!text.trim()) return { status: undefined, summary: "", files: [], rulings: [], blockedOn: "", contract };
+	const status: TaskStatus = isBlockedReport(text) ? "blocked" : "completed";
+	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", contract };
+}
+
 export function formatBlock(n: Notification): string {
 	return [
 		"<task-notification>",
@@ -184,6 +289,7 @@ export function formatBlock(n: Notification): string {
 		`plan-step: ${n.planStep ?? "-"}`,
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
+		...(n.contract === "missing" || n.contract === "malformed" ? [`report-contract: ${n.contract}`] : []),
 		"</task-notification>",
 	].join("\n");
 }
@@ -334,6 +440,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		const report = finalReport(r.messages);
 		let status: TaskStatus;
 		let error: string | undefined;
+		let parsed: ParsedReport | undefined;
 		if (t.timedOut) {
 			status = "failed";
 			error = `timed out after ${timeoutMs}ms`;
@@ -352,10 +459,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		} else if (!report) {
 			status = "failed";
 			error = "(no output)";
-		} else if (isBlockedReport(report)) {
-			status = "blocked";
 		} else {
-			status = "completed";
+			parsed = parseFinalBlock(report);
+			status = parsed.status ?? "completed";
+			if (status === "failed") error = "worker reported Status: failed";
 		}
 
 		let body: string;
@@ -384,7 +491,15 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			// Output file is best effort; the notification still goes out.
 		}
 
-		const summary = status === "failed" ? truncate(collapse(`${error}${report ? ` — ${report}` : r.stderr ? ` — ${r.stderr}` : ""}`), SUMMARY_MAX) : summarize(report);
+		const fromContract = parsed?.contract === "ok";
+		const summary = fromContract
+			? truncate(parsed!.summary || collapse(report), SUMMARY_MAX)
+			: status === "failed"
+				? truncate(collapse(`${error}${report ? ` — ${report}` : r.stderr ? ` — ${r.stderr}` : ""}`), SUMMARY_MAX)
+				: parsed?.summary ?? summarize(report);
+		const contractInfo = parsed
+			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, contract: parsed.contract }
+			: {};
 		t.state = status;
 		try {
 			writeMeta(t, {
@@ -393,6 +508,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				signal: r.signal,
 				error: error ?? null,
 				summary,
+				...contractInfo,
 			});
 		} catch {
 			// ignore
@@ -407,6 +523,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			planSlug: t.planSlug,
 			summary,
 			output: outputRel(t.taskId),
+			...contractInfo,
 		});
 		scheduleFlush();
 		pump();
@@ -603,6 +720,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			const outputAbs = join(deps.root, outputRelPath);
 			let status: TaskStatus = "failed";
 			let summary = "orphaned (orchestrator restarted)";
+			let contractInfo: Partial<Notification> = {};
 			if (existsSync(outputAbs)) {
 				let report = "";
 				try {
@@ -617,13 +735,14 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					// no meta
 				}
 				if (report.trim()) {
-					status =
-						metaStatus === "failed" || report.startsWith(`# ${e.taskId} FAILED`)
-							? "failed"
-							: isBlockedReport(report)
-								? "blocked"
-								: "completed";
-					summary = summarize(report.replace(/^# .* FAILED\n+/, ""));
+					const isFailed = metaStatus === "failed" || report.startsWith(`# ${e.taskId} FAILED`);
+					const body = report.replace(/^# .* FAILED\n+/, "");
+					const parsed = parseFinalBlock(body);
+					status = isFailed ? "failed" : (parsed.status ?? "completed");
+					summary = parsed.contract === "ok" && parsed.summary ? truncate(parsed.summary, SUMMARY_MAX) : summarize(body);
+					if (!isFailed) {
+						contractInfo = { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, contract: parsed.contract };
+					}
 				}
 			}
 			recovered.push({
@@ -634,6 +753,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				planSlug: e.planSlug,
 				summary,
 				output: outputRelPath,
+				...contractInfo,
 			});
 			deps.appendEntry(TASK_ENTRY_TYPE, { ...e, state: status, recovered: true });
 		}

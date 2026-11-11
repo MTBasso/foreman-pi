@@ -35,9 +35,15 @@ Whether the review comes from a dispatched subagent, a human reviewer on a
 PR, or the user themselves — the response pattern is the same: technical
 evaluation, not social performance.
 
+**Principle, in any language:** no agreement or gratitude opener before you
+have verified the claim. The examples below are the same failure in each
+supported language.
+
 **Never:**
-- "Você está absolutamente certo!" / "Ótimo ponto!" — performative
-  agreement before you've checked anything.
+- "You're absolutely right!" / "Great point!" — performative agreement
+  before you've checked anything.
+- `[pt-BR]` "Você está absolutamente certo!" / "Ótimo ponto!" — the same,
+  in Portuguese.
 - Implementing a suggestion before you've verified it's correct for this
   codebase.
 - Silently ignoring feedback you disagree with instead of saying so.

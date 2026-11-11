@@ -2,7 +2,8 @@
  * Mock/lint test: the shipped instructions must forbid parallel dependent
  * commands and writing secrets to disk. Run: npx tsx extensions/orchestrator-guardrail/instructions-test.ts
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
 const pr = readFileSync(new URL("skills/plan-runner/SKILL.md", root), "utf8");
@@ -41,4 +42,48 @@ check("plan-runner says extension writes the ledger", /extension writes that led
 check("plan-runner passes plan_slug and plan_step", /plan_slug/.test(pr) && /plan_step/.test(pr));
 check("plan-runner ends turn and never polls", /END YOUR TURN/.test(pr) && /never poll/.test(pr));
 check("plan-runner has no manual ledger append", !/append\s+one line/.test(pr));
+
+// --- Phase 4: prompt cleanup lints -----------------------------------------
+const mdFiles = (dir: string): string[] =>
+	readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((e) =>
+		e.isDirectory() ? mdFiles(`${dir}${e.name}/`) : e.name.endsWith(".md") ? [`${dir}${e.name}`] : [],
+	);
+const agentFiles = mdFiles("agents/");
+for (const f of agentFiles) {
+	const t = readFileSync(new URL(f, root), "utf8");
+	check(`${f}: no 'hand off to'`, !/hand off to/i.test(t));
+	check(`${f}: no 'claude plugin'`, !/claude plugin/i.test(t));
+	check(`${f}: no 'npm install -g'`, !/npm install -g/.test(t));
+	check(`${f}: no '.claude/skills'`, !/\.claude\/skills/.test(t));
+	check(`${f}: no copied 'Working discipline' block`, !/^## Working discipline/m.test(t));
+	check(`${f}: description says dispatched via foreman_delegate`, /^description:.*foreman_delegate/m.test(t));
+}
+const allProse = [...agentFiles, ...mdFiles("skills/"), ...mdFiles("references/"), ...mdFiles("templates/")];
+for (const f of allProse.filter((x) => !x.startsWith("agents/"))) {
+	const t = readFileSync(new URL(f, root), "utf8");
+	check(`${f}: no 'claude plugin' / '.claude/skills'`, !/claude plugin|\.claude\/skills/i.test(t));
+}
+const common = readFileSync(new URL("references/worker-common.md", root), "utf8");
+check("worker-common: contract markers", /--- foreman-report ---/.test(common) && /--- end foreman-report ---/.test(common));
+check("worker-common: package root + language rule + no delegation", /Package root: \{\{PACKAGE_ROOT\}\}/.test(common) && /User language:/.test(common) && /cannot delegate/.test(common));
+check("handoff template has Build instructions and User language", (() => { const t = readFileSync(new URL("templates/handoff-prompt.md", root), "utf8"); return /Build instructions:/.test(t) && /User language:/.test(t); })());
+check("plan-runner §2 names Build instructions and User language", /Build instructions:/.test(pr) && /User language:/.test(pr));
+check("foreman skill has a Language section", /^## Language/m.test(skill) && /User language:/.test(skill));
+check("plan-runner has a Language section", /^## Language/m.test(pr));
+// Stray-Portuguese lint: pt-BR diacritics or stopwords outside `[pt-BR]`-tagged lines.
+const PT_DIACRITICS = /[áàâãéêíóôõúç]/i;
+const PT_STOPWORDS = /\b(você|voce|não|uma|para|isso|está|pra|esse|muito|obrigado|também|então|ótimo|quer)\b/i;
+const strayPortuguese = (text: string): string[] =>
+	text
+		.split("\n")
+		.filter((l) => !l.includes("[pt-BR]"))
+		.map((l) => l.replace(/https?:\/\/\S+/g, "").replace(/\/[\w.\/-]+/g, ""))
+		.filter((l) => PT_DIACRITICS.test(l) || PT_STOPWORDS.test(l));
+check("pt lint is precise: flags untagged Portuguese", strayPortuguese("Diga: você está certo").length === 1 && strayPortuguese("Diga ação").length === 1);
+check("pt lint ignores [pt-BR]-tagged lines", strayPortuguese("`[pt-BR]` \"Você está certo!\"").length === 0);
+check("pt lint ignores plain English and URLs", strayPortuguese("Use https://example.com/ção and the plan.").length === 0 && strayPortuguese("This is fine.").length === 0);
+for (const f of allProse) {
+	const bad = strayPortuguese(readFileSync(new URL(f, root), "utf8"));
+	check(`${f}: no stray Portuguese${bad.length ? " -> " + bad[0].trim() : ""}`, bad.length === 0);
+}
 if (failures) process.exit(1);

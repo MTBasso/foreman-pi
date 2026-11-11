@@ -9,11 +9,14 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PACKAGE_ROOT, composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import extension, { buildDetails, callText } from "./index.ts";
 import {
 	createCoordinator,
 	finalReport,
+	formatBlock,
 	NOTIFICATION_CUSTOM_TYPE,
+	parseFinalBlock,
 	type SendOptions,
 	type SpawnRequest,
 	type WorkerResult,
@@ -403,6 +406,124 @@ async function main() {
 		for (const h of orch.handlers.session_shutdown ?? []) await h({}, ctx);
 		check("lifecycle handlers tolerate no-op sessions", true);
 		rmSync(dir, { recursive: true, force: true });
+	}
+
+
+	// Phase 4a. parseFinalBlock: contract parsing and fallback chain.
+	{
+		const blk = (fields: string) => `--- foreman-report ---\n${fields}\n--- end foreman-report ---`;
+		const full = (status: string, extra = "") =>
+			blk(`Status: ${status}\nSummary: did it\nFiles: a.ts, b/c.ts\nRulings: Ruling: x — y\nBlocked-on: none${extra}`);
+		for (const st of ["completed", "failed", "blocked"] as const) {
+			const p = parseFinalBlock(`work\n${full(st)}`);
+			check(`parser: Status ${st}`, p.status === st && p.contract === "ok" && p.summary === "did it");
+		}
+		const p0 = parseFinalBlock(full("completed"));
+		check("parser: files, rulings, blocked-on none", p0.files.join("|") === "a.ts|b/c.ts" && p0.rulings.join("|") === "Ruling: x — y" && p0.blockedOn === "");
+		const pb = parseFinalBlock(`[BLOCKED] first\n${full("completed")}`);
+		check("parser: [BLOCKED] plus a block -> block wins", pb.status === "completed" && pb.contract === "ok");
+		const pl = parseFinalBlock("[BLOCKED] need key\nrest");
+		check("parser: legacy [BLOCKED] -> blocked, contract missing", pl.status === "blocked" && pl.contract === "missing" && pl.summary.startsWith("need key"));
+		const pm = parseFinalBlock("just prose");
+		check("parser: missing block -> completed/missing", pm.status === "completed" && pm.contract === "missing" && pm.summary === "just prose");
+		const pd = parseFinalBlock(blk("Status: done\nSummary: s"));
+		check("parser: Status: done -> malformed, falls to completed", pd.contract === "malformed" && pd.status === "completed");
+		const pdb = parseFinalBlock(`[BLOCKED] x\n${blk("Status: done\nSummary: s")}`);
+		check("parser: malformed then [BLOCKED] -> blocked/malformed", pdb.contract === "malformed" && pdb.status === "blocked");
+		const p2 = parseFinalBlock(`${blk("Status: failed\nSummary: first")}\ntext\n${blk("Status: completed\nSummary: last")}`);
+		check("parser: two blocks, last wins", p2.status === "completed" && p2.summary === "last");
+		const p2b = parseFinalBlock(`${blk("Status: failed\nSummary: good")}\n${blk("Status: nope\nSummary: bad")}`);
+		check("parser: last WELL-FORMED wins over later malformed", p2b.status === "failed" && p2b.contract === "ok");
+		const pf = parseFinalBlock("```\n" + full("blocked") + "\n```");
+		check("parser: block inside a code fence", pf.status === "blocked" && pf.contract === "ok");
+		const pc = parseFinalBlock(full("completed").replace(/\n/g, "\r\n"));
+		check("parser: CRLF", pc.status === "completed" && pc.summary === "did it" && pc.files.length === 2);
+		const pms = parseFinalBlock(blk("Status: completed\nSummary: line one\nline two\n\nline three\nFiles: none\nRulings: none\nBlocked-on: none"));
+		check("parser: multi-line Summary", pms.summary === "line one line two line three" && pms.files.length === 0 && pms.rulings.length === 0);
+		const pe = parseFinalBlock(blk("Status: completed\nSummary: s\nFiles:\nRulings:\nBlocked-on:"));
+		check("parser: empty Files", pe.contract === "ok" && pe.files.length === 0 && pe.blockedOn === "");
+		const pbo = parseFinalBlock(blk("Status: blocked\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: the user's API key"));
+		check("parser: Blocked-on captured", pbo.status === "blocked" && pbo.blockedOn === "the user's API key");
+		const pun = parseFinalBlock("--- foreman-report ---\nStatus: completed\nSummary: s");
+		check("parser: unterminated block -> malformed", pun.contract === "malformed");
+		// Bilingual cases
+		const ppt = parseFinalBlock(blk("Status: completed\nSummary: Implementação concluída: ação, validação e testes passaram.\nResumo: tudo certo, sem pendências.\nFiles: src/ção.ts\nRulings: Ruling: usar café — decisão rápida\nBlocked-on: nada"));
+		check("parser: pt-BR Summary with accents and Resumo: line", ppt.contract === "ok" && ppt.status === "completed" && ppt.summary === "Implementação concluída: ação, validação e testes passaram. Resumo: tudo certo, sem pendências." && ppt.files[0] === "src/ção.ts");
+		const ploc = parseFinalBlock(blk("Estado: concluído\nResumo: feito\nArquivos: a.ts"));
+		check("parser: localized keys -> malformed, not misparsed", ploc.contract === "malformed" && ploc.status === "completed");
+		const pmix = parseFinalBlock(blk("Status: concluído\nSummary: feito"));
+		check("parser: localized Status value -> malformed", pmix.contract === "malformed");
+		const pup = parseFinalBlock(blk("STATUS: COMPLETED\nSUMMARY: Ok\nFILES: none"));
+		check("parser: upper case keys and value accepted", pup.contract === "ok" && pup.status === "completed" && pup.summary === "Ok");
+		check("parser: empty report", parseFinalBlock("").status === undefined);
+		const nb = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "ok" });
+		const nm = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "malformed" });
+		const nn = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o" });
+		check("formatBlock: no report-contract line when ok/absent", !/report-contract/.test(nb) && nb === nn);
+		check("formatBlock: leading lines unchanged, contract line appended", nm.startsWith(nb.replace("\n</task-notification>", "")) && /\nreport-contract: malformed\n<\/task-notification>$/.test(nm));
+	}
+
+	// Phase 4b. coordinator wiring: contract in finishTask and recover.
+	{
+		const h = harness({ maxWorkers: 8 });
+		const mk = () => h.coord.delegate({ role: "qa", handoff_prompt: "x", plan_step: 1 }).task_id;
+		const block = (st: string, summary: string) => `prose\n--- foreman-report ---\nStatus: ${st}\nSummary: ${summary}\nFiles: x.ts, y.ts\nRulings: Ruling: a — b\nBlocked-on: ${st === "blocked" ? "the user" : "none"}\n--- end foreman-report ---`;
+		const okId = mk();
+		const blockedId = mk();
+		const failedId = mk();
+		const missingId = mk();
+		const malId = mk();
+		const procId = mk();
+		h.finish(okId, ok(block("completed", "all green")));
+		h.finish(blockedId, ok(block("blocked", "need creds")));
+		h.finish(failedId, ok(block("failed", "repro: step 3 breaks")));
+		h.finish(missingId, ok("plain prose report"));
+		h.finish(malId, ok("--- foreman-report ---\nStatus: done\nSummary: s\n--- end foreman-report ---"));
+		h.finish(procId, { code: 3, signal: null, messages: [assistant(block("completed", "claims success"))], stderr: "crash" });
+		await h.coord.whenIdle();
+		const all = h.sent.flatMap((s) => s.message.details.notifications) as any[];
+		const st = (id: string) => all.find((n) => n.taskId === id);
+		check("wiring: ok block -> completed with summary/files/rulings", st(okId).status === "completed" && st(okId).summary === "all green" && st(okId).files.join() === "x.ts,y.ts" && st(okId).rulings[0] === "Ruling: a — b" && st(okId).contract === "ok");
+		check("wiring: blocked block -> blocked + blockedOn", st(blockedId).status === "blocked" && st(blockedId).blockedOn === "the user");
+		check("wiring: Status: failed with exit 0 -> failed, worker summary kept", st(failedId).status === "failed" && st(failedId).summary === "repro: step 3 breaks");
+		check("wiring: missing block -> completed, contract missing", st(missingId).status === "completed" && st(missingId).contract === "missing");
+		check("wiring: malformed block -> contract malformed", st(malId).contract === "malformed" && st(malId).status === "completed");
+		check("wiring: process failure beats completed block", st(procId).status === "failed" && /code 3/.test(st(procId).summary));
+		const content = h.sent.map((s) => s.message.content).join("\n");
+		check("wiring: report-contract line only for missing/malformed", (content.match(/report-contract: missing/g) ?? []).length === 1 && (content.match(/report-contract: malformed/g) ?? []).length === 1);
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman/runs", h.coord.runId, `${okId}.json`), "utf8"));
+		check("wiring: per-task meta has files/rulings/blockedOn/contract", meta.files.length === 2 && meta.rulings.length === 1 && meta.contract === "ok" && meta.blockedOn === "");
+		check("wiring: BLOCK_RE-style match still isolates each block", (content.match(/<task-notification>[\s\S]*?<\/task-notification>/g) ?? []).length === 6);
+		h.cleanup();
+
+		// recover: reads the contract from a saved report.
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-rec4-"));
+		const runDir = join(root, ".foreman", "runs", "old");
+		mkdirSync(runDir, { recursive: true });
+		writeFileSync(join(runDir, "t1-qa.md"), `${block("blocked", "waiting on creds")}\n`);
+		const h2 = harness({ root });
+		const n = h2.coord.recover([{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" }]);
+		await h2.coord.whenIdle();
+		const rn = h2.sent.flatMap((s) => s.message.details.notifications)[0] as any;
+		check("recover: contract block drives status/summary/blockedOn", n === 1 && rn.status === "blocked" && rn.summary === "waiting on creds" && rn.blockedOn === "the user" && rn.contract === "ok");
+		h2.cleanup();
+	}
+
+	// Phase 4c. compose: every role's worker prompt.
+	{
+		const { agents } = discoverAgents(process.cwd(), "user");
+		const pkg = agents.filter((a) => a.source === "package");
+		check("compose: package agents found", pkg.length >= 8);
+		for (const a of pkg) {
+			const prompt = composeWorkerPrompt(a);
+			check(`compose: ${a.name} has contract marker and language rule`, prompt.includes("--- foreman-report ---") && prompt.includes("--- end foreman-report ---") && /User language:/.test(prompt) && /Field names, `Status` values/.test(prompt));
+			check(`compose: ${a.name} has no raw {{PACKAGE_ROOT}}`, !prompt.includes("{{PACKAGE_ROOT}}"));
+			check(`compose: ${a.name} starts with the agent body`, prompt.startsWith(a.systemPrompt.trim().slice(0, 40)));
+		}
+		const sample = composeWorkerPrompt(pkg[0]);
+		const m = /Package root: (\S+)/.exec(sample);
+		check("compose: Package root line is the real path and exists", !!m && m[1] === PACKAGE_ROOT && existsSync(join(m[1], "references", "worker-common.md")));
+		check("compose: {{PACKAGE_ROOT}} also substituted in the agent body", composeWorkerPrompt({ systemPrompt: "see {{PACKAGE_ROOT}}/x" }).includes(`see ${PACKAGE_ROOT}/x`));
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

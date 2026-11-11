@@ -1,4 +1,4 @@
-Referenced from `commands/foreman-diagnose.md`. Use this when the user wants
+Referenced from the foreman diagnose flow. Use this when the user wants
 to know why a `foreman`- or `plan-runner`-orchestrated run went wrong:
 repeated work, a plan that got ignored, a step that stalled, "why did this
 take so long/cost so much", or they want a clear account before deciding
@@ -19,9 +19,9 @@ Ask one question at a time until you can write a one-paragraph problem
 statement: which run (which plan, or which feature/bug if it was plain
 `foreman` mode), roughly when, what the user expected, what happened
 instead, and the observable they actually care about (wall-clock, a
-specific repeated action, a step that never finished, cost). "Demorou
-muito" is a complaint, not a problem statement — ask what "muito" means
-here (compared to what).
+specific repeated action, a step that never finished, cost). "It took
+too long" is a complaint, not a problem statement — ask what "too long"
+means here (compared to what).
 
 ## 2. Gather the evidence that already exists
 
@@ -43,8 +43,8 @@ before reaching for anything else:
   conversation, if diagnosing the current or a recent session in the same
   transcript.
 - **The conversation transcript itself**, if this harness exposes one
-  (e.g. Claude Code stores session transcripts you may be able to locate
-  via the environment, or the user can point you at an export). Don't
+  (for example a session file you can locate via the environment, or an
+  export the user points you at). Don't
   assume a path — confirm it against session id, working directory, and
   timestamps before trusting it; recency alone doesn't confirm identity.
   If you can't locate or access it, say so explicitly and work from the

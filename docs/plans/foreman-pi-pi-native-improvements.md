@@ -165,7 +165,7 @@ Status: done
 
 ## Phase 4 — Report contract, prompt cleanup, package-root injection (language-agnostic)
 
-Status: todo
+Status: done
 
 **Contract** (approved), appended to every worker prompt by the spawner:
 

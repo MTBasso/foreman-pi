@@ -10,8 +10,18 @@ decided — paste the relevant fields in directly.
 # Handoff: <short task title>
 
 ## Role
-You are the <planner | frontend-dev | backend-dev | qa-bugfix> agent. <one line
+You are the <planner | frontend-dev | backend-dev | qa | qa-bugfix | plan-step-builder> agent. <one line
 on what you must and must not do, e.g. "produce a plan only, no code".>
+
+## User language
+User language: <en | pt-BR — taken from the user's messages, default en>.
+Write your prose (Summary, findings, questions) in that language; field names,
+`Status` values and code stay English.
+
+## Build instructions
+Build instructions: <path to a file with the repo's own build steps for this
+task, or `none`. If a path is given, read it and follow it exactly; if
+`none`, follow the step's Touches and Checks.>
 
 ## Grilled requirement
 <the feature/bug/change, already grilled — problem, who it's for, scope

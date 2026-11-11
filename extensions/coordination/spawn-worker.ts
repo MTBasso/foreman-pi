@@ -10,7 +10,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverAgents } from "../../lib/agents.ts";
+import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson } from "../../lib/spawn.ts";
 import type { SpawnRequest, WorkerHandle } from "./coordinator.ts";
 
@@ -39,10 +39,11 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 
 	let tmpDir: string | undefined;
 	try {
-		if (agent.systemPrompt.trim()) {
+		const systemPrompt = composeWorkerPrompt(agent);
+		if (systemPrompt.trim()) {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-foreman-worker-"));
 			const promptFile = path.join(tmpDir, `prompt-${agent.name.replace(/[^\w.-]+/g, "_")}.md`);
-			fs.writeFileSync(promptFile, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
+			fs.writeFileSync(promptFile, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 			args.push("--append-system-prompt", promptFile);
 		}
 		args.push(`Task: ${inlineOrPointerPrompt(req.prompt, req.runDir, req.taskId)}`);
