@@ -104,6 +104,11 @@ export interface WatchPane {
 /** Live watch panes, oldest first. The newest is where the next worker stacks. */
 const livePanes: string[] = [];
 
+/** Test hook: forget tracked panes. */
+export function resetWatchPanes() {
+	livePanes.length = 0;
+}
+
 function parsePaneId(out: string | undefined): string | undefined {
 	try {
 		return JSON.parse(out ?? "null")?.result?.pane?.pane_id;
@@ -116,11 +121,23 @@ function parsePaneId(out: string | undefined): string | undefined {
  * Open a herdr pane that follows a worker's event log. The worker itself stays a
  * child process of this one (reports are read from its stream); the pane is a
  * live window onto it. Layout: one column to the right of the orchestrator (the
- * first worker splits it 60/40), later workers stack downward in that column, so
+ * orchestrator keeps 60% of the width), later workers stack downward in that column, so
  * the orchestrator keeps its full height. The pane runs the tail script via `exec`,
  * so when the script exits herdr closes the pane.
  */
-export async function openWatchPane(
+let openChain: Promise<unknown> = Promise.resolve();
+/** Serialised: workers spawn in the same tick, and each must see the previous one's pane to stack under it. */
+export function openWatchPane(
+	args: { taskId: string; role: string; cwd: string; logFile: string; tailScript: string },
+	env: HerdrEnv = process.env,
+	run: PaneRunner = defaultPaneRunner,
+): Promise<WatchPane | undefined> {
+	const p = openChain.then(() => openWatchPaneNow(args, env, run));
+	openChain = p.catch(() => {});
+	return p;
+}
+
+async function openWatchPaneNow(
 	args: { taskId: string; role: string; cwd: string; logFile: string; tailScript: string },
 	env: HerdrEnv = process.env,
 	run: PaneRunner = defaultPaneRunner,
@@ -137,7 +154,7 @@ export async function openWatchPane(
 		paneId = await split(prev, "down", "0.5");
 		if (!paneId) livePanes.pop();
 	}
-	if (!paneId) paneId = await split(env.HERDR_PANE_ID!, "right", "0.4");
+	if (!paneId) paneId = await split(env.HERDR_PANE_ID!, "right", "0.6");
 	if (!paneId) return undefined;
 	livePanes.push(paneId);
 	const id = paneId;

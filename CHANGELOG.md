@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.2]
+
+### Fixed
+
+- herdr watch panes: workers started in the same tick all split the orchestrator (side-by-side squeeze) because pane opening raced; it is now serialised so they stack in one column. The orchestrator keeps 60% of the width (the split ratio is the share the existing pane keeps).
+
 ## [0.3.1]
 
 ### Changed
