@@ -763,7 +763,7 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 }
 {
 	const src = readFileSync(new URL("../coordination/spawn-worker.ts", import.meta.url), "utf8");
-	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("env: workerEnv(agent.name)"));
+	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("...workerEnv(agent.name)"));
 	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes('"--no-session"'));
 }
 
