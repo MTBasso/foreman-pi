@@ -30,31 +30,48 @@ check("paneTitle idle", paneTitle({ running: 0, queued: 0 }) === undefined);
 
 // watch panes
 const pcalls: string[][] = [];
-const prun = async (_b: string, a: string[]) => { pcalls.push(a); return a[1] === "split" ? JSON.stringify({ result: { pane: { pane_id: "wA:p9" } } }) : ""; };
+let n = 9;
+const prun = async (_b: string, a: string[]) => { pcalls.push(a); return a[1] === "split" ? JSON.stringify({ result: { pane: { pane_id: `wA:p${n++}` } } }) : ""; };
 const henv = { HERDR_ENV: "1", HERDR_PANE_ID: "wA:p1" };
 check("panes enabled in herdr", panesEnabled(henv) && !panesEnabled({ ...henv, FOREMAN_HERDR_PANES: "0" }) && !panesEnabled({}));
 check("no pane outside herdr", (await openWatchPane({ taskId: "t1", role: "qa", cwd: "/x", logFile: "/tmp/x.jsonl", tailScript: "/s" }, {}, prun)) === undefined);
-const log = `${fs.mkdtempSync(`${os.tmpdir()}/hw-`)}/t1.events.jsonl`;
+const dir = fs.mkdtempSync(`${os.tmpdir()}/hw-`);
+const log = `${dir}/t1.events.jsonl`;
 const wp = await openWatchPane({ taskId: "t1", role: "qa", cwd: "/x", logFile: log, tailScript: "/s/herdr-tail.mjs" }, henv, prun);
-check("first pane splits the orchestrator pane downward", pcalls[0].includes("down") && pcalls[0][2] === "wA:p1");
-check("pane is renamed and runs the tail script", pcalls[1][1] === "rename" && pcalls[2][1] === "run" && pcalls[2].at(-1)!.includes("herdr-tail.mjs"));
+check("first worker splits the orchestrator to the right (new column)", pcalls[0][1] === "split" && pcalls[0][2] === "wA:p1" && pcalls[0].includes("right"));
+check("pane is renamed, cleared, and exec's the tail script", pcalls[1][1] === "rename" && pcalls[2][1] === "run" && /^clear; exec node '\/s\/herdr-tail\.mjs'/.test(pcalls[2].at(-1)!));
 await openWatchPane({ taskId: "t2", role: "qa", cwd: "/x", logFile: log + "2", tailScript: "/s" }, henv, prun);
-check("second pane splits the first to the right", pcalls[3].includes("right") && pcalls[3][2] === "wA:p9");
+check("second worker stacks below the first in the column", pcalls[3][2] === "wA:p9" && pcalls[3].includes("down"));
+await wp!.finish({ keepOpen: false });
+check("clean finish writes ok and never closes the pane itself", fs.readFileSync(log + ".done", "utf-8") === "ok" && !pcalls.some((a) => a[1] === "close"));
 await wp!.finish({ keepOpen: true });
-check("finish writes the .done marker and keeps the pane", fs.existsSync(log + ".done") && !pcalls.some((a) => a[1] === "close"));
-await wp!.finish({ keepOpen: false, closeAfterMs: 1 });
-check("finish closes a clean pane", pcalls.some((a) => a[1] === "close"));
+check("attention finish writes attention", fs.readFileSync(log + ".done", "utf-8") === "attention");
+// a closed stack target falls back to a fresh column
+let fail = true;
+const flaky = async (_b: string, a: string[]) => (a[1] === "split" && a[2] === "wA:p10" && fail ? undefined : prun(_b, a));
+const w3 = await openWatchPane({ taskId: "t3", role: "qa", cwd: "/x", logFile: log + "3", tailScript: "/s" }, henv, flaky);
+check("stale stack target falls back to a new column", !!w3 && pcalls.at(-3)![2] === "wA:p1" && pcalls.at(-3)!.includes("right"));
 check("shellQuote escapes quotes", shellQuote("a'b") === `'a'\\''b'`);
 
-// tail script renderer
-const fixture = `${log}.fixture`;
-fs.writeFileSync(fixture, [
-	JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "hello" }, { type: "toolCall", name: "bash", arguments: { command: "ls" } }] } }),
-	JSON.stringify({ type: "message_end", message: { role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "boom" }] } }),
-].join("\n") + "\n");
-fs.writeFileSync(fixture + ".done", "");
-const tail = execFileSync("node", [new URL("../scripts/herdr-tail.mjs", import.meta.url).pathname, fixture, "t1 (qa)"], { encoding: "utf-8", timeout: 10000 });
-check("tail renders text, tool call, tool error and exits on .done", /hello/.test(tail) && /→ bash/.test(tail) && /✗ bash boom/.test(tail) && /worker finished/.test(tail));
+// tail script: renderer + lifecycle
+const tailMod: any = await import(/* @vite-ignore */ "../scripts/herdr-tail.mjs" as string);
+const st = { calls: 0, errors: 0 };
+const asst = (content: unknown[], extra = {}) => JSON.stringify({ type: "message_end", message: { role: "assistant", content, ...extra } });
+const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+const o1 = tailMod.render(asst([{ type: "text", text: "plan it" }, { type: "toolCall", name: "write", arguments: { path: "/home/u/Code/temp/src/b.py", content: "x".repeat(212) } }]), st).map(strip);
+check("render: text and write summary", o1[0].includes("plan it") && o1[1].includes("write …/temp/src/b.py") && o1[1].includes("212 chars"));
+check("render: edit counts changes, no raw JSON", strip(tailMod.render(asst([{ type: "toolCall", name: "edit", arguments: { path: "a.py", edits: [{}, {}] } }]), st)[0]).includes("2 change(s)") && !tailMod.render(asst([{ type: "toolCall", name: "edit", arguments: { path: "a.py", edits: [{ oldText: "SECRET" }] } }]), st)[0].includes("SECRET"));
+check("render: ok tool results are silent", tailMod.render(JSON.stringify({ type: "message_end", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "fine" }] } }), st).length === 0);
+check("render: tool errors shown and counted", strip(tailMod.render(JSON.stringify({ type: "message_end", message: { role: "toolResult", toolName: "read", isError: true, content: [{ type: "text", text: "ENOENT" }] } }), st)[0]).includes("✗ read: ENOENT") && st.errors === 1);
+check("render: junk lines ignored", tailMod.render("nope", st).length === 0);
+check("fmtElapsed", tailMod.fmtElapsed(4000) === "4s" && tailMod.fmtElapsed(125000) === "2m05s");
+const tailRun = (verdict: string) => {
+	const f = `${dir}/run-${verdict}.jsonl`;
+	fs.writeFileSync(f, asst([{ type: "toolCall", name: "bash", arguments: { command: "ls" } }]) + "\n");
+	fs.writeFileSync(f + ".done", verdict);
+	return execFileSync("node", [new URL("../scripts/herdr-tail.mjs", import.meta.url).pathname, f, "t1 · qa"], { encoding: "utf-8", timeout: 20000, env: { ...process.env, LINGER_S: "0", FORCE_COLOR: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+};
+check("tail: ok run prints summary and exits by itself", /finished/.test(strip(tailRun("ok"))) && /1 tool calls/.test(strip(tailRun("ok"))));
 
 console.log(failures === 0 ? "All herdr checks passed." : `${failures} herdr check(s) FAILED.`);
 if (failures) process.exit(1);
