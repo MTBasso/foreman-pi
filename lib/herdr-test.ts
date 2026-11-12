@@ -13,6 +13,11 @@ const off = createHerdr({}, run);
 off.notify("x"); off.reportWorkers({ running: 1, queued: 0 });
 check("no-op when inactive", calls.length === 0);
 
+// the pane id must directly follow the subcommand: herdr rejects options-first order
+const orderCalls: string[][] = [];
+const ord = createHerdr({ HERDR_ENV: "1", HERDR_PANE_ID: "wA:p1" }, (_b, a) => void orderCalls.push(a));
+ord.reportWorkers({ running: 1, queued: 0 });
+check("report-metadata: pane id before options", orderCalls[0][2] === "wA:p1" && orderCalls[0][3] === "--source");
 const on = createHerdr({ HERDR_ENV: "1", HERDR_PANE_ID: "wA:p1" }, run);
 on.reportWorkers({ running: 2, queued: 1 });
 on.reportWorkers({ running: 2, queued: 1 });
@@ -31,10 +36,10 @@ check("panes enabled in herdr", panesEnabled(henv) && !panesEnabled({ ...henv, F
 check("no pane outside herdr", (await openWatchPane({ taskId: "t1", role: "qa", cwd: "/x", logFile: "/tmp/x.jsonl", tailScript: "/s" }, {}, prun)) === undefined);
 const log = `${fs.mkdtempSync(`${os.tmpdir()}/hw-`)}/t1.events.jsonl`;
 const wp = await openWatchPane({ taskId: "t1", role: "qa", cwd: "/x", logFile: log, tailScript: "/s/herdr-tail.mjs" }, henv, prun);
-check("first pane splits the orchestrator pane downward", pcalls[0].includes("down") && pcalls[0].at(-1) === "wA:p1");
+check("first pane splits the orchestrator pane downward", pcalls[0].includes("down") && pcalls[0][2] === "wA:p1");
 check("pane is renamed and runs the tail script", pcalls[1][1] === "rename" && pcalls[2][1] === "run" && pcalls[2].at(-1)!.includes("herdr-tail.mjs"));
 await openWatchPane({ taskId: "t2", role: "qa", cwd: "/x", logFile: log + "2", tailScript: "/s" }, henv, prun);
-check("second pane splits the first to the right", pcalls[3].includes("right") && pcalls[3].at(-1) === "wA:p9");
+check("second pane splits the first to the right", pcalls[3].includes("right") && pcalls[3][2] === "wA:p9");
 await wp!.finish({ keepOpen: true });
 check("finish writes the .done marker and keeps the pane", fs.existsSync(log + ".done") && !pcalls.some((a) => a[1] === "close"));
 await wp!.finish({ keepOpen: false, closeAfterMs: 1 });
