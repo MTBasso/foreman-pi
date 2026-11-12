@@ -75,8 +75,17 @@ Summary: <≤400 chars, in the user's language>
 Files: <comma-separated paths, or none>
 Rulings: <"Ruling: what — why" lines, or none>
 Blocked-on: <what/who, or none>
+Rendered: <screenshot paths under .foreman/, "unrendered", or "n/a">
 --- end foreman-report ---
 ```
+
+- `Rendered:` is required when your step changes anything a user sees (UI, theme,
+  terminal output, generated images). Capture a screenshot of the real result
+  (the project's own capture script if it has one, otherwise a headless browser
+  or the compositor's screenshot tool) and list its path. If you could not render
+  it, write `unrendered`: that is an honest answer and is surfaced to the reviewer
+  and in the PR. Writing "n/a" for a visual change is a false report. Passing
+  unit tests is not evidence that something looks right.
 
 - Pick exactly one `Status` value: `completed`, `failed` or `blocked`.
 - Keep the field names exactly as shown, in English.

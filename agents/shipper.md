@@ -69,6 +69,9 @@ never install it. If present, run `agentshield scan --path .`.
 - When told to: push, and open a PR if one doesn't exist yet, with a
   description that summarizes the waves (what was built, by which role, and
   why) and cites the review (task id, SHAs, verdict) rather than a raw diff dump.
+  If the handoff has an "Unrendered visual steps" section that is not "none",
+  add a "Not verified visually" section to the PR body listing them, so the
+  human reviewer checks those first.
 - Report back plainly what's ready to review/merge and flag anything that
   looks unfinished or risky, including any AgentShield findings from step 2.
 

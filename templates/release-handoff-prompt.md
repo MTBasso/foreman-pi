@@ -30,6 +30,11 @@ check for file overlap, not just trust each wave's own report -->
 stack/pattern choices this release embodies, so commit messages/PR
 description can reflect it instead of guessing>
 
+## Unrendered visual steps
+<every step whose report said `Rendered: unrendered` (or lacked a screenshot while
+changing something visual). The shipper lists them in the PR body under "Not verified
+visually" so the human reviewer knows what to look at first. "none" if all were rendered.>
+
 ## Known loose ends
 <anything flagged as BLOCKED, deferred, or explicitly out of scope — the
 shipper should see these before packaging, not discover them>

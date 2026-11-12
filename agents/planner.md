@@ -33,6 +33,8 @@ never have to guess, vague enough that you're not writing the code yourself:
    - Why: <reason>
    - Dependencies: none / requires step N
    - Risk: low / medium / high
+   - Renders: yes / no (yes = the step changes something a user sees; the
+     builder must capture a screenshot or report `unrendered`)
 
 ## Testing strategy
 - <what frontend-dev/backend-dev should verify, and how, before reporting done>

@@ -650,6 +650,15 @@ async function main() {
 	}
 
 
+	// Rendered: field (render gate).
+	{
+		const blk = (r: string) => `--- foreman-report ---\nStatus: completed\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: none\n${r}--- end foreman-report ---`;
+		check("rendered: unrendered parsed", parseFinalBlock(blk("Rendered: unrendered\n")).rendered === "unrendered");
+		check("rendered: path parsed", parseFinalBlock(blk("Rendered: .foreman/shots/a.png\n")).rendered === ".foreman/shots/a.png");
+		check("rendered: n/a and absent are empty", parseFinalBlock(blk("Rendered: n/a\n")).rendered === "" && parseFinalBlock(blk("")).rendered === "");
+		check("rendered does not break the contract", parseFinalBlock(blk("Rendered: unrendered\n")).contract === "ok");
+	}
+
 	// Phase 4a. parseFinalBlock: contract parsing and fallback chain.
 	{
 		const blk = (fields: string) => `--- foreman-report ---\n${fields}\n--- end foreman-report ---`;
