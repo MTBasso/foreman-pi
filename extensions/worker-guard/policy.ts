@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Role } from "../../lib/roles.ts";
+import { resolveLiteralVars } from "./vars.ts";
 
 export type Verdict = { block: false } | { block: true; reason: string };
 
@@ -151,6 +152,11 @@ function isRealEnvFile(base: string): boolean {
 	return !/\.(example|sample|template|dist|tpl)$/.test(base);
 }
 
+/** The planner (otherwise read-only) may save its plan as docs/plans/<name>.md. */
+function plannerMayWrite(ctx: Ctx, rel: string | null): boolean {
+	return ctx.role === "planner" && rel !== null && /^docs\/plans\/[^/]+\.md$/.test(rel);
+}
+
 /** Why `abs` may not be written by this role, or undefined when it may. */
 function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: boolean): string | undefined {
 	if (abs === null) return `the path "${shown}" could not be resolved (dangling symlink, unreadable, or the working directory is unknown after a "cd" that cannot be resolved)`;
@@ -158,6 +164,7 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 	const segs = rel === null || rel === "" ? [] : rel.split(path.sep);
 	switch (ctx.kind) {
 		case "readonly":
+			if (plannerMayWrite(ctx, rel)) return undefined;
 			return isKnownRole(ctx.role)
 				? `role "${ctx.role}" is read-only and may not write "${shown}"`
 				: `unknown role "${ctx.role}" fails closed to read-only, so "${shown}" may not be written`;
@@ -1030,6 +1037,10 @@ function redirectProblem(ctx: Ctx, t: Word | null): string | undefined {
 		if (t.text === "/dev/null") return undefined;
 		if (ctx.kind !== "readonly" && (/^\/dev\/(stderr|stdout|tty)$/.test(t.text) || /^\/dev\/fd\/\d+$/.test(t.text))) return undefined;
 	}
+	if (ctx.kind === "readonly" && ctx.role === "planner" && !unresolvable(t)) {
+		const abs = resolveArg(ctx, t.text);
+		if (abs !== null && plannerMayWrite(ctx, inside(ctx.root, abs) ? path.relative(ctx.root, abs) : null)) return undefined;
+	}
 	if (ctx.kind === "readonly") return `role "${ctx.role}" is read-only and may not redirect output to "${t.text}" (only /dev/null is allowed)`;
 	if (unresolvable(t)) return `the redirect target "${t.text}" contains a variable, glob, ~ or substitution and cannot be resolved`;
 	return pathProblem(ctx, resolveArg(ctx, t.text), t.text, true);
@@ -1394,6 +1405,6 @@ function applyCd(ctx: Ctx, cmd: Cmd, st: PState, state: CwdState, complex: boole
 export function checkBash(role: string | undefined, cwd: string, command: unknown, opts?: GuardOptions): Verdict {
 	if (typeof command !== "string") return deny("the bash command is missing");
 	const ctx = makeCtx(role, cwd, opts);
-	const problem = evalScript(ctx, command, 0);
+	const problem = evalScript(ctx, resolveLiteralVars(command), 0);
 	return problem ? deny(problem) : OK;
 }

@@ -26,9 +26,12 @@ instructions above. Package root: {{PACKAGE_ROOT}}
 Your bash and write tools are checked by a fail-closed guard. Most blocks were
 avoidable; write commands in the form it can verify so you never have to stop:
 
-- **Literal paths only.** No `$VAR`, `~`, globs or `$(...)` in a path you write
-  to or delete (`mkdir "$D/x"`, `rm -rf $S`, `cat > $F/y` are all refused).
-  Spell the path out, or use the Write/Edit tool.
+- **Literal paths only.** No `~`, globs or `$(...)` in a path you write to or
+  delete, and no variable unless it is assigned a plain literal once, on its own
+  line or after a `;`, earlier in the same command (`D=.foreman/x; mkdir -p $D/seed`
+  is fine; `D=$(pwd)`, `A=x && use $A`, reassigned or loop variables, and
+  `rm -rf $S` with no visible assignment are refused). Spell the path out, or use
+  the Write/Edit tool.
 - **No process substitution** (`<(...)`), `eval`, `xargs`, `find -exec`, `awk`.
   Pipe through `sort`/`uniq`/`comm` into a file under `.foreman/` or the temp
   dir instead of `diff <(a) <(b)`.

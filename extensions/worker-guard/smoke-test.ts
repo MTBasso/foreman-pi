@@ -792,6 +792,28 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	}
 }
 
+// --- literal variable resolution + planner plan file -----------------------------------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	check("var: literal in-repo dir resolves for dev", !blocked(bash("backend-dev", "D=.foreman/x; mkdir -p $D/seed")));
+	check("var: literal tmp dir resolves for qa", !blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
+	check("var: heredoc to $F/path resolves", !blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
+	check("var: resolved path is still judged (outside repo)", blocked(bash("backend-dev", `O=${outside}; echo x > $O/f`)));
+	check("var: resolved path is still judged (qa into src)", blocked(bash("qa", "D=src; echo x > $D/a.ts")));
+	check("var: rm -rf $S still blocked when S unresolved", blocked(bash("backend-dev", "rm -rf $S")));
+	check("var: unresolved var after &&", blocked(bash("backend-dev", "D=.foreman/x && echo x > $D/y")));
+	check("var: reassigned var not resolved", blocked(bash("backend-dev", "D=.foreman/x; D=/etc; echo x > $D/y")));
+	check("var: command-substitution value not resolved", blocked(bash("backend-dev", "D=$(pwd); echo x > $D/y")));
+	check("var: loop var not resolved", blocked(bash("backend-dev", "D=.foreman/x; for D in /etc; do echo x > $D/y; done")));
+	check("var: single-quoted $D stays literal (qa cannot write src via it)", blocked(bash("qa", "D=.foreman; echo x > '$D'")));
+	check("var: used before assignment not resolved", blocked(bash("backend-dev", "echo x > $D/y; D=.foreman/x")));
+	check("planner may write docs/plans/*.md via tool", !write("planner", "docs/plans/foo.md").block);
+	check("planner may not write other docs", write("planner", "docs/foo.md").block && write("planner", "src/a.ts").block && write("planner", "docs/plans/sub/x.md").block);
+	check("planner may redirect into docs/plans/*.md", !bash("planner", "cat > docs/plans/foo.md <<'E'\n# p\nE\n").block);
+	check("planner redirect elsewhere still blocked", bash("planner", "echo x > docs/foo.md").block && bash("planner", "echo x > src/a.ts").block);
+	check("reviewer still cannot write plans", write("reviewer", "docs/plans/foo.md").block);
+}
+
 fs.rmSync(base, { recursive: true, force: true });
 console.log(failures === 0 ? `All ${total} worker-guard checks passed.` : `${failures} of ${total} worker-guard check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
