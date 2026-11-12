@@ -27,6 +27,7 @@
     "skills",
     "references",
     "scripts/baseline-diff.mjs",
+    "scripts/herdr-tail.mjs",
     "templates",
     "README.md",
     "README.pt-BR.md",

@@ -16,12 +16,14 @@ import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
+import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
 import { runWithRetry } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 
 /** Writer workers currently running in the shared tree or an isolated one. */
 let activeWriters = 0;
+import { PACKAGE_ROOT } from "../../lib/agents.ts";
 import { finalReport, type SpawnRequest, type WorkerHandle } from "./coordinator.ts";
 import type { PiRunResult } from "../../lib/spawn.ts";
 
@@ -73,7 +75,18 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		return failed(`Failed to prepare worker: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	const handle = runWithRetry((attempt) => runPiJson(args, { cwd, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }));
+	// Inside herdr: give the worker a live watch pane following its event log.
+	const logFile = panesEnabled() ? path.join(req.runDir, `${req.taskId}.events.jsonl`) : undefined;
+	let watch: Promise<Awaited<ReturnType<typeof openWatchPane>>> | undefined;
+	if (logFile) {
+		try {
+			fs.mkdirSync(req.runDir, { recursive: true });
+		} catch {
+			// ignore
+		}
+		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
+	}
+	const handle = runWithRetry((attempt) => runPiJson(args, { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }));
 	const cleanupTmp = () => {
 		if (!tmpDir) return;
 		try {
@@ -85,6 +98,11 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	const done = handle.done.then(async (r) => {
 		cleanupTmp();
 		releaseWriter();
+		if (watch) {
+			const report = finalReport(r.messages);
+			const clean = r.code === 0 && !/^\s*status:\s*(blocked|failed)/im.test(report) && !report.trimStart().startsWith("[BLOCKED]");
+			void watch.then((w) => w?.finish({ keepOpen: !clean }));
+		}
 		if (!iso) return r;
 		try {
 			const m = await finishWorktree(iso, req.taskId);
