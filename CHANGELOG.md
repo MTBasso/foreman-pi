@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1]
+
+### Changed
+
+- herdr watch panes: one column to the right of the orchestrator (workers stack downward in it), so the orchestrator keeps its height; the pane's process is the tail script, which owns the lifecycle: a clean worker lingers ~8s and the pane closes itself, a blocked/failed one stays until you press Enter/q. Compact output: one line per tool call (`write …/src/b.py 300 chars`), successful tool results hidden, errors in red, a summary line (tool calls, errors, elapsed). `LINGER_S` tunes the delay.
+
 ## [0.3.0]
 
 ### Added

@@ -93,17 +93,33 @@ export function panesEnabled(env: Record<string, string | undefined> = process.e
 }
 
 export interface WatchPane {
-	/** Signal the worker is done (the tail script exits) and close the pane after `closeAfterMs`, or leave it open. */
-	finish(opts: { keepOpen: boolean; closeAfterMs?: number }): Promise<void>;
+	/**
+	 * Tell the pane's tail script the worker is done. The script owns the pane's
+	 * lifecycle (it is the pane's process): "ok" lingers briefly then exits, which
+	 * closes the pane; "attention" waits for the user to dismiss it.
+	 */
+	finish(opts: { keepOpen: boolean }): Promise<void>;
+}
+
+/** Live watch panes, oldest first. The newest is where the next worker stacks. */
+const livePanes: string[] = [];
+
+function parsePaneId(out: string | undefined): string | undefined {
+	try {
+		return JSON.parse(out ?? "null")?.result?.pane?.pane_id;
+	} catch {
+		return undefined;
+	}
 }
 
 /**
  * Open a herdr pane that follows a worker's event log. The worker itself stays a
  * child process of this one (reports are read from its stream); the pane is a
- * live, human-readable window onto it. Layout: the first pane splits the
- * orchestrator's pane downward, later ones split the previous watch pane to the right.
+ * live window onto it. Layout: one column to the right of the orchestrator (the
+ * first worker splits it 60/40), later workers stack downward in that column, so
+ * the orchestrator keeps its full height. The pane runs the tail script via `exec`,
+ * so when the script exits herdr closes the pane.
  */
-let lastWatchPane: string | undefined;
 export async function openWatchPane(
 	args: { taskId: string; role: string; cwd: string; logFile: string; tailScript: string },
 	env: HerdrEnv = process.env,
@@ -111,30 +127,41 @@ export async function openWatchPane(
 ): Promise<WatchPane | undefined> {
 	if (!herdrActive(env)) return undefined;
 	const bin = env.HERDR_BIN_PATH || "herdr";
-	const target = lastWatchPane ?? env.HERDR_PANE_ID!;
-	const split = await run(bin, ["pane", "split", target, "--no-focus", "--direction", lastWatchPane ? "right" : "down", "--ratio", lastWatchPane ? "0.5" : "0.3", "--cwd", args.cwd]);
+	const split = async (target: string, direction: "right" | "down", ratio: string) =>
+		parsePaneId(await run(bin, ["pane", "split", target, "--no-focus", "--direction", direction, "--ratio", ratio, "--cwd", args.cwd]));
+
 	let paneId: string | undefined;
-	try {
-		paneId = JSON.parse(split ?? "null")?.result?.pane?.pane_id;
-	} catch {
-		// unparseable: give up quietly
+	// Stack under the newest live worker pane; if it has closed meanwhile, fall back to a fresh column.
+	while (!paneId && livePanes.length) {
+		const prev = livePanes[livePanes.length - 1];
+		paneId = await split(prev, "down", "0.5");
+		if (!paneId) livePanes.pop();
 	}
+	if (!paneId) paneId = await split(env.HERDR_PANE_ID!, "right", "0.4");
 	if (!paneId) return undefined;
-	lastWatchPane = paneId;
-	await run(bin, ["pane", "rename", paneId, `${args.taskId}`]);
-	await run(bin, ["pane", "run", paneId, `node ${shellQuote(args.tailScript)} ${shellQuote(args.logFile)} ${shellQuote(`${args.taskId} (${args.role})`)}`]);
+	livePanes.push(paneId);
 	const id = paneId;
+
+	await run(bin, ["pane", "rename", id, args.taskId]);
+	const cmd = `clear; exec node ${shellQuote(args.tailScript)} ${shellQuote(args.logFile)} ${shellQuote(`${args.taskId} · ${args.role}`)}`;
+	await run(bin, ["pane", "run", id, cmd]);
 	return {
-		async finish({ keepOpen, closeAfterMs = 20_000 }) {
+		async finish({ keepOpen }) {
 			try {
-				fs.writeFileSync(`${args.logFile}.done`, "");
+				fs.writeFileSync(`${args.logFile}.done`, keepOpen ? "attention" : "ok");
 			} catch {
 				// ignore
 			}
-			if (keepOpen) return;
-			await new Promise((r) => { const t = setTimeout(r, closeAfterMs); t.unref?.(); });
-			if (lastWatchPane === id) lastWatchPane = undefined;
-			await run(bin, ["pane", "close", id]);
+			// The pane closes itself when the tail script exits; drop our reference once it is gone.
+			const t = setTimeout(() => {
+				const i = livePanes.indexOf(id);
+				if (i >= 0) livePanes.splice(i, 1);
+			}, keepOpen ? 0 : 12_000);
+			t.unref?.();
+			if (keepOpen) {
+				const i = livePanes.indexOf(id);
+				if (i >= 0) livePanes.splice(i, 1);
+			}
 		},
 	};
 }
