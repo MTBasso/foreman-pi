@@ -54,7 +54,8 @@ export function createHerdr(env: HerdrEnv = process.env, run: Runner = defaultRu
 			const title = paneTitle(c);
 			if (title === lastTitle) return;
 			lastTitle = title;
-			const args = ["pane", "report-metadata", "--source", HERDR_SOURCE, env.HERDR_PANE_ID!];
+			// herdr's CLI wants the positional pane id BEFORE the options.
+			const args = ["pane", "report-metadata", env.HERDR_PANE_ID!, "--source", HERDR_SOURCE];
 			args.push(...(title ? ["--title", title] : ["--clear-title"]));
 			run(bin, args);
 		},
@@ -111,7 +112,7 @@ export async function openWatchPane(
 	if (!herdrActive(env)) return undefined;
 	const bin = env.HERDR_BIN_PATH || "herdr";
 	const target = lastWatchPane ?? env.HERDR_PANE_ID!;
-	const split = await run(bin, ["pane", "split", "--no-focus", "--direction", lastWatchPane ? "right" : "down", "--ratio", lastWatchPane ? "0.5" : "0.3", "--cwd", args.cwd, target]);
+	const split = await run(bin, ["pane", "split", target, "--no-focus", "--direction", lastWatchPane ? "right" : "down", "--ratio", lastWatchPane ? "0.5" : "0.3", "--cwd", args.cwd]);
 	let paneId: string | undefined;
 	try {
 		paneId = JSON.parse(split ?? "null")?.result?.pane?.pane_id;
