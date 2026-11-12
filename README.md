@@ -8,7 +8,7 @@ A [Pi](https://github.com/earendil-works/pi) package
 orchestrator session that grills, plans, builds, tests and ships, always
 delegating to dedicated worker agents and never editing code itself.
 
-Version 0.3.1. See [CHANGELOG.md](CHANGELOG.md) for what changed. Design
+Version 0.3.2. See [CHANGELOG.md](CHANGELOG.md) for what changed. Design
 background and the original viability research are in [PLAN.md](https://github.com/MTBasso/foreman-pi/blob/main/PLAN.md)
 (Portuguese); the 0.2.0 implementation plan is
 [docs/plans/foreman-pi-pi-native-improvements.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/plans/foreman-pi-pi-native-improvements.md).

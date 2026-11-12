@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { execFileSync } from "node:child_process";
-import { createHerdr, herdrActive, openWatchPane, paneTitle, panesEnabled, shellQuote } from "./herdr.ts";
+import { createHerdr, herdrActive, openWatchPane, paneTitle, resetWatchPanes, panesEnabled, shellQuote } from "./herdr.ts";
 let failures = 0;
 const check = (n: string, ok: boolean) => { if (!ok) { failures++; console.log(`FAIL - ${n}`); } };
 const calls: string[][] = [];
@@ -46,11 +46,34 @@ await wp!.finish({ keepOpen: false });
 check("clean finish writes ok and never closes the pane itself", fs.readFileSync(log + ".done", "utf-8") === "ok" && !pcalls.some((a) => a[1] === "close"));
 await wp!.finish({ keepOpen: true });
 check("attention finish writes attention", fs.readFileSync(log + ".done", "utf-8") === "attention");
+// workers opened in the same tick must still stack (race regression)
+{
+	resetWatchPanes();
+	const calls2: string[][] = [];
+	let k = 40;
+	const r2 = async (_b: string, a: string[]) => { calls2.push(a); await new Promise((r) => setTimeout(r, 5)); return a[1] === "split" ? JSON.stringify({ result: { pane: { pane_id: `wZ:p${k++}` } } }) : ""; };
+	const e2 = { HERDR_ENV: "1", HERDR_PANE_ID: "wZ:p1" };
+	const mkArgs = (n: number) => ({ taskId: `t${n}`, role: "qa", cwd: "/x", logFile: `${dir}/race${n}.jsonl`, tailScript: "/s" });
+	await Promise.all([openWatchPane(mkArgs(1), e2, r2), openWatchPane(mkArgs(2), e2, r2), openWatchPane(mkArgs(3), e2, r2)]);
+	const splits = calls2.filter((a) => a[1] === "split");
+	check("same-tick workers: 1 column split, then stack down on the newest", splits.length === 3 && splits[0][2] === "wZ:p1" && splits[0].includes("right") && splits[1][2] === "wZ:p40" && splits[1].includes("down") && splits[2][2] === "wZ:p41" && splits[2].includes("down"));
+	check("orchestrator keeps 60% of the width", splits[0].includes("0.6"));
+}
 // a closed stack target falls back to a fresh column
-let fail = true;
-const flaky = async (_b: string, a: string[]) => (a[1] === "split" && a[2] === "wA:p10" && fail ? undefined : prun(_b, a));
-const w3 = await openWatchPane({ taskId: "t3", role: "qa", cwd: "/x", logFile: log + "3", tailScript: "/s" }, henv, flaky);
-check("stale stack target falls back to a new column", !!w3 && pcalls.at(-3)![2] === "wA:p1" && pcalls.at(-3)!.includes("right"));
+resetWatchPanes();
+const staleCalls: string[][] = [];
+let sid = 70;
+const stale = async (_b: string, a: string[]) => {
+	staleCalls.push(a);
+	if (a[1] !== "split") return "";
+	if (a[2] === "wS:p70") return undefined; // the seed pane has "closed"
+	return JSON.stringify({ result: { pane: { pane_id: `wS:p${sid++}` } } });
+};
+const senv = { HERDR_ENV: "1", HERDR_PANE_ID: "wS:p1" };
+await openWatchPane({ taskId: "s1", role: "qa", cwd: "/x", logFile: log + "s", tailScript: "/s" }, senv, stale);
+const w3 = await openWatchPane({ taskId: "s2", role: "qa", cwd: "/x", logFile: log + "s2", tailScript: "/s" }, senv, stale);
+const sp = staleCalls.filter((a) => a[1] === "split");
+check("stale stack target falls back to a new column", !!w3 && sp.length === 3 && sp[1][2] === "wS:p70" && sp[2][2] === "wS:p1" && sp[2].includes("right"));
 check("shellQuote escapes quotes", shellQuote("a'b") === `'a'\\''b'`);
 
 // tail script: renderer + lifecycle
