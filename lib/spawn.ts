@@ -144,7 +144,9 @@ export function runPiJson(args: string[], opts: RunPiJsonOptions): PiRunHandle {
 		proc.stdout?.on("data", (d) => {
 			if (opts.logFile) {
 				try {
-					fs.appendFileSync(opts.logFile, d);
+					// Keep only the events the watch pane renders; message_update deltas dominate the stream.
+					const keep = d.toString().split("\n").filter((l: string) => l.includes('"message_end"'));
+					if (keep.length) fs.appendFileSync(opts.logFile, keep.join("\n") + "\n");
 				} catch {
 					// the log is best-effort
 				}

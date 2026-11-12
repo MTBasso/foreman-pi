@@ -21,8 +21,9 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import type { Role } from "../../lib/roles.ts";
-import { resolveLiteralVars } from "./vars.ts";
+import { expandForLoop, resolveLiteralVars } from "./vars.ts";
 
 export type Verdict = { block: false } | { block: true; reason: string };
 
@@ -157,6 +158,20 @@ function plannerMayWrite(ctx: Ctx, rel: string | null): boolean {
 	return ctx.role === "planner" && rel !== null && /^docs\/plans\/[^/]+\.md$/.test(rel);
 }
 
+/** Real paths of the other worktrees of this repo (`git worktree list`); they are part of the same project. */
+function siblingWorktrees(root: string): string[] {
+	try {
+		const out = execFileSync("git", ["-c", "core.hooksPath=/dev/null", "worktree", "list", "--porcelain"], { cwd: root, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+		return out
+			.split("\n")
+			.filter((l) => l.startsWith("worktree "))
+			.map((l) => realOrResolved(l.slice("worktree ".length).trim()))
+			.filter((w) => w !== root);
+	} catch {
+		return [];
+	}
+}
+
 /** Why `abs` may not be written by this role, or undefined when it may. */
 function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: boolean): string | undefined {
 	if (abs === null) return `the path "${shown}" could not be resolved (dangling symlink, unreadable, or the working directory is unknown after a "cd" that cannot be resolved)`;
@@ -180,8 +195,18 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 		default: {
 			if (rel === null) {
 				if (allowTmp && inside(ctx.tmp, abs, true)) return undefined;
+				// A linked worktree of this same repo is part of the project (plan-step-builder creates one in step 0).
+				const wt = siblingWorktrees(ctx.root).find((w) => inside(w, abs));
+				if (wt) {
+					const wsegs = path.relative(wt, abs).split(path.sep);
+					if (wsegs.includes(".git")) return `writing into .git is not allowed ("${shown}")`;
+					if (isRealEnvFile(path.basename(abs))) return `writing real .env files is not allowed ("${shown}"); .env.example and templates are fine`;
+					return undefined;
+				}
 				return `"${shown}" resolves outside the repository (${abs})`;
 			}
+			// The local-only ignore file is how a worktree directory is hidden from `git status`.
+			if (segs.length === 3 && segs[0] === ".git" && segs[1] === "info" && segs[2] === "exclude") return undefined;
 			if (segs.includes(".git")) return `writing into .git is not allowed ("${shown}")`;
 			if (isRealEnvFile(path.basename(abs))) return `writing real .env files is not allowed ("${shown}"); .env.example and templates are fine`;
 			return undefined;
@@ -1170,7 +1195,30 @@ const READONLY_CMDS = new Set([
 ]);
 const FIND_BAD = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"]);
 
+const PY_NAMES = /^python(3(\.\d+)?)?$/;
+const PIP_NAMES = /^pip3?$/;
+const PY_STMT = /^(import [\w.]+( as \w+)?(, ?[\w.]+( as \w+)?)*|from [\w.]+ import [\w., *]+|print\((?:"[^"\\$`]*"|'[^'\\$`]*'|[A-Za-z_][\w.]*)\)|print\(hasattr\([\w.]+, ?(?:"\w+"|'\w+')\)\))$/;
+
+/** Read-only probes a planner needs: `python -c "import x; print(x.__version__)"`, `pip show|list|freeze|check`. */
+function interpreterProbeProblem(name: string, args: Word[]): string | undefined | null {
+	const isPy = PY_NAMES.test(name);
+	if (!isPy && !PIP_NAMES.test(name)) return null;
+	const ops = args.filter((w) => !w.dynamic);
+	if (ops.length !== args.length) return `"${name}" with a variable argument cannot be checked`;
+	if (PIP_NAMES.test(name) || (isPy && ops[0]?.text === "-m" && PIP_NAMES.test(ops[1]?.text ?? ""))) {
+		const rest = PIP_NAMES.test(name) ? ops : ops.slice(2);
+		return ["show", "list", "freeze", "check"].includes(rest[0]?.text ?? "") ? undefined : `only "pip show|list|freeze|check" is allowed for this role`;
+	}
+	if (ops.length === 2 && ops[0].text === "-c") {
+		const stmts = ops[1].text.split(/\s*;\s*|\n/).map((x) => x.trim()).filter(Boolean);
+		if (stmts.length > 0 && stmts.every((x) => PY_STMT.test(x))) return undefined;
+	}
+	return `"${name}" is only allowed for read-only probes: -c with import / from-import / print(name) statements, or pip show|list|freeze|check`;
+}
+
 function readonlyProblem(ctx: Ctx, name: string, args: Word[]): string | undefined {
+	const probe = interpreterProbeProblem(name, args);
+	if (probe !== null) return probe;
 	if (!READONLY_CMDS.has(name)) {
 		return `the command "${name}" is not on the read-only allowlist for role "${ctx.role}"${isKnownRole(ctx.role) ? "" : " (unknown role, failing closed)"}`;
 	}
@@ -1405,6 +1453,6 @@ function applyCd(ctx: Ctx, cmd: Cmd, st: PState, state: CwdState, complex: boole
 export function checkBash(role: string | undefined, cwd: string, command: unknown, opts?: GuardOptions): Verdict {
 	if (typeof command !== "string") return deny("the bash command is missing");
 	const ctx = makeCtx(role, cwd, opts);
-	const problem = evalScript(ctx, resolveLiteralVars(command), 0);
+	const problem = evalScript(ctx, resolveLiteralVars(expandForLoop(command)), 0);
 	return problem ? deny(problem) : OK;
 }

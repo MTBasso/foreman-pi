@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.3]
+
+### Fixed
+
+From the directAds session, where step 0 (worktree + baseline) was blocked four times in a row and the planner could not check an import:
+
+- Writer roles (incl. `plan-step-builder`) may write inside any linked worktree of the repo (`git worktree list`), e.g. a sibling `../repo-feature`, and may append to `.git/info/exclude`. Other `.git` paths stay denied, and `.git`/real `.env` inside a linked worktree too.
+- `for VAR in <literal words>; do ... done` is unrolled before checking, so `>/tmp/o_$n.txt` in a loop over literal names works; each unrolled path is still judged. Loops over `$(...)`, globs, nested loops, or bodies that assign the variable are still denied.
+- planner/reviewer may probe: `python3 -c "import x; print(x.__version__)"` (import/from-import/print statements only) and `pip show|list|freeze|check`.
+- The worker event log keeps only `message_end` lines (the `message_update` deltas made it huge).
+
 ## [0.3.2]
 
 ### Fixed

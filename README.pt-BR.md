@@ -9,7 +9,7 @@ sessão orquestradora que faz perguntas, planeja, constrói, testa e entrega,
 sempre delegando para agentes de trabalho dedicados e nunca editando código por
 conta própria.
 
-Versão 0.3.2. Veja o [CHANGELOG.md](CHANGELOG.md) (em inglês) para o que mudou.
+Versão 0.3.3. Veja o [CHANGELOG.md](CHANGELOG.md) (em inglês) para o que mudou.
 O contexto de design e a pesquisa de viabilidade original estão em
 [PLAN.md](https://github.com/MTBasso/foreman-pi/blob/main/PLAN.md); o plano de implementação da 0.2.0 é
 [docs/plans/foreman-pi-pi-native-improvements.md](https://github.com/MTBasso/foreman-pi/blob/main/docs/plans/foreman-pi-pi-native-improvements.md).

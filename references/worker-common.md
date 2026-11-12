@@ -32,6 +32,13 @@ avoidable; write commands in the form it can verify so you never have to stop:
   is fine; `D=$(pwd)`, `A=x && use $A`, reassigned or loop variables, and
   `rm -rf $S` with no visible assignment are refused). Spell the path out, or use
   the Write/Edit tool.
+- **Loops:** `for n in a b c; do ... $n ... done` over a literal word list is
+  fine (the guard unrolls it). Loops over `$(...)`, globs or nested loops are not:
+  run each command on its own line instead.
+- **Planner probes:** `python3 -c "import x; print(x.__version__)"` (import /
+  print statements only) and `pip show|list|freeze|check` are allowed read-only.
+- **Worktrees:** you may write inside any linked worktree of this repo
+  (`git worktree list`) and add the worktree directory to `.git/info/exclude`.
 - **No process substitution** (`<(...)`), `eval`, `xargs`, `find -exec`, `awk`.
   Pipe through `sort`/`uniq`/`comm` into a file under `.foreman/` or the temp
   dir instead of `diff <(a) <(b)`.

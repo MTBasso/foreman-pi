@@ -4,6 +4,7 @@
  *
  * Real files in a temp repo (symlinks included); no pi session is started.
  */
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -812,6 +813,35 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("planner may redirect into docs/plans/*.md", !bash("planner", "cat > docs/plans/foo.md <<'E'\n# p\nE\n").block);
 	check("planner redirect elsewhere still blocked", bash("planner", "echo x > docs/foo.md").block && bash("planner", "echo x > src/a.ts").block);
 	check("reviewer still cannot write plans", write("reviewer", "docs/plans/foo.md").block);
+}
+
+// --- step-0 unblockers seen in the directAds session ----------------------------------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	// sibling worktree (real, registered)
+	const sib = path.join(base, "sibling-wt");
+	fs.writeFileSync(`${repo}/.gitkeep`, "");
+	const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: repo, stdio: "ignore" });
+	try { fs.rmSync(`${repo}/.git`, { recursive: true, force: true }); g("init", "-q"); g("add", ".gitkeep"); g("commit", "-qm", "i"); g("worktree", "add", "-q", sib, "-b", "wt-test"); } catch { /* checked below */ }
+	check("fixture: sibling worktree exists", fs.existsSync(sib));
+	for (const role of ["plan-step-builder", "backend-dev"]) {
+		check(`${role}: write into a linked worktree`, !blocked(write(role, `${sib}/docs/plans/x.md`)));
+		check(`${role}: cp into a linked worktree`, !blocked(bash(role, `cp existing.txt ${sib}/docs/x.txt`)));
+		check(`${role}: .git/info/exclude append`, !blocked(bash(role, `echo ".worktrees/" >> .git/info/exclude`)));
+		check(`${role}: other .git files still blocked`, blocked(bash(role, `echo x >> .git/config`)) && blocked(bash(role, `echo x >> .git/hooks/pre-commit`)));
+		check(`${role}: .git inside a linked worktree still blocked`, blocked(write(role, `${sib}/.git`)));
+		check(`${role}: unrelated outside dir still blocked`, blocked(write(role, `${outside}/x.txt`)));
+		check(`${role}: literal for-loop with redirect to tmp var`, !blocked(bash(role, `for n in a b c; do echo $n >${tmp}/o_$n.txt 2>&1; done`)));
+		check(`${role}: for-loop unrolled path is still judged`, blocked(bash(role, `for n in a b; do echo $n > ${outside}/o_$n.txt; done`)));
+		check(`${role}: for-loop over command substitution still blocked`, blocked(bash(role, `for n in $(ls); do echo $n > ${tmp}/o_$n; done`)));
+		check(`${role}: for-loop var that could be a path still blocked`, blocked(bash(role, `for n in ../../etc/x; do echo x > $n; done`)));
+	}
+	// planner probes
+	for (const c of ['python3 -c "import dotenv"', 'python3 -c "import dotenv; from cryptography.fernet import Fernet; print(dotenv.__name__)"', "./.venv/bin/python -c 'import app.main'", "pip show python-dotenv", ".venv/bin/pip list", "python3 -m pip show cryptography"])
+		check(`planner may run: ${c}`, !blocked(bash("planner", c)));
+	for (const c of ['python3 -c "import os; os.remove(\'x\')"', 'python3 -c "open(\'x\',\'w\')"', 'python3 script.py', 'python3 -c "import os;os.system(\'ls\')"', 'pip install foo', 'python3 -m http.server', 'python3 -c "print($HOME)"'])
+		check(`planner may not run: ${c}`, blocked(bash("planner", c)));
+	check("reviewer gets the same probes", !blocked(bash("reviewer", 'python3 -c "import json"')));
 }
 
 fs.rmSync(base, { recursive: true, force: true });
