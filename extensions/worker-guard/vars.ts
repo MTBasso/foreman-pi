@@ -194,3 +194,24 @@ export function resolveLiteralVars(command: string): string {
 	}
 	return out;
 }
+
+/**
+ * Unroll one simple `for VAR in <literal words>; do BODY; done` into straight-line
+ * statements (one copy of BODY per word, VAR replaced by the literal), so the guard
+ * judges every real path the loop would touch. Only when it is provably equivalent for
+ * the guard: a single top-level loop, literal words only, no nested loops/compound
+ * keywords inside BODY, no `break`/`continue`, at most 32 iterations. Otherwise returns
+ * the command unchanged (the guard then denies any `$VAR` path as before).
+ */
+export function expandForLoop(command: string): string {
+	const m = /^([\s\S]*?)(?:^|[\s;])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n$`()|&<>]+?)\s*[;\n]\s*do\b([\s\S]*?)(?:[;\n]\s*|\s+)done\b([\s\S]*)$/.exec(command);
+	if (!m) return command;
+	const [, prefix, name, list, body, suffix] = m;
+	const words = list.trim().split(/\s+/);
+	if (words.length === 0 || words.length > 32 || !words.every((w) => LITERAL.test(w))) return command;
+	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;
+	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;])done(?=[\s;]|$)/.test(suffix)) return command;
+	if (new RegExp(`(^|[\\s;])${name}=`).test(body) || new RegExp(`(^|[\\s;])${name}=`).test(prefix)) return command;
+	const copies = words.map((w) => substitute(body.replace(/^\s*;?/, ""), name, w).replace(/[;\s]+$/, ""));
+	return `${prefix.replace(/[;\s]*$/, "")}\n${copies.join("\n")}\n${suffix.replace(/^[;\s]+/, "")}`;
+}
