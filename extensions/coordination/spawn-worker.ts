@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
+import { runWithRetry } from "../../lib/retry.ts";
 import type { SpawnRequest, WorkerHandle } from "./coordinator.ts";
 
 export { MAX_INLINE_PROMPT_BYTES };
@@ -56,7 +57,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		return failed(`Failed to prepare worker: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	const handle = runPiJson(args, { cwd: req.cwd, env: workerEnv(agent.name) });
+	const handle = runWithRetry((attempt) => runPiJson(args, { cwd: req.cwd, env: workerEnv(agent.name) }));
 	const cleanupTmp = () => {
 		if (!tmpDir) return;
 		try {

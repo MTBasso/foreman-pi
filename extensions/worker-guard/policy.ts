@@ -163,6 +163,8 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 				: `unknown role "${ctx.role}" fails closed to read-only, so "${shown}" may not be written`;
 		case "scoped":
 		case "shipper": {
+			// Scratch output in the temp dir is harmless and was the most common false block.
+			if (allowTmp && rel === null && inside(ctx.tmp, abs, true)) return undefined;
 			if (segs[0] === ".foreman" && segs.length > 1) return undefined;
 			if (ctx.kind === "scoped" && rel === "FOREMAN_AUDIT.md") return undefined;
 			const allowed = ctx.kind === "scoped" ? ".foreman/ and FOREMAN_AUDIT.md" : ".foreman/";
@@ -1038,7 +1040,24 @@ function redirectProblem(ctx: Ctx, t: Word | null): string | undefined {
 const GIT_READ_SUBS = new Set([
 	"log", "diff", "show", "status", "rev-parse", "merge-base", "ls-files", "blame", "rev-list", "ls-tree",
 	"cat-file", "describe", "shortlog", "grep", "show-ref", "name-rev", "diff-tree", "diff-index", "branch",
+	"stash", "worktree", "tag",
 ]);
+/** Read-only forms of git subcommands that also have mutating forms. */
+function gitSubcommandProblem(sub: string, rest: Word[]): string | undefined {
+	const first = rest.find((w) => !w.text.startsWith("-"));
+	if (sub === "stash") {
+		return first && !first.dynamic && (first.text === "list" || first.text === "show") ? undefined : 'only "git stash list" and "git stash show" are allowed (stash push/pop/drop can sweep other workers\' uncommitted edits)';
+	}
+	if (sub === "worktree") {
+		return first && !first.dynamic && first.text === "list" ? undefined : 'only "git worktree list" is allowed';
+	}
+	if (sub === "tag") {
+		const listing = rest.some((w) => !w.dynamic && (w.text === "-l" || w.text === "--list" || w.text === "--contains" || w.text === "--points-at"));
+		const mutating = rest.some((w) => w.dynamic || /^-[dfams]|^--(delete|force|annotate|message|sign)/.test(w.text));
+		return (listing && !mutating) || rest.length === 0 ? undefined : '"git tag" is only allowed for listing (-l/--list)';
+	}
+	return undefined;
+}
 const GIT_BRANCH_READ_FLAGS = new Set(["--show-current", "--list", "-l", "-a", "-r", "-v", "-vv", "--all", "--remotes"]);
 
 function gitParse(args: Word[], restricted: boolean): { sub: string; rest: Word[] } | string {
@@ -1071,8 +1090,13 @@ function gitReadOnlyProblem(role: string, args: Word[]): string | undefined {
 		if (w.text.startsWith("--output")) return `"git ${p.sub} ${w.text}" writes a file and is not allowed`;
 		if (p.sub === "grep" && (w.text.startsWith("-O") || w.text.startsWith("--open-files"))) return "git grep -O would run a pager command and is not allowed";
 	}
+	const subProblem = gitSubcommandProblem(p.sub, p.rest);
+	if (subProblem) return subProblem;
 	if (p.sub === "branch") {
+		const listing = p.rest.some((w) => !w.dynamic && (w.text === "--list" || w.text === "-l"));
 		for (const w of p.rest) {
+			if (listing && !w.dynamic && !w.text.startsWith("-")) continue; // a glob pattern after --list
+			if (listing && w.glob) continue;
 			if (w.dynamic || (w.text.startsWith("-") && !GIT_BRANCH_READ_FLAGS.has(w.text))) return `only "git branch --show-current" (or listing flags) is allowed, not "git branch ${w.text}"`;
 			if (!w.text.startsWith("-")) return `"git branch ${w.text}" would create or change a branch`;
 		}
@@ -1094,6 +1118,12 @@ function gitDangerProblem(args: Word[]): string | undefined {
 		case "reset":
 			if (long.has("--hard")) return "git reset --hard is not allowed";
 			break;
+		case "stash": {
+			const first = ops[0];
+			if (!first || first.dynamic || !["list", "show"].includes(first.text))
+				return "git stash is not allowed: it sweeps other workers' uncommitted edits out of the shared working tree. Compare against a baseline with `git diff`, or `git worktree`-free alternatives like reading `git show <sha>:<path>`";
+			break;
+		}
 		case "clean":
 			if (!short.has("n") && !long.has("--dry-run")) return "git clean is not allowed";
 			break;
@@ -1174,7 +1204,7 @@ function scopedProblem(ctx: Ctx, name: string, args: Word[], un: Unwrapped): str
 	if (name === "gh") return ctx.kind === "shipper" ? undefined : ghReadOnlyProblem(ctx.role, args);
 	if (MUTATORS.has(name)) {
 		for (const w of operands(args)) {
-			const p = argPathProblem(ctx, w, false);
+			const p = argPathProblem(ctx, w, true);
 			if (p) return `"${name}": ${p}`;
 		}
 	}

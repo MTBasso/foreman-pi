@@ -21,6 +21,35 @@ instructions above. Package root: {{PACKAGE_ROOT}}
   agreement or gratitude opener before verifying, in any language. See
   `{{PACKAGE_ROOT}}/references/code-review-discipline.md`, "Receiving a review".
 
+### Working under the worker guard
+
+Your bash and write tools are checked by a fail-closed guard. Most blocks were
+avoidable; write commands in the form it can verify so you never have to stop:
+
+- **Literal paths only.** No `$VAR`, `~`, globs or `$(...)` in a path you write
+  to or delete (`mkdir "$D/x"`, `rm -rf $S`, `cat > $F/y` are all refused).
+  Spell the path out, or use the Write/Edit tool.
+- **No process substitution** (`<(...)`), `eval`, `xargs`, `find -exec`, `awk`.
+  Pipe through `sort`/`uniq`/`comm` into a file under `.foreman/` or the temp
+  dir instead of `diff <(a) <(b)`.
+- **Scratch output** goes to `.foreman/` (any role) or the temp dir (qa, shipper,
+  dev roles). Read-only roles (planner, reviewer) cannot write scratch at all.
+- **Never `git stash`, `git reset --hard`, `git clean` or `git checkout -- .`**
+  in a shared worktree: other workers' uncommitted edits live there. To compare
+  against a baseline, use `git diff <sha> -- <path>` or `git show <sha>:<path>`.
+  `git stash list`, `git worktree list`, `git branch --list` and `git tag -l`
+  are fine.
+- **If you are blocked, don't retry or work around it.** Report
+  `Status: blocked`, name the exact command and reason, and include any
+  analysis you finished: it is not lost, the foreman re-dispatches with it.
+
+### Test baselines
+
+Compare failing test *names*, not counts. If the plan has a baseline file
+(`.foreman/baseline.txt`, one failing name per line), run
+`node {{PACKAGE_ROOT}}/scripts/baseline-diff.mjs .foreman/baseline.txt < failing-names.txt`
+and report its `NEW:` and `FIXED:` lines verbatim. Never say "matches baseline" from a count.
+
 ### You cannot delegate
 
 You are a worker running in your own process. You cannot dispatch other

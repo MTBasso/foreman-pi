@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Worker guard: qa/shipper may write scratch to the temp dir; read-only `git stash list|show`, `git worktree list`, `git branch --list <pattern>`, `git tag -l`; mutating `git stash` is blocked for dev roles (it swept other workers' uncommitted edits in a shared worktree).
+- `references/worker-common.md`: a "Working under the worker guard" cheat-sheet and baseline-by-name rules, shown to every worker.
+- `scripts/baseline-diff.mjs`: diff failing test names against a baseline file (`NEW:`/`FIXED:`), instead of comparing counts.
+- Automatic retry with backoff for workers that die on a 429/5xx before producing output (`lib/retry.ts`).
+- Optional herdr integration (`lib/herdr.ts`): inside a herdr pane, mirror live worker counts into the pane title and raise a notification when a worker is blocked or failed. No-op elsewhere.
+
 ## [0.2.0]
 
 ### Added

@@ -767,6 +767,31 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes('"--no-session"'));
 }
 
+// --- v0.3 loosening: tmp scratch for scoped roles, read-only git forms, no stash -------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	check("qa may redirect scratch output into the temp dir", !blocked(bash("qa", `echo hi > ${tmp}/t.out`)));
+	check("qa may mkdir in the temp dir", !blocked(bash("qa", `mkdir -p ${tmp}/scratch`)));
+	check("qa still may not write outside .foreman and tmp", blocked(bash("qa", `echo hi > ${outside}/x`)));
+	check("qa still may not write into src", blocked(bash("qa", "echo hi > src/a.ts")));
+	check("planner (readonly) still may not write tmp", blocked(bash("planner", `echo hi > ${tmp}/t.out`)));
+	for (const role of ["qa", "reviewer", "planner"]) {
+		check(`${role}: git worktree list`, !blocked(bash(role, "git worktree list")));
+		check(`${role}: git stash list`, !blocked(bash(role, "git stash list")));
+		check(`${role}: git branch --list 'recovery/*'`, !blocked(bash(role, "git branch --list 'recovery/*'")));
+		check(`${role}: git tag -l`, !blocked(bash(role, "git tag -l")));
+		check(`${role}: git stash pop blocked`, blocked(bash(role, "git stash pop")));
+		check(`${role}: git worktree add blocked`, blocked(bash(role, "git worktree add ../x")));
+		check(`${role}: git branch newname blocked`, blocked(bash(role, "git branch newname")));
+		check(`${role}: git tag -d blocked`, blocked(bash(role, "git tag -d x -l")));
+	}
+	for (const role of DEV) {
+		check(`${role}: bare git stash blocked`, blocked(bash(role, "git stash")));
+		check(`${role}: git stash push blocked`, blocked(bash(role, "git stash push -m x")));
+		check(`${role}: git stash list ok`, !blocked(bash(role, "git stash list")));
+	}
+}
+
 fs.rmSync(base, { recursive: true, force: true });
 console.log(failures === 0 ? `All ${total} worker-guard checks passed.` : `${failures} of ${total} worker-guard check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
