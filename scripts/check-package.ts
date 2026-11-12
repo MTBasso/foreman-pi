@@ -172,8 +172,8 @@ async function main() {
 		}
 		const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8"));
 		check("manifest has pi.extensions and pi.skills", Array.isArray(manifest.pi?.extensions) && Array.isArray(manifest.pi?.skills));
-		check("manifest version is 0.2.0 and pi.changelogPath points at a packed file", manifest.version === "0.2.0" && files.includes(String(manifest.pi?.changelogPath ?? "").replace(/^\.\//, "")));
-		check("changelog has a ## [0.2.0] section", /^## \[0\.2\.0\]/m.test(fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8")));
+		check("manifest version is 0.3.0 and pi.changelogPath points at a packed file", manifest.version === "0.3.0" && files.includes(String(manifest.pi?.changelogPath ?? "").replace(/^\.\//, "")));
+		check("changelog has a ## [0.3.0] section", /^## \[0\.3\.0\]/m.test(fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8")));
 		check("tarball excludes the historical docs (docs/, PLAN.md)", !files.some((f) => f.startsWith("docs/") || f === "PLAN.md"));
 
 		// 4. pi install + pi list

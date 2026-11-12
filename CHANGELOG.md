@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0]
+
+### Added
+
+- Worker guard: qa/shipper may write scratch to the temp dir; read-only `git stash list|show`, `git worktree list`, `git branch --list <pattern>`, `git tag -l`; mutating `git stash` is blocked for dev roles (it swept other workers' uncommitted edits in a shared worktree).
+- `references/worker-common.md`: a "Working under the worker guard" cheat-sheet and baseline-by-name rules, shown to every worker.
+- `scripts/baseline-diff.mjs`: diff failing test names against a baseline file (`NEW:`/`FIXED:`), instead of comparing counts.
+- Automatic retry with backoff for workers that die on a 429/5xx before producing output (`lib/retry.ts`).
+- Optional herdr integration (`lib/herdr.ts`): inside a herdr pane, mirror live worker counts into the pane title and raise a notification when a worker is blocked or failed. No-op elsewhere.- Worktree isolation for parallel writers (`lib/worktree.ts`): when another writer worker is running, `frontend-dev`/`backend-dev`/`qa-bugfix`/`plan-step-builder` get a private `.foreman/worktrees/<task>` checkout on branch `foreman/<task>`; its work is committed and merged back when it finishes (serialised), and a conflicting merge turns the report into `blocked` with the branch kept. `FOREMAN_ISOLATE=always|auto|never`. Repo hooks are disabled for these git calls.- herdr watch panes: inside herdr, each worker gets a live pane (`scripts/herdr-tail.mjs`) following its event log, closed ~20s after a clean finish and kept open for blocked/failed ones. `FOREMAN_HERDR_PANES=0` disables. The worker stays a child process; the pane is a window onto it, not an attach point.- Render-or-flag gate: the report contract gains `Rendered:` (screenshot paths, `unrendered` or `n/a`), surfaced in task notifications; planner steps carry `Renders: yes|no`; review and release handoffs list unrendered visual steps, and the shipper puts them under "Not verified visually" in the PR.- Worker guard resolves variables assigned a plain literal earlier in the same command (`extensions/worker-guard/vars.ts`), conservatively: no `&&`/`||`/pipes/subshells/loops, single assignment, never inside single quotes or heredoc bodies. The planner may save `docs/plans/<name>.md` (and has the Write tool for it).
+
 ## [0.2.0]
 
 ### Added

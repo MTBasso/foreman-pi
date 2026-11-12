@@ -381,6 +381,9 @@ performative agreement if the user or a delegate pushes back on your plan.
   1. Fill in `templates/review-handoff-prompt.md` and dispatch the `reviewer`
      role via `foreman_delegate` over the whole accumulated diff. Post
      `[PENDING] reviewer → full diff review` first. END YOUR TURN.
+     Fill its `## Unrendered visual steps` from the `rendered:` lines in the
+     worker notifications (`unrendered`, or a visual step with no screenshot);
+     if a visual step lacks one, consider a `qa` pass that captures it before review.
   2. On its notification read the `Verdict:` token in the summary.
      `Verdict: changes-requested`: delegate the fixes to `qa-bugfix` with the
      findings, then dispatch the `reviewer` again over the new range. Repeat

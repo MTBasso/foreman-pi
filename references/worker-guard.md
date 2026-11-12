@@ -93,3 +93,16 @@ This is a heuristic guard, not a sandbox.
 
 If a block is a false positive, change the policy in
 `extensions/worker-guard/policy.ts` and add a case to `smoke-test.ts`.
+
+## v0.3 notes
+
+- `extensions/worker-guard/vars.ts` rewrites `$VAR` to a literal only when it is
+  assigned a plain literal exactly once as its own statement earlier in the same
+  command; otherwise the variable stays unresolved and the guard denies as before.
+- qa/shipper may write scratch to the temp dir; read-only git forms
+  (`stash list|show`, `worktree list`, `branch --list`, `tag -l`) are allowed;
+  `git stash` mutations are denied for writer roles.
+- The planner may write `docs/plans/<name>.md` only.
+- Parallel writers run in private git worktrees (`lib/worktree.ts`,
+  `FOREMAN_ISOLATE`), so the shared-tree hazards above mostly apply to the
+  first writer only.

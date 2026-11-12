@@ -16,7 +16,16 @@ import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
-import type { SpawnRequest, WorkerHandle } from "./coordinator.ts";
+import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
+import { runWithRetry } from "../../lib/retry.ts";
+import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
+import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
+
+/** Writer workers currently running in the shared tree or an isolated one. */
+let activeWriters = 0;
+import { PACKAGE_ROOT } from "../../lib/agents.ts";
+import { finalReport, type SpawnRequest, type WorkerHandle } from "./coordinator.ts";
+import type { PiRunResult } from "../../lib/spawn.ts";
 
 export { MAX_INLINE_PROMPT_BYTES };
 
@@ -35,6 +44,15 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		return failed(`Unknown agent: "${req.role}". Available agents: ${available}.`);
 	}
 
+	const isWriter = ISOLATABLE_ROLES.has(agent.name);
+	const iso: Isolated | undefined = shouldIsolate(agent.name, activeWriters, isolateMode()) ? createWorktree(req.cwd, req.taskId) : undefined;
+	if (isWriter) activeWriters++;
+	const releaseWriter = () => {
+		if (isWriter) activeWriters = Math.max(0, activeWriters - 1);
+	};
+	const cwd = iso?.path ?? req.cwd;
+	const prompt = iso ? retargetPrompt(req.prompt, iso) : req.prompt;
+
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	const chosen = resolveModel(agent, process.env, { model: req.model, thinking: req.thinkingLevel });
 	if (chosen.model) args.push("--model", chosen.model);
@@ -50,13 +68,25 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			fs.writeFileSync(promptFile, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 			args.push("--append-system-prompt", promptFile);
 		}
-		args.push(`Task: ${inlineOrPointerPrompt(req.prompt, req.runDir, req.taskId)}`);
+		args.push(`Task: ${inlineOrPointerPrompt(prompt, req.runDir, req.taskId)}`);
 	} catch (e) {
 		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+		releaseWriter();
 		return failed(`Failed to prepare worker: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	const handle = runPiJson(args, { cwd: req.cwd, env: workerEnv(agent.name) });
+	// Inside herdr: give the worker a live watch pane following its event log.
+	const logFile = panesEnabled() ? path.join(req.runDir, `${req.taskId}.events.jsonl`) : undefined;
+	let watch: Promise<Awaited<ReturnType<typeof openWatchPane>>> | undefined;
+	if (logFile) {
+		try {
+			fs.mkdirSync(req.runDir, { recursive: true });
+		} catch {
+			// ignore
+		}
+		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
+	}
+	const handle = runWithRetry((attempt) => runPiJson(args, { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }));
 	const cleanupTmp = () => {
 		if (!tmpDir) return;
 		try {
@@ -65,9 +95,27 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			// ignore
 		}
 	};
-	const done = handle.done.then((r) => {
+	const done = handle.done.then(async (r) => {
 		cleanupTmp();
-		return r;
+		releaseWriter();
+		if (watch) {
+			const report = finalReport(r.messages);
+			const clean = r.code === 0 && !/^\s*status:\s*(blocked|failed)/im.test(report) && !report.trimStart().startsWith("[BLOCKED]");
+			void watch.then((w) => w?.finish({ keepOpen: !clean }));
+		}
+		if (!iso) return r;
+		try {
+			const m = await finishWorktree(iso, req.taskId);
+			if (m.merged) return r;
+			return withBlockedReport(r, m.conflict, iso);
+		} catch (e) {
+			return withBlockedReport(r, `merge-back error: ${e instanceof Error ? e.message : String(e)}`, iso);
+		}
 	});
 	return { done, kill: handle.kill, chosen: { model: chosen.model, thinking: chosen.thinking } };
+}
+
+function withBlockedReport(r: PiRunResult, conflict: string, iso: Isolated): PiRunResult {
+	const report = finalReport(r.messages);
+	return { ...r, messages: [...r.messages, { role: "assistant", content: [{ type: "text", text: blockReport(report, conflict, iso) }] }] };
 }

@@ -36,7 +36,10 @@ name) and a HEAD SHA, and `User language:`.
    similar), and the `qa` role runs tests. If the handoff lists check results
    from `qa`, cite them as reported by `qa`; otherwise say in the findings
    that tests were not run by you and need a `qa` pass.
-4. Rate each finding: `critical` (must fix before shipping), `important`
+4. If the handoff lists steps reported `unrendered` (or visual steps with no
+   screenshot), say so as an `important` finding: nothing in the diff proves
+   it looks right. If screenshots are cited under `.foreman/`, you may read them.
+5. Rate each finding: `critical` (must fix before shipping), `important`
    (should fix), or `minor` (optional). Give `file:line` and why it matters.
    Do not pad: say plainly when nothing is wrong.
 

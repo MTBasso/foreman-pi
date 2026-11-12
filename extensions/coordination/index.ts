@@ -13,6 +13,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { createHerdr } from "../../lib/herdr.ts";
 import { t } from "../../lib/i18n.ts";
 import { createModeTracker } from "../../lib/mode.ts";
 import { safeUi, say } from "../../lib/ui.ts";
@@ -92,6 +93,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
 
 	const tracker = createModeTracker(pi);
+	const herdr = createHerdr();
 	let coord: Coordinator | undefined;
 	let defaults: { model?: string; thinkingLevel?: string } = {};
 	/** Latest context seen, for status/widget updates (may go stale: every use is guarded). */
@@ -122,7 +124,11 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 	}
 
 	function publish() {
-		pi.events.emit(WORKERS_EVENT, snapshot());
+		const snap = snapshot();
+		if (herdr.active) {
+			herdr.reportWorkers({ running: snap.running.length, queued: snap.queued });
+		}
+		pi.events.emit(WORKERS_EVENT, snap);
 		refreshUi();
 	}
 
@@ -131,7 +137,13 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 			coord = createCoordinator({
 				root: cwd,
 				spawn,
-				sendMessage: (m, o) => pi.sendMessage(m, o),
+				sendMessage: (m, o) => {
+					const ns = ((m as any).details?.notifications ?? []) as Notification[];
+					for (const n of ns) {
+						if (n.status !== "completed") herdr.notify(`foreman: ${n.taskId} ${n.status}`, n.summary);
+					}
+					pi.sendMessage(m, o);
+				},
 				appendEntry: (t, d) => pi.appendEntry(t, d),
 				isOrchestratorActive: () => tracker.isActive(),
 			});

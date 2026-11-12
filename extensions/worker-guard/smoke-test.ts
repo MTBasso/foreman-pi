@@ -763,8 +763,55 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 }
 {
 	const src = readFileSync(new URL("../coordination/spawn-worker.ts", import.meta.url), "utf8");
-	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("env: workerEnv(agent.name)"));
+	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("...workerEnv(agent.name)"));
 	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes('"--no-session"'));
+}
+
+// --- v0.3 loosening: tmp scratch for scoped roles, read-only git forms, no stash -------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	check("qa may redirect scratch output into the temp dir", !blocked(bash("qa", `echo hi > ${tmp}/t.out`)));
+	check("qa may mkdir in the temp dir", !blocked(bash("qa", `mkdir -p ${tmp}/scratch`)));
+	check("qa still may not write outside .foreman and tmp", blocked(bash("qa", `echo hi > ${outside}/x`)));
+	check("qa still may not write into src", blocked(bash("qa", "echo hi > src/a.ts")));
+	check("planner (readonly) still may not write tmp", blocked(bash("planner", `echo hi > ${tmp}/t.out`)));
+	for (const role of ["qa", "reviewer", "planner"]) {
+		check(`${role}: git worktree list`, !blocked(bash(role, "git worktree list")));
+		check(`${role}: git stash list`, !blocked(bash(role, "git stash list")));
+		check(`${role}: git branch --list 'recovery/*'`, !blocked(bash(role, "git branch --list 'recovery/*'")));
+		check(`${role}: git tag -l`, !blocked(bash(role, "git tag -l")));
+		check(`${role}: git stash pop blocked`, blocked(bash(role, "git stash pop")));
+		check(`${role}: git worktree add blocked`, blocked(bash(role, "git worktree add ../x")));
+		check(`${role}: git branch newname blocked`, blocked(bash(role, "git branch newname")));
+		check(`${role}: git tag -d blocked`, blocked(bash(role, "git tag -d x -l")));
+	}
+	for (const role of DEV) {
+		check(`${role}: bare git stash blocked`, blocked(bash(role, "git stash")));
+		check(`${role}: git stash push blocked`, blocked(bash(role, "git stash push -m x")));
+		check(`${role}: git stash list ok`, !blocked(bash(role, "git stash list")));
+	}
+}
+
+// --- literal variable resolution + planner plan file -----------------------------------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	check("var: literal in-repo dir resolves for dev", !blocked(bash("backend-dev", "D=.foreman/x; mkdir -p $D/seed")));
+	check("var: literal tmp dir resolves for qa", !blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
+	check("var: heredoc to $F/path resolves", !blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
+	check("var: resolved path is still judged (outside repo)", blocked(bash("backend-dev", `O=${outside}; echo x > $O/f`)));
+	check("var: resolved path is still judged (qa into src)", blocked(bash("qa", "D=src; echo x > $D/a.ts")));
+	check("var: rm -rf $S still blocked when S unresolved", blocked(bash("backend-dev", "rm -rf $S")));
+	check("var: unresolved var after &&", blocked(bash("backend-dev", "D=.foreman/x && echo x > $D/y")));
+	check("var: reassigned var not resolved", blocked(bash("backend-dev", "D=.foreman/x; D=/etc; echo x > $D/y")));
+	check("var: command-substitution value not resolved", blocked(bash("backend-dev", "D=$(pwd); echo x > $D/y")));
+	check("var: loop var not resolved", blocked(bash("backend-dev", "D=.foreman/x; for D in /etc; do echo x > $D/y; done")));
+	check("var: single-quoted $D stays literal (qa cannot write src via it)", blocked(bash("qa", "D=.foreman; echo x > '$D'")));
+	check("var: used before assignment not resolved", blocked(bash("backend-dev", "echo x > $D/y; D=.foreman/x")));
+	check("planner may write docs/plans/*.md via tool", !write("planner", "docs/plans/foo.md").block);
+	check("planner may not write other docs", write("planner", "docs/foo.md").block && write("planner", "src/a.ts").block && write("planner", "docs/plans/sub/x.md").block);
+	check("planner may redirect into docs/plans/*.md", !bash("planner", "cat > docs/plans/foo.md <<'E'\n# p\nE\n").block);
+	check("planner redirect elsewhere still blocked", bash("planner", "echo x > docs/foo.md").block && bash("planner", "echo x > src/a.ts").block);
+	check("reviewer still cannot write plans", write("reviewer", "docs/plans/foo.md").block);
 }
 
 fs.rmSync(base, { recursive: true, force: true });

@@ -47,6 +47,8 @@ export interface RunPiJsonOptions {
 	env?: Record<string, string>;
 	/** Use this command+args verbatim instead of `getPiInvocation(args)`. */
 	invocation?: PiInvocation;
+	/** Append the child's raw JSON event stream here (lets a herdr pane follow it live). */
+	logFile?: string;
 	/** Override the SIGTERM -> SIGKILL delay (tests). */
 	killGraceMs?: number;
 }
@@ -140,6 +142,13 @@ export function runPiJson(args: string[], opts: RunPiJsonOptions): PiRunHandle {
 			return;
 		}
 		proc.stdout?.on("data", (d) => {
+			if (opts.logFile) {
+				try {
+					fs.appendFileSync(opts.logFile, d);
+				} catch {
+					// the log is best-effort
+				}
+			}
 			buffer += d.toString();
 			const lines = buffer.split("\n");
 			buffer = lines.pop() || "";

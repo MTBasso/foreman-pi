@@ -36,6 +36,13 @@ async function main() {
 		check("stopReason recorded from assistant message", r.stopReason === "stop");
 	}
 
+	// logFile receives the raw event stream.
+	{
+		const lf = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-log-")), "ev.jsonl");
+		const r = await runPiJson([], { cwd, logFile: lf, invocation: node(`console.log(JSON.stringify({type:"message_end",message:{role:"assistant",content:[]}}))`) }).done;
+		check("logFile captures raw stdout", r.messages.length === 1 && fs.readFileSync(lf, "utf-8").includes("message_end"));
+	}
+
 	// Error stopReason is surfaced.
 	{
 		const script = `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "boom", content: [] } }));`;

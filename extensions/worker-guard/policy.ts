@@ -22,6 +22,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Role } from "../../lib/roles.ts";
+import { resolveLiteralVars } from "./vars.ts";
 
 export type Verdict = { block: false } | { block: true; reason: string };
 
@@ -151,6 +152,11 @@ function isRealEnvFile(base: string): boolean {
 	return !/\.(example|sample|template|dist|tpl)$/.test(base);
 }
 
+/** The planner (otherwise read-only) may save its plan as docs/plans/<name>.md. */
+function plannerMayWrite(ctx: Ctx, rel: string | null): boolean {
+	return ctx.role === "planner" && rel !== null && /^docs\/plans\/[^/]+\.md$/.test(rel);
+}
+
 /** Why `abs` may not be written by this role, or undefined when it may. */
 function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: boolean): string | undefined {
 	if (abs === null) return `the path "${shown}" could not be resolved (dangling symlink, unreadable, or the working directory is unknown after a "cd" that cannot be resolved)`;
@@ -158,11 +164,14 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 	const segs = rel === null || rel === "" ? [] : rel.split(path.sep);
 	switch (ctx.kind) {
 		case "readonly":
+			if (plannerMayWrite(ctx, rel)) return undefined;
 			return isKnownRole(ctx.role)
 				? `role "${ctx.role}" is read-only and may not write "${shown}"`
 				: `unknown role "${ctx.role}" fails closed to read-only, so "${shown}" may not be written`;
 		case "scoped":
 		case "shipper": {
+			// Scratch output in the temp dir is harmless and was the most common false block.
+			if (allowTmp && rel === null && inside(ctx.tmp, abs, true)) return undefined;
 			if (segs[0] === ".foreman" && segs.length > 1) return undefined;
 			if (ctx.kind === "scoped" && rel === "FOREMAN_AUDIT.md") return undefined;
 			const allowed = ctx.kind === "scoped" ? ".foreman/ and FOREMAN_AUDIT.md" : ".foreman/";
@@ -1028,6 +1037,10 @@ function redirectProblem(ctx: Ctx, t: Word | null): string | undefined {
 		if (t.text === "/dev/null") return undefined;
 		if (ctx.kind !== "readonly" && (/^\/dev\/(stderr|stdout|tty)$/.test(t.text) || /^\/dev\/fd\/\d+$/.test(t.text))) return undefined;
 	}
+	if (ctx.kind === "readonly" && ctx.role === "planner" && !unresolvable(t)) {
+		const abs = resolveArg(ctx, t.text);
+		if (abs !== null && plannerMayWrite(ctx, inside(ctx.root, abs) ? path.relative(ctx.root, abs) : null)) return undefined;
+	}
 	if (ctx.kind === "readonly") return `role "${ctx.role}" is read-only and may not redirect output to "${t.text}" (only /dev/null is allowed)`;
 	if (unresolvable(t)) return `the redirect target "${t.text}" contains a variable, glob, ~ or substitution and cannot be resolved`;
 	return pathProblem(ctx, resolveArg(ctx, t.text), t.text, true);
@@ -1038,7 +1051,24 @@ function redirectProblem(ctx: Ctx, t: Word | null): string | undefined {
 const GIT_READ_SUBS = new Set([
 	"log", "diff", "show", "status", "rev-parse", "merge-base", "ls-files", "blame", "rev-list", "ls-tree",
 	"cat-file", "describe", "shortlog", "grep", "show-ref", "name-rev", "diff-tree", "diff-index", "branch",
+	"stash", "worktree", "tag",
 ]);
+/** Read-only forms of git subcommands that also have mutating forms. */
+function gitSubcommandProblem(sub: string, rest: Word[]): string | undefined {
+	const first = rest.find((w) => !w.text.startsWith("-"));
+	if (sub === "stash") {
+		return first && !first.dynamic && (first.text === "list" || first.text === "show") ? undefined : 'only "git stash list" and "git stash show" are allowed (stash push/pop/drop can sweep other workers\' uncommitted edits)';
+	}
+	if (sub === "worktree") {
+		return first && !first.dynamic && first.text === "list" ? undefined : 'only "git worktree list" is allowed';
+	}
+	if (sub === "tag") {
+		const listing = rest.some((w) => !w.dynamic && (w.text === "-l" || w.text === "--list" || w.text === "--contains" || w.text === "--points-at"));
+		const mutating = rest.some((w) => w.dynamic || /^-[dfams]|^--(delete|force|annotate|message|sign)/.test(w.text));
+		return (listing && !mutating) || rest.length === 0 ? undefined : '"git tag" is only allowed for listing (-l/--list)';
+	}
+	return undefined;
+}
 const GIT_BRANCH_READ_FLAGS = new Set(["--show-current", "--list", "-l", "-a", "-r", "-v", "-vv", "--all", "--remotes"]);
 
 function gitParse(args: Word[], restricted: boolean): { sub: string; rest: Word[] } | string {
@@ -1071,8 +1101,13 @@ function gitReadOnlyProblem(role: string, args: Word[]): string | undefined {
 		if (w.text.startsWith("--output")) return `"git ${p.sub} ${w.text}" writes a file and is not allowed`;
 		if (p.sub === "grep" && (w.text.startsWith("-O") || w.text.startsWith("--open-files"))) return "git grep -O would run a pager command and is not allowed";
 	}
+	const subProblem = gitSubcommandProblem(p.sub, p.rest);
+	if (subProblem) return subProblem;
 	if (p.sub === "branch") {
+		const listing = p.rest.some((w) => !w.dynamic && (w.text === "--list" || w.text === "-l"));
 		for (const w of p.rest) {
+			if (listing && !w.dynamic && !w.text.startsWith("-")) continue; // a glob pattern after --list
+			if (listing && w.glob) continue;
 			if (w.dynamic || (w.text.startsWith("-") && !GIT_BRANCH_READ_FLAGS.has(w.text))) return `only "git branch --show-current" (or listing flags) is allowed, not "git branch ${w.text}"`;
 			if (!w.text.startsWith("-")) return `"git branch ${w.text}" would create or change a branch`;
 		}
@@ -1094,6 +1129,12 @@ function gitDangerProblem(args: Word[]): string | undefined {
 		case "reset":
 			if (long.has("--hard")) return "git reset --hard is not allowed";
 			break;
+		case "stash": {
+			const first = ops[0];
+			if (!first || first.dynamic || !["list", "show"].includes(first.text))
+				return "git stash is not allowed: it sweeps other workers' uncommitted edits out of the shared working tree. Compare against a baseline with `git diff`, or `git worktree`-free alternatives like reading `git show <sha>:<path>`";
+			break;
+		}
 		case "clean":
 			if (!short.has("n") && !long.has("--dry-run")) return "git clean is not allowed";
 			break;
@@ -1174,7 +1215,7 @@ function scopedProblem(ctx: Ctx, name: string, args: Word[], un: Unwrapped): str
 	if (name === "gh") return ctx.kind === "shipper" ? undefined : ghReadOnlyProblem(ctx.role, args);
 	if (MUTATORS.has(name)) {
 		for (const w of operands(args)) {
-			const p = argPathProblem(ctx, w, false);
+			const p = argPathProblem(ctx, w, true);
 			if (p) return `"${name}": ${p}`;
 		}
 	}
@@ -1364,6 +1405,6 @@ function applyCd(ctx: Ctx, cmd: Cmd, st: PState, state: CwdState, complex: boole
 export function checkBash(role: string | undefined, cwd: string, command: unknown, opts?: GuardOptions): Verdict {
 	if (typeof command !== "string") return deny("the bash command is missing");
 	const ctx = makeCtx(role, cwd, opts);
-	const problem = evalScript(ctx, command, 0);
+	const problem = evalScript(ctx, resolveLiteralVars(command), 0);
 	return problem ? deny(problem) : OK;
 }

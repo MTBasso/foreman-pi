@@ -21,6 +21,38 @@ instructions above. Package root: {{PACKAGE_ROOT}}
   agreement or gratitude opener before verifying, in any language. See
   `{{PACKAGE_ROOT}}/references/code-review-discipline.md`, "Receiving a review".
 
+### Working under the worker guard
+
+Your bash and write tools are checked by a fail-closed guard. Most blocks were
+avoidable; write commands in the form it can verify so you never have to stop:
+
+- **Literal paths only.** No `~`, globs or `$(...)` in a path you write to or
+  delete, and no variable unless it is assigned a plain literal once, on its own
+  line or after a `;`, earlier in the same command (`D=.foreman/x; mkdir -p $D/seed`
+  is fine; `D=$(pwd)`, `A=x && use $A`, reassigned or loop variables, and
+  `rm -rf $S` with no visible assignment are refused). Spell the path out, or use
+  the Write/Edit tool.
+- **No process substitution** (`<(...)`), `eval`, `xargs`, `find -exec`, `awk`.
+  Pipe through `sort`/`uniq`/`comm` into a file under `.foreman/` or the temp
+  dir instead of `diff <(a) <(b)`.
+- **Scratch output** goes to `.foreman/` (any role) or the temp dir (qa, shipper,
+  dev roles). Read-only roles (planner, reviewer) cannot write scratch at all.
+- **Never `git stash`, `git reset --hard`, `git clean` or `git checkout -- .`**
+  in a shared worktree: other workers' uncommitted edits live there. To compare
+  against a baseline, use `git diff <sha> -- <path>` or `git show <sha>:<path>`.
+  `git stash list`, `git worktree list`, `git branch --list` and `git tag -l`
+  are fine.
+- **If you are blocked, don't retry or work around it.** Report
+  `Status: blocked`, name the exact command and reason, and include any
+  analysis you finished: it is not lost, the foreman re-dispatches with it.
+
+### Test baselines
+
+Compare failing test *names*, not counts. If the plan has a baseline file
+(`.foreman/baseline.txt`, one failing name per line), run
+`node {{PACKAGE_ROOT}}/scripts/baseline-diff.mjs .foreman/baseline.txt < failing-names.txt`
+and report its `NEW:` and `FIXED:` lines verbatim. Never say "matches baseline" from a count.
+
 ### You cannot delegate
 
 You are a worker running in your own process. You cannot dispatch other
@@ -46,8 +78,17 @@ Summary: <≤400 chars, in the user's language>
 Files: <comma-separated paths, or none>
 Rulings: <"Ruling: what — why" lines, or none>
 Blocked-on: <what/who, or none>
+Rendered: <screenshot paths under .foreman/, "unrendered", or "n/a">
 --- end foreman-report ---
 ```
+
+- `Rendered:` is required when your step changes anything a user sees (UI, theme,
+  terminal output, generated images). Capture a screenshot of the real result
+  (the project's own capture script if it has one, otherwise a headless browser
+  or the compositor's screenshot tool) and list its path. If you could not render
+  it, write `unrendered`: that is an honest answer and is surfaced to the reviewer
+  and in the PR. Writing "n/a" for a visual change is a false report. Passing
+  unit tests is not evidence that something looks right.
 
 - Pick exactly one `Status` value: `completed`, `failed` or `blocked`.
 - Keep the field names exactly as shown, in English.

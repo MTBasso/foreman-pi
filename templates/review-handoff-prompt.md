@@ -18,6 +18,9 @@ implementers, so paste everything it needs; do not tell it to go find it.
 - BASE_SHA: <sha, or "resolve from the base branch">
 - HEAD_SHA: <sha, or "current HEAD">
 
+## Unrendered visual steps
+<steps whose worker report said `Rendered: unrendered`, or "none">
+
 ## Known loose ends
 <anything flagged BLOCKED, deferred or out of scope, so the reviewer does not flag it as a surprise>
 
