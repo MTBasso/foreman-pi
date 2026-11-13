@@ -491,7 +491,7 @@ async function main() {
 		const doneOnly: WorkersSnapshot = { running: [], queued: 0, finished: [{ taskId: "t1-qa", role: "qa", state: "completed", finishedAt: now }] };
 		check("render: only finished -> cleared (finished lines only ride along with live workers)", renderWorkersUi(doneOnly, now).widget === undefined);
 		const live: WorkersSnapshot = {
-			running: [{ taskId: "t2-backend-dev", role: "backend-dev", planStep: 3, startedAt: now - 65_000 }, { taskId: "t3-qa", role: "qa", startedAt: now - 4_000 }],
+			running: [{ taskId: "t2-backend-dev", role: "backend-dev", planStep: 3, title: "Carousel UI", startedAt: now - 65_000 }, { taskId: "t3-qa", role: "qa", startedAt: now - 4_000 }],
 			queued: 2,
 			finished: [
 				{ taskId: "t1-planner", role: "planner", state: "completed", finishedAt: now },
@@ -509,10 +509,11 @@ async function main() {
 		};
 		const en = lang("en");
 		const pt = lang("pt-BR");
-		check("render: running line has role, step and elapsed time", en.widget!.some((l) => l.includes("t2-backend-dev (backend-dev) · step 3 · 1m05s")) && en.widget!.some((l) => l.includes("t3-qa (qa) · 4s")));
-		check("render: queued count and last finished with glyphs", en.widget!.some((l) => l.includes("2 queued")) && en.widget!.some((l) => l.includes(`${GLYPHS.completed} t1-planner`)) && en.widget!.some((l) => l.includes(`${GLYPHS.failed} t0-qa`)) && en.widget!.some((l) => l.includes(`${GLYPHS.blocked} t9-qa`)) && !en.widget!.some((l) => l.includes("t8-qa")));
+		check("render: running line has step, title and elapsed time", en.widget!.some((l) => l === "▶ step 3 · Carousel UI · 1m05s") && en.widget!.some((l) => l === "▶ qa · 4s"));
+		check("render: no header, no task ids", !en.widget!.some((l) => /Foreman workers|t2-backend-dev|t3-qa/.test(l)));
+		check("render: queued count and only the latest finished worker", en.widget!.some((l) => l.includes("2 queued")) && en.widget!.some((l) => l === `${GLYPHS.completed} planner`) && en.widget!.length === 4);
 		check("render: status text", en.status === "workers: 2 running, 2 queued", en.status);
-		check("render: pt-BR differs and is Portuguese", pt.status === "workers: 2 em execução, 2 na fila" && pt.widget![0] !== en.widget![0] && pt.widget!.some((l) => l.includes("etapa 3")) && pt.widget!.some((l) => l.includes("2 na fila")) && pt.widget!.some((l) => l.includes("falhou")));
+		check("render: pt-BR differs and is Portuguese", pt.status === "workers: 2 em execução, 2 na fila" && pt.widget!.some((l) => l.includes("etapa 3 · Carousel UI")) && pt.widget!.some((l) => l.includes("2 na fila")));
 		check("render: report mentions mode, source, workers in both locales", /Orchestrator mode: on \(session entry\)/.test(en.rep) && /Modo orquestrador: ativado \(entrada da sessão\)/.test(pt.rep) && en.rep !== pt.rep);
 		check("render: no raw placeholders", ![en.status!, pt.status!, ...en.widget!, ...pt.widget!, en.rep, pt.rep].some((x) => /\{\w+\}/.test(x)));
 		const none = renderReport(empty, { active: false, source: "default" }, now);
@@ -575,7 +576,7 @@ async function main() {
 		check("ui: delegate returns an ack and the worker is running", JSON.parse(ack.content[0].text).state === "running");
 		check("ui: foreman:workers snapshot published on the bus", snaps.at(-1)?.running.length === 1 && snaps.at(-1)?.running[0].taskId === "t1-qa");
 		check("ui: status bar set while running", calls.status.at(-1) === "workers: 1 running, 0 queued", String(calls.status.at(-1)));
-		check("ui: widget lists the running worker", !!calls.widget.at(-1)?.some((l) => l.includes("t1-qa (qa) · step 2")));
+		check("ui: widget lists the running worker", !!calls.widget.at(-1)?.some((l) => l.startsWith("▶ step 2 · ")));
 
 		await m.commands["foreman-status"].handler("", ctx);
 		check("/foreman-status notifies with mode and workers (no model call)", calls.notify.at(-1)?.includes("Orchestrator mode: on") === true && calls.notify.at(-1)?.includes("t1-qa") === true && m.sentMsgs.length === 0);
@@ -594,7 +595,7 @@ async function main() {
 		await m.tools[0].execute("id", { role: "qa", handoff_prompt: "b" }, undefined, undefined, ctx);
 		m.workers.get("t2-qa")!.resolve({ code: 2, signal: null, messages: [], stderr: "boom" });
 		await sleep(60);
-		check("ui: failed worker shown with its glyph next to the running one", !!calls.widget.at(-1)?.some((l) => l.includes(`${GLYPHS.failed} t2-qa`)) && !!calls.widget.at(-1)?.some((l) => l.includes("t3-qa")));
+		check("ui: failed worker shown with its glyph next to the running one", !!calls.widget.at(-1)?.some((l) => l.startsWith(`${GLYPHS.failed} qa`)) && !!calls.widget.at(-1)?.some((l) => l.startsWith("▶ qa")));
 
 		// Abort via the bus: kills, acks, clears the UI, no notification.
 		let acked = false;

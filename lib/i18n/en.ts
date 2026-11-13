@@ -45,7 +45,6 @@ export const en = {
 	// Status bar and widget
 	"status.modeOn": "foreman: orchestrator mode",
 	"status.workers": "workers: {running} running, {queued} queued",
-	"widget.title": "Foreman workers",
 	"widget.step": "step {step}",
 	"widget.queued": "{count} queued",
 	"widget.state.completed": "completed",

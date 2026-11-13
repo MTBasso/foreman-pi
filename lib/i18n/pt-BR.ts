@@ -40,7 +40,6 @@ export const ptBR: Record<keyof typeof en, string> = {
 
 	"status.modeOn": "foreman: modo orquestrador",
 	"status.workers": "workers: {running} em execução, {queued} na fila",
-	"widget.title": "Workers do foreman",
 	"widget.step": "etapa {step}",
 	"widget.queued": "{count} na fila",
 	"widget.state.completed": "concluído",
