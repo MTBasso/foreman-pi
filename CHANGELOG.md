@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4]
+
+### Changed
+
+- Worker widget redesigned: one compact line per worker (`▶ step 13 · Carousel UI · 4m43s`), no header and no task ids. The title is parsed from the step's `N. **Title**` line in `docs/plans/<slug>.md` when the worker is delegated (best effort; falls back to `step N`, or the role when there is no step). Only the latest finished worker is shown.
+
 ## [0.3.3]
 
 ### Fixed

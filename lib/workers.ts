@@ -14,10 +14,10 @@ export const WORKERS_ABORT_EVENT = "foreman:workers:abort";
 export type FinishedState = "completed" | "failed" | "blocked" | "aborted";
 
 export interface WorkersSnapshot {
-	running: Array<{ taskId: string; role: string; planStep?: number; startedAt: number }>;
+	running: Array<{ taskId: string; role: string; planStep?: number; title?: string; startedAt: number }>;
 	queued: number;
 	/** Most recent first, already capped. */
-	finished: Array<{ taskId: string; role: string; state: FinishedState; planStep?: number; finishedAt: number }>;
+	finished: Array<{ taskId: string; role: string; state: FinishedState; planStep?: number; title?: string; finishedAt: number }>;
 }
 
 export const EMPTY_SNAPSHOT: WorkersSnapshot = { running: [], queued: 0, finished: [] };
@@ -61,17 +61,25 @@ function finishedLine(f: WorkersSnapshot["finished"][number]): string {
 	return `${GLYPHS[f.state]} ${f.taskId} (${f.role})${stepSuffix(f.planStep)} · ${stateLabel(f.state)}`;
 }
 
+/** Compact widget label: "step 13 · Carousel UI", or the role when the worker has no plan step. */
+function workerLabel(w: { role: string; planStep?: number; title?: string }): string {
+	if (w.planStep === undefined) return w.role;
+	const step = t("widget.step", { step: w.planStep });
+	return w.title ? `${step} · ${w.title}` : step;
+}
+
 /**
  * Status-bar text and widget lines. Both are undefined (cleared) when nothing
- * is running or queued; finished workers are listed only alongside live ones.
+ * is running or queued; only the latest finished worker rides along, and only next to live ones.
  */
 export function renderWorkersUi(s: WorkersSnapshot, now: number): { status?: string; widget?: string[] } {
 	if (activeCount(s) === 0) return {};
 	const status = t("status.workers", { running: s.running.length, queued: s.queued });
-	const widget = [t("widget.title")];
-	for (const r of s.running) widget.push(`  ${runningLine(r, now)}`);
-	if (s.queued > 0) widget.push(`  ${t("widget.queued", { count: s.queued })}`);
-	for (const f of s.finished.slice(0, 3)) widget.push(`  ${finishedLine(f)}`);
+	const widget: string[] = [];
+	for (const r of s.running) widget.push(`${RUNNING_GLYPH} ${workerLabel(r)} · ${formatElapsed(now - r.startedAt)}`);
+	if (s.queued > 0) widget.push(`… ${t("widget.queued", { count: s.queued })}`);
+	const last = s.finished[0];
+	if (last) widget.push(`${GLYPHS[last.state]} ${workerLabel(last)}${last.state === "completed" ? "" : ` · ${stateLabel(last.state)}`}`);
 	return { status, widget };
 }
 

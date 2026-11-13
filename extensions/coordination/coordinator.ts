@@ -13,6 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
+import { readStepTitle } from "../../lib/plan-steps.ts";
 
 import { ROLES, type Role } from "../../lib/roles.ts";
 export { ROLES, type Role };
@@ -116,6 +117,8 @@ interface Task {
 	prompt: string;
 	planStep?: number;
 	planSlug?: string;
+	/** Plan-step title for the widget (parsed from docs/plans/<slug>.md at delegate time). */
+	title?: string;
 	state: TaskState;
 	model?: string;
 	thinkingLevel?: string;
@@ -649,10 +652,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			prompt: input.handoff_prompt,
 			planStep: typeof input.plan_step === "number" ? input.plan_step : undefined,
 			planSlug: slug || planSlug,
+			title: undefined,
 			state: "queued",
 			model: opts.model,
 			thinkingLevel: opts.thinkingLevel,
 		};
+		t.title = readStepTitle(deps.root, t.planSlug, t.planStep);
 		tasks.set(taskId, t);
 		writeMeta(t, { created_at: new Date(now()).toISOString() });
 		if (running < maxWorkers) startTask(t);
@@ -784,7 +789,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		let queuedCount = 0;
 		for (const t of tasks.values()) {
 			if (t.state === "running") {
-				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, startedAt: t.startedAt ?? now() });
+				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, title: t.title, startedAt: t.startedAt ?? now() });
 			} else if (t.state === "queued") {
 				queuedCount++;
 			} else {
@@ -793,6 +798,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					role: t.role,
 					state: t.state as FinishedState,
 					planStep: t.planStep,
+					title: t.title,
 					finishedAt: t.finishedAt ?? 0,
 				});
 			}
