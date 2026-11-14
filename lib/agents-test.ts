@@ -36,6 +36,11 @@ fs.mkdirSync(cwd, { recursive: true });
 const prevDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
 
+check(
+	"worker-common.md documents Guard-denied",
+	/Guard-denied:/.test(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "references", "worker-common.md"), "utf8")),
+);
+
 try {
 	// 1. Package agents are all discovered.
 	{

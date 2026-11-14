@@ -28,7 +28,7 @@ export default function (pi: ExtensionAPI) {
 		} catch (e) {
 			return {
 				block: true,
-				reason: `Blocked by the foreman worker guard: the policy check failed (${e instanceof Error ? e.message : String(e)}). Do not retry it; end your foreman-report with "Status: blocked" naming this reason.`,
+				reason: `Blocked by the foreman worker guard: the policy check failed (${e instanceof Error ? e.message : String(e)}). Stop that command and do not work around it. Continue the remaining work, list the denied command under "Guard-denied:" in your foreman-report, and use "Status: blocked" only if this denial prevents the core deliverable.`,
 			};
 		}
 		return verdict.block ? { block: true, reason: verdict.reason } : undefined;

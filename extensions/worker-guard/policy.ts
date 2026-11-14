@@ -61,7 +61,7 @@ export function workerGuardActive(env: Record<string, string | undefined>): bool
 }
 
 const SUFFIX =
-	' Do not retry it or work around it with another tool or command. Finish what you can and end your foreman-report with "Status: blocked" naming this reason.';
+	' Stop that command and do not work around it with another tool or command. Continue the remaining work, list the denied command under "Guard-denied:" in your foreman-report, and use "Status: blocked" only if this denial prevents the core deliverable.';
 
 function deny(msg: string): Verdict {
 	return { block: true, reason: `Blocked by the foreman worker guard: ${msg}.${SUFFIX}` };

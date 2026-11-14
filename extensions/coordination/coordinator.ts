@@ -76,6 +76,8 @@ export interface Notification {
 	files?: string[];
 	rulings?: string[];
 	blockedOn?: string;
+	/** Commands the worker guard refused, from the report's `Guard-denied:` field. */
+	guardDenied?: string[];
 	/** `unrendered` when a UI step was never rendered; screenshot paths when it was; absent when n/a. */
 	rendered?: string;
 	contract?: ReportContract;
@@ -196,7 +198,8 @@ export interface ParsedReport {
 	files: string[];
 	rulings: string[];
 	blockedOn: string;
-	/** Raw `Rendered:` value, or "" when absent / n/a. */
+	guardDenied: string[];
+	/** Raw `Rendered: value, or "" when absent / n/a. */
 	rendered: string;
 	contract: ReportContract;
 }
@@ -204,7 +207,7 @@ export interface ParsedReport {
 const BLOCK_START = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*foreman-report[ \t]*-{3}[ \t]*$/i;
 const BLOCK_END = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*end[ \t]+foreman-report[ \t]*-{3}[ \t]*$/i;
 // English keywords only: localized keys ("Estado:", "Resumo:") are never labels.
-const FIELD_LABEL = /^[ \t]*(status|summary|files|rulings|blocked-on|rendered)[ \t]*:(.*)$/i;
+const FIELD_LABEL = /^[ \t]*(status|summary|files|rulings|blocked-on|guard-denied|rendered)[ \t]*:(.*)$/i;
 const NONE = /^(none|-|n\/a)?$/i;
 
 interface BlockCandidate {
@@ -236,12 +239,17 @@ function parseBlockBody(lines: string[]): Omit<ParsedReport, "contract"> | undef
 		.map((s) => s.trim().replace(/^[-*]\s+/, ""))
 		.filter((s) => !NONE.test(s));
 	const blockedOn = value("blocked-on");
+	const guardDenied = value("guard-denied")
+		.split("\n")
+		.map((s) => s.trim().replace(/^[-*]\s+/, ""))
+		.filter((s) => !NONE.test(s));
 	return {
 		status,
 		summary: collapse(value("summary")),
 		files,
 		rulings,
 		blockedOn: NONE.test(blockedOn) ? "" : blockedOn,
+		guardDenied,
 		rendered: NONE.test(value("rendered")) ? "" : value("rendered").split("\n")[0].trim(),
 	};
 }
@@ -284,9 +292,9 @@ export function parseFinalBlock(report: string): ParsedReport {
 	}
 
 	const contract: ReportContract = sawMalformed ? "malformed" : "missing";
-	if (!text.trim()) return { status: undefined, summary: "", files: [], rulings: [], blockedOn: "", rendered: "", contract };
+	if (!text.trim()) return { status: undefined, summary: "", files: [], rulings: [], blockedOn: "", guardDenied: [], rendered: "", contract };
 	const status: TaskStatus = isBlockedReport(text) ? "blocked" : "completed";
-	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", rendered: "", contract };
+	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", guardDenied: [], rendered: "", contract };
 }
 
 export function formatBlock(n: Notification): string {
@@ -298,6 +306,7 @@ export function formatBlock(n: Notification): string {
 		`plan-step: ${n.planStep ?? "-"}`,
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
+		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${n.guardDenied.join(" | ")}`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
 		...(n.contract === "missing" || n.contract === "malformed" ? [`report-contract: ${n.contract}`] : []),
 		"</task-notification>",
@@ -532,7 +541,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				? truncate(collapse(`${error}${report ? ` — ${report}` : r.stderr ? ` — ${r.stderr}` : ""}`), SUMMARY_MAX)
 				: parsed?.summary ?? summarize(report);
 		const contractInfo = parsed
-			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, rendered: parsed.rendered, contract: parsed.contract }
+			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract }
 			: {};
 		t.state = status;
 		try {
@@ -854,7 +863,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					status = isFailed ? "failed" : (parsed.status ?? "completed");
 					summary = parsed.contract === "ok" && parsed.summary ? truncate(parsed.summary, SUMMARY_MAX) : summarize(body);
 					if (!isFailed) {
-						contractInfo = { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, rendered: parsed.rendered, contract: parsed.contract };
+						contractInfo = { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract };
 					}
 				}
 			}

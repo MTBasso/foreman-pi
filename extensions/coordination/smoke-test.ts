@@ -719,6 +719,11 @@ async function main() {
 		const psh = parseFinalBlock(blk("Status: blocked\nSummary: no review reference in the handoff\nFiles: none\nRulings: none\nBlocked-on: review reference"));
 		check("parser: shipper blocked report", psh.status === "blocked" && psh.contract === "ok");
 		check("parser: empty report", parseFinalBlock("").status === undefined);
+		const pgd = parseFinalBlock(blk("Status: completed\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: none\nGuard-denied: python3 -c 'exec(1)'\n- npm test\nRendered: n/a"));
+		check("parseFinalBlock reads Guard-denied", pgd.contract === "ok" && pgd.status === "completed" && pgd.guardDenied.length === 2 && pgd.guardDenied[0] === "python3 -c 'exec(1)'" && pgd.guardDenied[1] === "npm test", JSON.stringify(pgd.guardDenied));
+		check("parseFinalBlock: Guard-denied none/absent is empty", parseFinalBlock(blk("Status: completed\nSummary: s\nGuard-denied: none")).guardDenied.length === 0 && parseFinalBlock(blk("Status: completed\nSummary: s")).guardDenied.length === 0);
+		check("formatBlock omits guard-denied when empty", !formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: [] }).includes("guard-denied"));
+		check("formatBlock includes guard-denied when present", formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: ["npm test", "rm x"] }).includes("guard-denied: npm test | rm x"));
 		const nb = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "ok" });
 		const nm = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "malformed" });
 		const nn = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o" });

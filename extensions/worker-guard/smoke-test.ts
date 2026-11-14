@@ -665,9 +665,9 @@ runBash("unknown-role", [
 // --- language: reasons are English and the Portuguese prompt changes nothing ----------------------------------
 {
 	const v = bash("qa", "echo 'olá' > existing.txt");
-	check("block reason is English ASCII and tells the worker to report Status: blocked", v.block && /^[\x20-\x7e]+$/.test(v.reason) && v.reason.includes("Status: blocked"), v.block ? v.reason : "");
+	check("deny reason mentions Guard-denied and not unconditional blocked", v.block && /^[\x20-\x7e]+$/.test(v.reason) && v.reason.includes("Guard-denied:") && v.reason.includes("only if") && !v.reason.includes("end your foreman-report with"), v.block ? v.reason : "");
 	const w = write("planner", "src/a.ts");
-	check("write block reason says Status: blocked", w.block && w.reason.includes("Status: blocked"));
+	check("write block reason mentions Guard-denied", w.block && w.reason.includes("Guard-denied:"));
 	check("accented text inside a quoted string is not a write", bash("qa", 'echo "não escreva > aqui"').block === false);
 }
 
@@ -736,7 +736,7 @@ const editEvent = (p: string) => ({ type: "tool_call", toolName: "edit", toolCal
 	setEnv("1", "backend-dev");
 	check("extension: dev write inside repo allowed", (await fire(g.handlers, "tool_call", writeEvent("src/new.ts"))) === undefined);
 	const r = await fire(g.handlers, "tool_call", bashEvent("rm -rf src"));
-	check("extension: block result carries an English reason", r?.block === true && String(r.reason).includes("Status: blocked"));
+	check("extension: block result carries an English reason", r?.block === true && String(r.reason).includes("Guard-denied:"));
 }
 
 // orchestrator guardrail is unaffected by the worker guard (and vice versa)

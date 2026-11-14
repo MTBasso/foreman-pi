@@ -85,6 +85,7 @@ Summary: <≤400 chars, in the user's language>
 Files: <comma-separated paths, or none>
 Rulings: <"Ruling: what — why" lines, or none>
 Blocked-on: <what/who, or none>
+Guard-denied: <each command the worker guard refused, one per line, or none>
 Rendered: <screenshot paths under .foreman/, "unrendered", or "n/a">
 --- end foreman-report ---
 ```
@@ -97,6 +98,10 @@ Rendered: <screenshot paths under .foreman/, "unrendered", or "n/a">
   and in the PR. Writing "n/a" for a visual change is a false report. Passing
   unit tests is not evidence that something looks right.
 
+- `Guard-denied:` lists every command the worker guard refused. A denial does
+  not by itself make the step `blocked`: skip that command, finish the rest and
+  report `completed` with the denial listed. Use `Status: blocked` only when the
+  denial prevents the core deliverable.
 - Pick exactly one `Status` value: `completed`, `failed` or `blocked`.
 - Keep the field names exactly as shown, in English.
 - Write the block once, as the last thing in your final message.

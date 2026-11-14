@@ -11,7 +11,11 @@ Each worker is a child `pi` spawned with `FOREMAN_PI_SUBAGENT=1` and
 other `pi` process (including the orchestrator session) it does nothing. An
 unknown role fails closed to read-only. Every `write`, `edit` and `bash` tool
 call is checked in a `tool_call` handler; a denial carries an English reason
-telling the worker to end its report with `Status: blocked`.
+telling the worker to stop that command, not work around it, keep going, list
+the command under `Guard-denied:` in its foreman-report, and use
+`Status: blocked` only if the denial prevents the core deliverable. The
+coordinator never rewrites the reported status; it surfaces `Guard-denied:`
+items in the task notification (`guard-denied:` line).
 
 | Role | May write |
 | --- | --- |
@@ -58,7 +62,10 @@ Details worth knowing:
   `find . -name '*.pyc' -delete` at the repo root stays denied (fail closed).
 - `cd` is tracked within a command string: later relative paths resolve against
   the new directory, so `cd .foreman && echo x > f` is allowed for `qa` and
-  `cd src && echo x > f` is not. `( ... )`, `$( ... )`, a pipeline and a
+  `cd src && echo x > f` is not. A `../x` redirect that resolves outside the
+  allowed area is a correct denial (`cd src && echo x > ../x.txt` stays blocked
+  for `qa`; `../.foreman/x.log` from a subdirectory is allowed because it
+  resolves inside `.foreman`). `( ... )`, `$( ... )`, a pipeline and a
   background `cd x &` are scoped (they do not change the parent's directory).
   A `cd` to something unresolvable (`$VAR`, `~`, a glob, no argument, `cd -`,
   `pushd`/`popd`), a `cd` that is conditional (`a && cd x; ...`, inside
