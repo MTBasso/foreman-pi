@@ -18,7 +18,9 @@ import { t } from "../../lib/i18n.ts";
 import { createModeTracker } from "../../lib/mode.ts";
 import { safeUi, say } from "../../lib/ui.ts";
 import {
+	createHealthWatcher,
 	EMPTY_SNAPSHOT,
+	renderStuckNotice,
 	renderReport,
 	renderWorkersUi,
 	WORKERS_ABORT_EVENT,
@@ -95,12 +97,12 @@ export default function (pi: ExtensionAPI) {
 }
 
 /** The extension body; `spawn` is injectable so the smoke test never starts a real `pi`. */
-export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest) => WorkerHandle) {
+export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest) => WorkerHandle, herdr = createHerdr()) {
 	// Workers never delegate: register nothing in subagent children.
 	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
 
 	const tracker = createModeTracker(pi);
-	const herdr = createHerdr();
+	const watcher = createHealthWatcher();
 	let coord: Coordinator | undefined;
 	let defaults: { model?: string; thinkingLevel?: string } = {};
 	/** Latest context seen, for status/widget updates (may go stale: every use is guarded). */
@@ -110,8 +112,18 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 
 	const snapshot = (): WorkersSnapshot => coord?.snapshot() ?? EMPTY_SNAPSHOT;
 
+	/** Stuck/repeating/recovered notices: UI and herdr only, never pi.sendMessage (no orchestrator tokens). */
+	function watchHealth() {
+		for (const n of watcher.check(snapshot(), Date.now())) {
+			const text = renderStuckNotice(n);
+			say(uiCtx, text, n.kind === "stuck" ? "warning" : "info");
+			if (n.kind === "stuck") herdr.notify(`foreman: ${n.taskId} ${n.health}`, text);
+		}
+	}
+
 	/** Redraw status bar + widget from the current snapshot; clear them when nothing is live. */
 	function refreshUi() {
+		watchHealth();
 		const rendered = renderWorkersUi(snapshot(), Date.now(), process.stdout.columns || 100);
 		const live = rendered.status !== undefined;
 		if (live && !ticker) {

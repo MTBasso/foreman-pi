@@ -119,6 +119,8 @@ export interface CoordinatorDeps {
 	/** Shared rate-limit back-off gate; default is the process-wide `sharedGate`. */
 	gate?: BackoffGate;
 	batchMs?: number;
+	/** Silence threshold for stuck detection in ms (default FOREMAN_STUCK_AFTER_S * 1000, 90 s; 0 disables). */
+	stuckAfterMs?: number;
 	timeoutMs?: number;
 	/** Validates a requested workdir and returns its real path; throws on a bad one. Default: identity. */
 	resolveWorkdir?(root: string, requested: string): string;
@@ -408,6 +410,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	const maxWorkers = Math.max(1, deps.maxWorkers ?? envInt("FOREMAN_MAX_WORKERS", 4));
 	const maxWriters = Math.max(1, deps.maxWriters ?? envInt("FOREMAN_MAX_WRITERS", 2));
 	const gate = deps.gate ?? sharedGate;
+	const stuckAfterMs = deps.stuckAfterMs ?? envInt("FOREMAN_STUCK_AFTER_S", 90) * 1000;
 	const batchMs = deps.batchMs ?? envInt("FOREMAN_BATCH_MS", 300);
 	const timeoutMs = deps.timeoutMs ?? envInt("FOREMAN_WORKER_TIMEOUT_MS", 30 * 60 * 1000);
 	const isActive = deps.isOrchestratorActive ?? (() => true);
@@ -546,7 +549,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		t.state = "running";
 		t.startedAt = now();
 		t.cwd = t.workdir ?? deps.root;
-		const activity = createActivityTracker();
+		const activity = createActivityTracker({ stuckAfterMs: stuckAfterMs });
 		activity.reset(now());
 		t.activity = activity;
 		writeStub(t);

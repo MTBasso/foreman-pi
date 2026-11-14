@@ -10,13 +10,14 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHerdr } from "../../lib/herdr.ts";
 import { createBackoffGate, type BackoffGate } from "../../lib/backoff.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { PACKAGE_ROOT, composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { t } from "../../lib/i18n.ts";
 import { MODE_EVENT } from "../../lib/mode.ts";
 import { ROLES as SHARED_ROLES } from "../../lib/roles.ts";
-import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, renderReport, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
+import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, createHealthWatcher, renderReport, renderStuckNotice, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
 import extension, { buildDetails, callText, registerCoordination } from "./index.ts";
 import {
 	createCoordinator,
@@ -1064,6 +1065,91 @@ async function main() {
 		check("recover reads status.json into the orphan summary", /npm test/.test(n1.summary) && /1234/.test(n1.summary) && /4\ds ago/.test(n1.summary), n1.summary);
 		check("recover keeps the events log as fallback without status.json", /only the log/.test(n2.summary) && !/tokens/.test(n2.summary), n2.summary);
 		h.cleanup();
+	}
+
+	// Phase 14. Stuck and repeating notifications.
+	{
+		const view = (health: string, over: Record<string, unknown> = {}): any => ({ phase: "tool", label: "npm test", bytes: 0, lastEventAt: 0, turns: 1, toolCalls: 3, outTokens: 10, cost: 0, recent: [], health, denials: 0, lastDenial: "", ...over });
+		const snapOf = (health: string, over: Record<string, unknown> = {}): WorkersSnapshot => ({ running: [{ taskId: "t1-qa", role: "qa", planStep: 3, title: "Suite", startedAt: 0, activity: view(health, over) }], queued: 0, finished: [] });
+		const w = createHealthWatcher();
+		check("health: active worker produces no notice", w.check(snapOf("active"), 1000).length === 0);
+		const n1 = w.check(snapOf("silent", { lastEventAt: 1000 }), 100_000);
+		check("flip to silent notifies once", n1.length === 1 && n1[0].kind === "stuck" && n1[0].health === "silent");
+		check("staying silent does not re-notify", w.check(snapOf("silent"), 101_000).length === 0 && w.check(snapOf("silent"), 300_000).length === 0);
+		const n2 = w.check(snapOf("active"), 310_000);
+		check("recovery clears the flag and notifies once", n2.length === 1 && n2[0].kind === "recovered" && w.check(snapOf("active"), 311_000).length === 0);
+		const n3 = w.check(snapOf("repeating", { recent: [{ label: "bash npm run build --flag", durationMs: 1, isError: true, at: 1 }] }), 400_000);
+		check("repeating notifies with the repeated command head", n3.length === 1 && /npm run build/.test(renderStuckNotice(n3[0])), n3.length ? renderStuckNotice(n3[0]) : "none");
+		const wf = createHealthWatcher();
+		wf.check(snapOf("silent"), 0);
+		wf.check(snapOf("active"), 1000);
+		check("flapping within 60 s is throttled, then allowed", wf.check(snapOf("silent"), 5000).length === 0 && wf.check(snapOf("silent"), 70_000).length === 1);
+		const wl = createHealthWatcher();
+		wl.check(snapOf("silent"), 0);
+		wl.check({ running: [], queued: 0, finished: [] }, 1000);
+		check("a worker that finishes while flagged leaves no state", wl.size() === 0 && wl.check(snapOf("silent"), 2000).length === 1);
+		check("stuck notice text is localized in both catalogs", /stuck/i.test(renderStuckNotice(n1[0])) && (process.env.FOREMAN_LANG = "pt-BR", !/\{/.test(renderStuckNotice(n1[0])) && renderStuckNotice(n1[0]) !== (delete process.env.FOREMAN_LANG, renderStuckNotice(n1[0]))));
+		delete process.env.FOREMAN_LANG;
+
+		// FOREMAN_STUCK_AFTER_S=0 disables the silent flip; =1 enables it (tracker threshold).
+		const savedStuck = process.env.FOREMAN_STUCK_AFTER_S;
+		const savedBatch14 = process.env.FOREMAN_BATCH_MS;
+		const stuckView = async (secs: string) => {
+			process.env.FOREMAN_STUCK_AFTER_S = secs;
+			const h = harness();
+			h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			await sleep(1300);
+			const v = h.coord.snapshot().running[0]?.activity;
+			h.finish("t1-qa", ok("done"));
+			await h.coord.whenIdle();
+			h.cleanup();
+			return v;
+		};
+		const off = await stuckView("0");
+		const on = await stuckView("1");
+		check("FOREMAN_STUCK_AFTER_S=0 disables the silent flip", off?.health !== "silent");
+		check("FOREMAN_STUCK_AFTER_S threshold flips silent", on?.health === "silent", String(on?.health));
+		if (savedStuck === undefined) delete process.env.FOREMAN_STUCK_AFTER_S; else process.env.FOREMAN_STUCK_AFTER_S = savedStuck;
+
+		// Integration through index.ts: UI + herdr only, never sendMessage.
+		process.env.FOREMAN_STUCK_AFTER_S = "1";
+		process.env.FOREMAN_BATCH_MS = "20";
+		const herdrCalls: string[][] = [];
+		const fakeHerdr = createHerdr({ HERDR_ENV: "1", HERDR_PANE_ID: "p1", HERDR_BIN_PATH: "herdr" }, (_b, a) => herdrCalls.push(a));
+		const tools: any[] = [];
+		const handlers: Record<string, any[]> = {};
+		const sentMsgs: any[] = [];
+		const workers = new Map<string, (r: WorkerResult) => void>();
+		const api: any = {
+			events: createEventBus(),
+			registerTool: (x: any) => tools.push(x),
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			on: (e: string, hd: any) => ((handlers[e] ??= []).push(hd), () => {}),
+			sendMessage: (m: any) => sentMsgs.push(m),
+			appendEntry: () => {},
+		};
+		registerCoordination(api, (req) => {
+			let resolve!: (r: WorkerResult) => void;
+			const done = new Promise<WorkerResult>((res) => (resolve = res));
+			workers.set(req.taskId, resolve);
+			return { done, kill: () => resolve({ code: null, signal: "SIGTERM", messages: [], stderr: "" }) };
+		}, fakeHerdr);
+		const dir = mkdtempSync(join(tmpdir(), "foreman-coord-stuck-"));
+		const notes: Array<[string, string]> = [];
+		const ctx: any = { cwd: dir, hasUI: true, sessionManager: { getEntries: () => [], getBranch: () => [] }, ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string, l: string) => notes.push([m, l]) } };
+		await handlers.session_start[0]({ reason: "startup" }, ctx);
+		api.events.emit(MODE_EVENT, { active: true });
+		await tools[0].execute("id", { role: "qa", handoff_prompt: "x" }, undefined, undefined, ctx);
+		await sleep(3500);
+		const stuckNotes = notes.filter(([m]) => /stuck/i.test(m));
+		check("stuck notice reaches the UI as a warning, once", stuckNotes.length === 1 && stuckNotes[0][1] === "warning", JSON.stringify(notes));
+		check("herdr.notify is called when herdr is active (fake herdr)", herdrCalls.some((a) => a[0] === "notification" && /stuck/i.test(a.join(" "))), JSON.stringify(herdrCalls));
+		check("stuck notice is never sent via sendMessage", sentMsgs.length === 0);
+		workers.get("t1-qa")!(ok("x"));
+		await sleep(100);
+		if (savedStuck === undefined) delete process.env.FOREMAN_STUCK_AFTER_S; else process.env.FOREMAN_STUCK_AFTER_S = savedStuck;
+		if (savedBatch14 === undefined) delete process.env.FOREMAN_BATCH_MS; else process.env.FOREMAN_BATCH_MS = savedBatch14;
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

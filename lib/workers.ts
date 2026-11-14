@@ -215,3 +215,71 @@ function healthReason(a: ActivityView, now: number): string {
 			return t("activity.reason.denied", { count: a.denials });
 	}
 }
+
+// --- stuck / repeating notices ------------------------------------------------
+
+export interface StuckNotice {
+	kind: "stuck" | "recovered";
+	taskId: string;
+	label: string;
+	health: ActivityView["health"];
+	/** Last action: the newest recent action, else the current label. */
+	action: string;
+	silentSecs: number;
+	denials: number;
+}
+
+/** Minimum gap between two stuck notices for the same worker. */
+export const STUCK_REPEAT_MS = 60_000;
+
+const FLAGGED = new Set<ActivityView["health"]>(["silent", "repeating", "denied"]);
+
+function lastAction(a: ActivityView): string {
+	return a.recent.length > 0 ? a.recent[a.recent.length - 1].label : a.label;
+}
+
+/**
+ * Pure watcher over successive snapshots: one `stuck` notice per transition into
+ * silent/repeating/denied (at most one per worker per 60 s), one `recovered` notice when
+ * the worker returns to active. Holds no timers; state for finished workers is dropped.
+ */
+export function createHealthWatcher(opts: { minGapMs?: number } = {}) {
+	const minGap = opts.minGapMs ?? STUCK_REPEAT_MS;
+	const state = new Map<string, { flagged?: ActivityView["health"]; lastNoticeAt?: number }>();
+	return {
+		check(s: WorkersSnapshot, now: number): StuckNotice[] {
+			const out: StuckNotice[] = [];
+			const live = new Set<string>();
+			for (const r of s.running) {
+				live.add(r.taskId);
+				const a = r.activity;
+				if (!a) continue;
+				const st = state.get(r.taskId) ?? {};
+				state.set(r.taskId, st);
+				const base = { taskId: r.taskId, label: workerLabel(r), health: a.health, action: lastAction(a), silentSecs: Math.max(0, Math.round((now - a.lastEventAt) / 1000)), denials: a.denials };
+				if (FLAGGED.has(a.health)) {
+					if (st.flagged === a.health) continue;
+					if (st.lastNoticeAt !== undefined && now - st.lastNoticeAt < minGap) continue;
+					st.flagged = a.health;
+					st.lastNoticeAt = now;
+					out.push({ kind: "stuck", ...base });
+				} else if (a.health === "active" && st.flagged) {
+					st.flagged = undefined;
+					out.push({ kind: "recovered", ...base });
+				}
+			}
+			for (const id of [...state.keys()]) if (!live.has(id)) state.delete(id);
+			return out;
+		},
+		/** Tracked workers (for leak tests). */
+		size: () => state.size,
+	};
+}
+
+export function renderStuckNotice(n: StuckNotice): string {
+	const vars = { label: n.label, secs: n.silentSecs, action: n.action || "-", count: n.denials };
+	if (n.kind === "recovered") return t("stuck.recovered", vars);
+	if (n.health === "repeating") return t("stuck.repeating", vars);
+	if (n.health === "denied") return t("stuck.denied", vars);
+	return t("stuck.silent", vars);
+}
