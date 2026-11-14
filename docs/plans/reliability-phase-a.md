@@ -232,7 +232,7 @@ Source of truth for plan-runner; update a step to `merged` only when it is on `f
 - Step 6: merged
 - Step 7: merged
 - Step 8: merged
-- Step 9: not started
+- Step 9: merged
 - Step 10: not started
 - Step 11: not started
 - Step 12: not started

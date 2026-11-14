@@ -10,6 +10,7 @@
  * as ONE `foreman-task-notification` custom message holding N
  * `<task-notification>` blocks. The ledger is appended (sync) before delivery.
  */
+import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
@@ -62,6 +63,8 @@ export interface WorkerHandle {
 	kill(): void;
 	/** Model/thinking the spawner chose (undefined model = inherited session model). Recorded in the task meta. */
 	chosen?: { model?: string; thinking?: string };
+	/** Directory the worker actually runs in (the isolated worktree when isolated). Recorded in the task meta. */
+	cwd?: string;
 }
 
 /** How well the worker's final report followed the `--- foreman-report ---` contract. */
@@ -85,6 +88,8 @@ export interface Notification {
 	/** `unrendered` when a UI step was never rendered; screenshot paths when it was; absent when n/a. */
 	rendered?: string;
 	contract?: ReportContract;
+	/** Orphans only: number of paths `git status --short` shows in the worker's cwd (absent when none or unknown). */
+	partial?: number;
 }
 
 export interface SendOptions {
@@ -137,6 +142,8 @@ interface Task {
 	model?: string;
 	thinkingLevel?: string;
 	chosen?: { model?: string; thinking?: string };
+	/** Where the worker runs (handle.cwd once spawned, else the requested cwd). */
+	cwd?: string;
 	handle?: WorkerHandle;
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
@@ -157,6 +164,49 @@ interface Batch {
 const SNAPSHOT_FINISHED_MAX = 5;
 const SUMMARY_MAX = 400;
 const LEDGER_SUMMARY_MAX = 200;
+const ORPHAN_SUMMARY = "orphaned (orchestrator restarted)";
+const GIT_STATUS_TIMEOUT_MS = 5000;
+const STUB_PREFIX = (taskId: string) => `# ${taskId}`;
+
+/** True when the file is the coordinator's start-of-task placeholder, not a report. */
+function isStubReport(taskId: string, text: string): boolean {
+	return text.startsWith(`${STUB_PREFIX(taskId)} RUNNING`);
+}
+
+/** `git status --short` in `cwd`, hooks off, 5 s cap; "" when the dir is gone, not a repo, or anything fails. */
+function gitStatusShort(cwd: string | undefined): string {
+	if (!cwd || !existsSync(cwd)) return "";
+	try {
+		return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "status", "--short"], {
+			cwd,
+			timeout: GIT_STATUS_TIMEOUT_MS,
+			stdio: ["ignore", "pipe", "ignore"],
+			encoding: "utf8",
+		});
+	} catch {
+		return "";
+	}
+}
+
+/** Last assistant text recorded in an events log (message_end lines); "" when missing or unreadable. */
+function lastTextFromEvents(file: string): string {
+	try {
+		if (!existsSync(file)) return "";
+		const messages: any[] = [];
+		for (const line of readFileSync(file, "utf8").split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const ev = JSON.parse(line);
+				if (ev?.type === "message_end" && ev.message) messages.push(ev.message);
+			} catch {
+				// a half-written last line is expected for an orphan
+			}
+		}
+		return finalReport(messages);
+	} catch {
+		return "";
+	}
+}
 
 export function envInt(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -319,6 +369,7 @@ export function formatBlock(n: Notification): string {
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
 		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${n.guardDenied.join(" | ")}`] : []),
+		...(n.partial !== undefined ? [`partial: ${n.partial} changed paths`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
 		...(n.contract === "missing" || n.contract === "malformed" ? [`report-contract: ${n.contract}`] : []),
 		"</task-notification>",
@@ -396,6 +447,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					plan_step: t.planStep ?? null,
 					plan_slug: t.planSlug ?? null,
 					...(t.workdir ? { workdir: t.workdir } : {}),
+					...(t.cwd ? { cwd: t.cwd } : {}),
 					state: t.state,
 					handoff_prompt: t.prompt,
 					output: outputRel(t.taskId),
@@ -428,11 +480,32 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		}
 	}
 
+	/** Placeholder report so the orchestrator never hits ENOENT; finishTask overwrites it, recover() ignores it. */
+	function writeStub(t: Task) {
+		try {
+			writeFileSync(
+				join(deps.root, outputRel(t.taskId)),
+				[
+					`${STUB_PREFIX(t.taskId)} RUNNING`,
+					"",
+					`started: ${new Date(now()).toISOString()}`,
+					`cwd: ${t.cwd ?? ""}`,
+					`events: ${join(runRel, `${t.taskId}.events.jsonl`)}`,
+					"",
+				].join("\n"),
+			);
+		} catch {
+			// best effort
+		}
+	}
+
 	function startTask(t: Task) {
 		running++;
 		if (ISOLATABLE_ROLES.has(t.role)) runningWriters++;
 		t.state = "running";
 		t.startedAt = now();
+		t.cwd = t.workdir ?? deps.root;
+		writeStub(t);
 		writeMeta(t, { started_at: new Date(now()).toISOString() });
 		let handle: WorkerHandle;
 		try {
@@ -453,8 +526,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			};
 		}
 		t.handle = handle;
-		if (handle.chosen) {
-			t.chosen = handle.chosen;
+		if (handle.cwd) t.cwd = handle.cwd;
+		if (handle.chosen || handle.cwd) {
+			if (handle.chosen) t.chosen = handle.chosen;
 			try {
 				writeMeta(t, { started_at: new Date(now()).toISOString() });
 			} catch {
@@ -895,6 +969,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		for (const e of entries) {
 			if (!e || typeof e.taskId !== "string" || typeof e.runId !== "string") continue;
 			latest.set(`${e.runId}/${e.taskId}`, e);
+			// A resumed session must never reuse a task id: continue after the highest tN- seen.
+			const m = /^t(\d+)-/.exec(e.taskId);
+			if (m) seq = Math.max(seq, Number(m[1]));
 		}
 		const recovered: Notification[] = [];
 		for (const e of latest.values()) {
@@ -903,7 +980,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			const outputRelPath: string = e.output ?? join(".foreman", "runs", e.runId, `${e.taskId}.md`);
 			const outputAbs = join(deps.root, outputRelPath);
 			let status: TaskStatus = "failed";
-			let summary = "orphaned (orchestrator restarted)";
+			let summary = ORPHAN_SUMMARY;
 			let contractInfo: Partial<Notification> = {};
 			if (existsSync(outputAbs)) {
 				let report = "";
@@ -918,7 +995,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				} catch {
 					// no meta
 				}
-				if (report.trim()) {
+				if (report.trim() && !isStubReport(e.taskId, report)) {
 					const isFailed = metaStatus === "failed" || report.startsWith(`# ${e.taskId} FAILED`);
 					const body = report.replace(/^# .* FAILED\n+/, "");
 					const parsed = parseFinalBlock(body);
@@ -929,6 +1006,20 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					}
 				}
 			}
+			let partial: number | undefined;
+			if (status === "failed" && summary === ORPHAN_SUMMARY) {
+				const runPath = join(deps.root, ".foreman", "runs", e.runId);
+				let cwd: string | undefined;
+				try {
+					cwd = JSON.parse(readFileSync(join(runPath, `${e.taskId}.json`), "utf8")).cwd;
+				} catch {
+					// no meta
+				}
+				const last = lastTextFromEvents(join(runPath, `${e.taskId}.events.jsonl`));
+				const paths = gitStatusShort(cwd).split("\n").filter((l) => l.trim() !== "").length;
+				if (last) summary = truncate(`${ORPHAN_SUMMARY} — last output: ${collapse(last)}`, SUMMARY_MAX);
+				if (paths > 0) partial = paths;
+			}
 			recovered.push({
 				taskId: e.taskId,
 				role: e.role,
@@ -938,6 +1029,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				summary,
 				output: outputRelPath,
 				...contractInfo,
+				...(partial !== undefined ? { partial } : {}),
 			});
 			deps.appendEntry(TASK_ENTRY_TYPE, { ...e, state: status, recovered: true });
 		}

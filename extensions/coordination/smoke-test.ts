@@ -6,6 +6,7 @@
  * fake ExtensionAPI for the wiring in index.ts. See live-rpc.ts for the real
  * end-to-end check.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -898,6 +899,75 @@ async function main() {
 		for (const id of [...g.workers.keys()]) g.finish(id, ok("x"));
 		await sleep(60);
 		g.cleanup();
+	}
+
+	// Step 9: orphan evidence.
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const out = join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.md`);
+		check("stub report exists right after delegate", existsSync(out) && readFileSync(out, "utf8").startsWith(`# ${ack.task_id} RUNNING`));
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.json`), "utf8"));
+		check("meta json records cwd", typeof meta.cwd === "string" && meta.cwd.length > 0);
+		h.finish(ack.task_id, ok("final words"));
+		await h.coord.whenIdle();
+		check("stub is overwritten by the final report", readFileSync(out, "utf8").trim() === "final words");
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-orph-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n\nstarted: x\n");
+		const h = harness({ root });
+		h.coord.recover([{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" }]);
+		await h.coord.whenIdle();
+		const n = h.sent.flatMap((s) => s.message.details.notifications)[0] as any;
+		check("recover: stub-only orphan is failed and orphaned, not completed", n.status === "failed" && /orphaned/.test(n.summary));
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-orph2-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		const repo = join(root, "wt");
+		mkdirSync(repo);
+		execFileSync("git", ["init", "-q"], { cwd: repo });
+		writeFileSync(join(repo, "a.txt"), "x");
+		writeFileSync(join(repo, "b.txt"), "y");
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n");
+		writeFileSync(join(dir, "t1-qa.json"), JSON.stringify({ cwd: repo }));
+		writeFileSync(
+			join(dir, "t1-qa.events.jsonl"),
+			[JSON.stringify({ type: "message_end", message: assistant("I was halfway through the migration") })].join("\n") + "\n",
+		);
+		// no evidence at all for t2
+		writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\n");
+		writeFileSync(join(dir, "t2-qa.json"), JSON.stringify({ cwd: join(root, "gone") }));
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" },
+			{ runId: "old", taskId: "t2-qa", role: "qa", state: "running", output: ".foreman/runs/old/t2-qa.md" },
+		]);
+		await h.coord.whenIdle();
+		const ns = h.sent.flatMap((s) => s.message.details.notifications) as any[];
+		const n1 = ns.find((n) => n.taskId === "t1-qa");
+		const n2 = ns.find((n) => n.taskId === "t2-qa");
+		check("recover: orphan notification includes last assistant text from events log", n1.status === "failed" && /halfway through the migration/.test(n1.summary));
+		check("recover: orphan notification includes git status --short of the worker cwd (temp git repo)", n1.partial === 2 && /partial: 2 changed paths/.test(formatBlock(n1)));
+		check("recover: missing cwd or events log degrades to the old message", n2.status === "failed" && n2.summary === "orphaned (orchestrator restarted)" && n2.partial === undefined);
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-seq-"));
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t7-qa", role: "qa", state: "completed", output: "x" },
+			{ runId: "old2", taskId: "t3-planner", role: "planner", state: "completed", output: "y" },
+		]);
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "next" });
+		check("seq is seeded from recovered entries so the next task id is higher", ack.task_id === "t8-qa", ack.task_id);
+		h.cleanup();
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

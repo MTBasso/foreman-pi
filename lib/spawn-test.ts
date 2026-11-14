@@ -128,6 +128,14 @@ async function main() {
 			fs.rmSync(runDir, { recursive: true, force: true });
 		}
 	}
+
+	// Step 9: the events log is always on; only the herdr pane depends on panesEnabled().
+	{
+		const src = fs.readFileSync(new URL("../extensions/coordination/spawn-worker.ts", import.meta.url), "utf-8");
+		const m = /const logFile\s*=([^;]*);/.exec(src);
+		check("events log is written without herdr", !!m && !m[1].includes("panesEnabled") && m[1].includes("events.jsonl"), m?.[1]);
+		check("herdr pane stays conditional on panesEnabled()", /if \(panesEnabled\(\)\)/.test(src));
+	}
 }
 
 await main();

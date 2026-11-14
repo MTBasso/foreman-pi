@@ -77,15 +77,16 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		return failed(`Failed to prepare worker: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	// Inside herdr: give the worker a live watch pane following its event log.
-	const logFile = panesEnabled() ? path.join(req.runDir, `${req.taskId}.events.jsonl`) : undefined;
+	// Always keep the events log (message_end lines): it is the evidence an orphaned worker leaves behind.
+	const logFile = path.join(req.runDir, `${req.taskId}.events.jsonl`);
+	try {
+		fs.mkdirSync(req.runDir, { recursive: true });
+	} catch {
+		// ignore
+	}
+	// Inside herdr: give the worker a live watch pane following that log.
 	let watch: Promise<Awaited<ReturnType<typeof openWatchPane>>> | undefined;
-	if (logFile) {
-		try {
-			fs.mkdirSync(req.runDir, { recursive: true });
-		} catch {
-			// ignore
-		}
+	if (panesEnabled()) {
 		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
 	}
 	// A resume attempt prepends the preamble; the child is --no-session, so git state is the memory.
@@ -127,7 +128,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			return withBlockedReport(r, `merge-back error: ${e instanceof Error ? e.message : String(e)}`, iso);
 		}
 	});
-	return { done, kill: handle.kill, chosen: { model: chosen.model, thinking: chosen.thinking } };
+	return { done, kill: handle.kill, cwd, chosen: { model: chosen.model, thinking: chosen.thinking } };
 }
 
 function withBlockedReport(r: PiRunResult, conflict: string, iso: Isolated): PiRunResult {
