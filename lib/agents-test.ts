@@ -41,6 +41,12 @@ check(
 	/Guard-denied:/.test(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "references", "worker-common.md"), "utf8")),
 );
 
+{
+	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");
+	const tools = /^tools:\s*(.*)$/m.exec(planner)?.[1]?.split(",").map((t) => t.trim()).join(",");
+	check("planner tools include edit and still exclude nothing else changed", tools === "read,grep,find,bash,write,edit", String(tools));
+}
+
 try {
 	// 1. Package agents are all discovered.
 	{

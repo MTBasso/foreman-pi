@@ -238,7 +238,7 @@ Source of truth for plan-runner; update a step to `merged` only when it is on `f
 - Step 12: merged
 - Step 13: merged
 - Step 14: merged
-- Step 15: not started
+- Step 15: merged
 - Step 16: not started
 
 ## Out of scope (follow-up plans)

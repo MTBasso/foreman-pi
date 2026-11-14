@@ -37,6 +37,8 @@ boundaries, explicit non-goals.>
 <what exactly should come back: a plan, a diff + passing tests, a root-cause +
 fix, etc. — and the done condition.>
 
+For a revision handoff (planner): apply these decisions to the existing plan with edits, not a full rewrite.
+
 ## Constraints
 <anything time/scope-boxing the work: files not to touch, patterns not to
 introduce, performance/security notes.>

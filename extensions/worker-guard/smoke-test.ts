@@ -722,6 +722,11 @@ const editEvent = (p: string) => ({ type: "tool_call", toolName: "edit", toolCal
 	check("extension: qa edit of src blocked", (await fire(g.handlers, "tool_call", editEvent("src/a.ts")))?.block === true);
 	check("extension: read tool untouched", (await fire(g.handlers, "tool_call", { type: "tool_call", toolName: "read", toolCallId: "1", input: { path: "src/a.ts" } })) === undefined);
 	setEnv("1", "planner");
+	check("edit goes through the extension handler (fire tool_call with an edit event)",
+		(await fire(g.handlers, "tool_call", editEvent("docs/plans/x.md"))) === undefined &&
+		(await fire(g.handlers, "tool_call", editEvent("src/a.ts")))?.block === true &&
+		(await fire(g.handlers, "tool_call", editEvent("docs/plans/sub/x.md")))?.block === true &&
+		(await fire(g.handlers, "tool_call", editEvent("docs/other.md")))?.block === true);
 	check("extension: planner write blocked", (await fire(g.handlers, "tool_call", writeEvent("src/a.ts")))?.block === true);
 	setEnv("1", "reviewer");
 	check("extension: reviewer edit blocked", (await fire(g.handlers, "tool_call", editEvent(".foreman/a.md")))?.block === true);
@@ -809,6 +814,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("var: single-quoted $D stays literal (qa cannot write src via it)", blocked(bash("qa", "D=.foreman; echo x > '$D'")));
 	check("var: used before assignment not resolved", blocked(bash("backend-dev", "echo x > $D/y; D=.foreman/x")));
 	check("planner may write docs/plans/*.md via tool", !write("planner", "docs/plans/foo.md").block);
+	check("planner may edit docs/plans/x.md via the edit tool", !write("planner", "docs/plans/x.md").block);
+	check("planner edit of src/a.ts is blocked", write("planner", "src/a.ts").block);
+	check("planner edit of docs/plans/sub/x.md is blocked", write("planner", "docs/plans/sub/x.md").block);
+	check("planner edit of docs/other.md is blocked", write("planner", "docs/other.md").block);
 	check("planner may not write other docs", write("planner", "docs/foo.md").block && write("planner", "src/a.ts").block && write("planner", "docs/plans/sub/x.md").block);
 	check("planner may redirect into docs/plans/*.md", !bash("planner", "cat > docs/plans/foo.md <<'E'\n# p\nE\n").block);
 	check("planner redirect elsewhere still blocked", bash("planner", "echo x > docs/foo.md").block && bash("planner", "echo x > src/a.ts").block);
