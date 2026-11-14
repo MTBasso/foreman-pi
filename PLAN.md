@@ -396,6 +396,177 @@ Plano aprovado: `docs/plans/foreman-pi-event-driven-coordinator.md` (branch `fea
 - Divergência ledger/notificação em erro de escrita: o append do ledger é best effort e não bloqueia a entrega; se o disco falhar, a notificação sai sem linha de ledger (e vice-versa um crash entre os dois deixa a linha sem notificação — o caso que a ordem "ledger antes" favorece de propósito).
 - Lacuna de verificação na Fase 3: ao vivo, a chamada a `subagent` falhou com "Tool subagent not found" (a ferramenta nem está ativa), então o *bloqueio* em `tool_call` só é exercitado pelo smoke test com chamada fabricada, não ao vivo. `codemode`/`tool_search` aparecem em `getAllTools()` mas não no conjunto ativo; não foi verificado se alguma via de codemode alcançaria `subagent`.
 
+## Architecture & Token Efficiency Audit Improvements
+
+Written 2026-11-14 (English; the rest of this file is pt-BR). Plan only: no application code was changed. Inputs: the external sources listed under "Fontes (audit)", the directAds export (`pi-session-2026-11-12T11-53-58-957Z_*.html`, plan-runner run of `docs/plans/readme-gap.md`) and its `.foreman/runs/*/*.events.jsonl`, and a read of this repo. Token figures below are measured from those artifacts (chars/4 where noted), not estimated from memory.
+
+### Measured baseline (directAds run)
+
+| What | Number |
+|---|---|
+| Orchestrator context growth | 24k tokens (turn 1) → 148k (end), 103 requests, no compaction, 7.4M cache-read + 2.4M cache-write tokens |
+| Workers (6 roles, ~30 dispatches incl. retries) | ~25M cache-read tokens (de-duplicated); `plan-step-builder` 17.7M over 470 turns; planner 1.8M cache-read, ~86k output tokens over 48 turns (see A9) |
+| `foreman` skill body injected by `/foreman` | ~6.4k tokens, re-read on every later orchestrator turn |
+| `foreman_delegate` handoffs in orchestrator context | 44 calls × ~645 tokens = ~28k tokens that stay in context after dispatch |
+| Orchestrator `read` results (worker reports, plan, templates) | 19 calls, ~26.7k tokens |
+| System prompt of a session | ~8.5k tokens, of which 36 skill descriptions = ~4.3k (only 4 belong to foreman) |
+| Notifications | 44 notifications, ~5.2k tokens total: the summary cap and `context-filter` already work |
+
+### What already matches the research (keep)
+
+- One action tool for the orchestrator (`foreman_delegate`, ~257 tokens) and a proactive `setActiveTools` restriction. Anthropic: "minimal viable set of tools"; no ambiguity about which tool to use.
+- Sub-agent isolation with distilled returns: workers run as separate `pi` processes and return a ~400-char summary plus a report file on disk (just-in-time pointer, not raw output). Anthropic: sub-agents return 1-2k tokens.
+- Notes outside the context window: `.foreman/runs/*/ledger.log`, `.foreman/plan-runner/<slug>/progress.md` (structured note-taking).
+- `context-filter` prunes stale notifications (tool-result clearing, "safest lightest-touch compaction").
+- Guard blocks name the reason and the report contract names `Blocked-on` (errors that let the agent self-correct).
+
+### Items
+
+Impact is the expected effect on reliability (R), maintainability (M) or tokens (T). Sources are in the list at the end of this section.
+
+#### A. Token and context efficiency
+
+**A1. Prune old `foreman_delegate` handoffs from the orchestrator context** (Impact: High, T)
+- Gap: `context-filter` clears notifications but not the dispatch itself. Each `handoff_prompt` (avg 645 tokens, 44 of them) stays in the transcript and is re-read every turn, although the full text is already persisted in `.foreman/runs/<run>/<task>.json`. Anthropic ctx: "once a tool has been called deep in the message history, why would the agent need to see the raw result again"; just-in-time identifiers instead of inline data.
+- Target files: `extensions/context-filter/index.ts` (+ `smoke-test.ts`), `extensions/coordination/index.ts` (ensure the run json keeps `handoff_prompt`).
+- Task: in the `context` handler, for `foreman_delegate` tool calls that are not in the latest turn, replace `arguments.handoff_prompt` with `[handoff: .foreman/runs/<run>/<task>.json, <N> chars, role, plan_step]`. Keep `role`, `plan_slug`, `plan_step`. Non-destructive (session file keeps the original). Env switch `FOREMAN_CONTEXT_PRUNE_HANDOFFS=false`. Test: transcript with 5 dispatches → only the last keeps full text.
+
+**A2. Stop the orchestrator from re-writing boilerplate in every handoff** (Impact: High, T+M)
+- Gap: the handoff template makes the model re-emit the same blocks 44 times as output tokens: "About orchestrator mode" (~110 tokens, includes a historical anecdote), "User language", the guard "HARD RULE" lines (re-typed by hand in the session after each block), role blurb. writing-for-agents: single source of truth, no-ops, "cache" restating the environment. Anthropic: smallest set of high-signal tokens.
+- Target files: `templates/handoff-prompt.md`, `extensions/coordination/coordinator.ts` / `spawn-worker.ts` (compose the prompt), `extensions/coordination/index.ts` (tool schema), `skills/foreman/SKILL.md` §4, `skills/plan-runner/SKILL.md`.
+- Task: (1) the coordinator appends a fixed footer to every worker prompt (user language from `lib/i18n.ts`, "orchestrator mode does not apply to you", worktree path): the orchestrator writes only Role/Deliverable/Decided-context/Constraints deltas. (2) Template drops the anecdote and the role blurb (the agent file already carries the role). (3) The footer states the guard rules by pointing to `references/worker-common.md` (already appended to every worker) instead of restating them. (4) No `handoff_file` param for now: the orchestrator has no Write tool, so revisit only if A1 and A2 leave handoffs too large.
+- Acceptance: median handoff ≤ 350 tokens on a replay of the readme-gap steps; worker output unchanged (compare reports on 3 replayed steps).
+
+**A3. Custom compaction that keeps the run state** (Impact: High, R+T)
+- Gap: no `session_before_compact` handler exists; the orchestrator reached 148k tokens, deep into what the AI Coding Dictionary calls the "dumb zone", and the user had to type `resume` six times. Anthropic ctx: compaction preserves architectural decisions and unresolved issues, discards redundant tool output; pi `docs/compaction.md`: `session_before_compact` can supply the summary.
+- Target files: new `extensions/context-filter/compaction.ts` registered from `extensions/context-filter/index.ts`; `README.md` (settings section); `lib/mode.ts` if mode state needs to be restated.
+- Task: build the summary from data we own instead of an LLM pass over everything: plan slug and path, worktree path and branch, per-step status table from `progress.md`/the plan's Status section, running/blocked/failed tasks with output paths, rulings made, user decisions (from FOREMAN_MEMORY.md), unresolved findings. Fall back to pi's default summary on any error. Document recommended `compaction.reserveTokens` / `modelOverrides` so compaction starts near 100k for the orchestrator.
+- Verify: `smoke-test.ts` with a fake session; manual `/compact` in a real run keeps the next dispatch coherent.
+
+**A4. Spawn workers without the user's global skills** (Impact: Medium, T+R)
+- Gap: `lib/spawn.ts` starts workers with `--mode json -p --no-session` only. Each worker inherits every skill in `~/.agents/skills` (36 descriptions, ~4.3k tokens per request × ~700 worker requests ≈ 3M cached tokens) and can mis-trigger unrelated skills (tool confusion). pi `docs/cli.md`: `-ns, --no-skills`; `--skill <path>` loads explicit ones.
+- Target files: `lib/spawn.ts` (args), `extensions/coordination/spawn-worker.ts`, `lib/spawn-test.ts`.
+- Task: add `--no-skills` (opt-out `FOREMAN_WORKER_SKILLS=1`). Keep context files (AGENTS.md/CLAUDE.md of the project are wanted) and the extensions (worker-guard and model routing need them). Verify with one live worker that `read`/`bash`/the guard still load, and compare the first-request token count before/after.
+
+**A5. Filter test and typecheck output before it reaches the model** (Impact: High, T+R)
+- Gap: QA and builders run suites and pyright directly; output lands in context (one suite took ~3 min; 17 suites per QA pass; pyright's 29 pre-existing errors printed every run). Guard friction also comes from per-suite loops/variable paths. Anthropic MCP/code-execution: filter and aggregate in the execution environment, return only the result; pi docs: "tools MUST truncate" (`truncateTail` for logs).
+- Target files: new `scripts/run-suites.mjs`, `references/worker-common.md` (point to it), `agents/qa.md`, `agents/qa-bugfix.md`, `agents/plan-step-builder.md`, `package.json` (`files`), `lib/readme-test.ts`.
+- Task: `node scripts/run-suites.mjs --python <abs path> --cwd <dir> <suite...>` runs each suite, writes the full output to `.foreman/qa-logs/<suite>.log`, prints one line per suite (`PASS name 12.3s` / `FAIL name`), the failing test names and the last 30 lines of each failure, and exits non-zero on any failure. Same for `--pyright` with a baseline file (reuse `scripts/baseline-diff.mjs`). One literal command, so it is guard-friendly. Note the guard cannot see inside the script (documented limit in `references/worker-guard.md`); the script only executes the named suite paths.
+
+**A6. Split the `foreman` skill by branch (progressive disclosure)** (Impact: Medium-High, T+M)
+- Gap: `skills/foreman/SKILL.md` is 424 lines / ~6.4k tokens, over the Agent Skills recommendation (< 500 lines and < 5,000 tokens), and `extensions/foreman-mode/prompts.ts` injects all of it, including branches most runs never take (§1.5 audit, §0.5 optional dependencies, §6 guardrail troubleshooting). writing-for-agents: disclose what only some branches reach behind a pointer, one trigger per branch; agentskills best practices: "tell the agent when to load each file".
+- Target files: `skills/foreman/SKILL.md`, new `references/foreman-audit.md` and `references/foreman-delegation.md` (the long §4 tables), `references/guardrail-troubleshooting.md` (already exists: §6 should only point to it), `extensions/foreman-mode/prompts.ts`, `extensions/foreman-mode/smoke-test.ts`.
+- Task: keep in SKILL.md only §0 (workspace/mode), §1 (orient), §2 (grill), §3.5 (rulings), the delegate loop and §5 (never do). Replace each moved section with one pointer line stating the condition ("If the request is an audit, read `references/foreman-audit.md`"). Target ≤ 3.5k tokens. `buildAuditPrompt` loads the audit reference directly.
+- Acceptance: a replay of two grilling sessions and one audit shows the same behaviour; `prompts.ts` tests pass.
+
+**A7. Make `/foreman` and `/plan-runner` user-invoked skills** (Impact: Low, T)
+- Gap: `foreman` and `plan-runner` keep model-facing descriptions (~250 tokens in every orchestrator and worker prompt), but both are entered by commands that embed the body (`prompts.ts`), and `session-reminder` already tells the model about the commands. SKILL-MECHANICS: a skill that only fires by hand should be user-invoked (`disable-model-invocation: true`) and cost no context.
+- Target files: `skills/foreman/SKILL.md`, `skills/plan-runner/SKILL.md` frontmatter; keep `design-preview` and `project-memory` model-invoked (the foreman skill must reach them). Risk: `pi-claude-cli` resolves skills itself (see `~/CLAUDE.md` gotchas); verify with the load check before shipping.
+
+**A8. Report size and read discipline** (Impact: Low, T)
+- Gap: the orchestrator `read` worker reports in full (19 reads, ~26.7k tokens) because the notification carries only a 400-char summary and no size hint. Anthropic: metadata (file sizes) lets agents decide what to open.
+- Target files: `extensions/coordination/coordinator.ts` (`formatNotification`), `skills/plan-runner/SKILL.md`, `skills/foreman/SKILL.md`.
+- Task: add `report: <N> lines` to each notification and a rule "read the report only when status is not completed or the summary leaves a question; read with `limit`".
+
+**A9. Planner: edit the plan instead of rewriting it** (Impact: Medium, T)
+- Gap (measured, corrected): the two planner runs cost ~86k output tokens (an earlier figure of 173k double-counted: the old event logs hold each message twice, once as `message_update`/`turn_end` and once as `message_end`). The cause is that `agents/planner.md` lists `tools: read, grep, find, bash, write`, with no `edit`. Pass 1 wrote the 52KB plan; pass 2 only had to apply six user decisions but had to re-emit the entire 71KB (~18k tokens) file, one tool call of ~33k output tokens that ran for minutes with nothing visible. Cost is output tokens (the expensive kind) plus the wait.
+- Target files: `agents/planner.md`, `extensions/worker-guard/policy.ts` (`plannerMayWrite` already scopes planner writes to `docs/plans/`; extend it to the `edit` tool), `extensions/worker-guard/smoke-test.ts`, `templates/handoff-prompt.md` (revision handoffs say "apply these decisions with edits").
+- Task: add `edit` to the planner tools, restricted by the guard to `docs/plans/<name>.md`; revision handoffs list decisions and the planner edits only the affected steps. Also have the planner write the plan in two stages for large plans (outline, then step bodies) so no single call exceeds ~8k output tokens. Acceptance: a replay of the readme-gap revision costs < 10k output tokens.
+
+#### B. Skill and prompt structure
+
+**B1. Rewrite worker-facing text for agents, not humans** (Impact: Medium, R+M)
+- Gap: `references/worker-common.md` (~1.3k tokens, appended to every worker), `templates/*.md` and `agents/*.md` mix rules with history ("A live test caught a subagent stalling…"), steer by prohibition (`Never git stash…`, `don't retry or work around it`), and repeat the same guard rules in `worker-common.md`, `references/worker-guard.md` and hand-typed handoffs. writing-for-agents: positive target first, a negation only as a hard guardrail paired with the positive alternative; prune no-ops and sediment; leading words; agentskills: a Gotchas section of concrete corrections is the highest-value content.
+- Target files: `references/worker-common.md`, `references/worker-guard.md`, `templates/*.md`, `agents/*.md`.
+- Task: (1) move history to `docs/verification-log.md`; (2) add a `## Gotchas` section built from this session: command name must be a literal path, one command per suite, `.foreman/` is the scratch area, `python3 -c` probes limited to imports/prints, a denied probe goes under `Guard-denied`; (3) state each rule once (worker-common) and make the others point to it; (4) restate prohibitions positively ("compare against a baseline with `git show <sha>:<path>`"). Acceptance: `worker-common.md` ≤ 900 tokens; `lib/readme-test.ts`/`agents-test.ts` pass.
+
+**B2. Plan template: add Testing decisions and Out of scope; keep file paths** (Impact: Low-Medium, M)
+- Gap: Matt Pocock's `to-spec` template carries "Testing Decisions" (seams, what makes a good test, prior art) and "Out of Scope", and tells the author not to put file paths in a spec because they go stale. `agents/planner.md` has a "Testing strategy" section but no seam guidance and no Out-of-scope heading; our plans must keep `Touches` paths because plan-runner uses them to decide parallel safety. This is an intentional divergence, not a gap.
+- Target files: `agents/planner.md`, `lib/plan-steps.ts` (only if the parser needs the new headings), `lib/plan-steps-test.ts`.
+- Task: add "Seams (prefer existing, highest possible, ideally one)" and "Out of scope" to the planner contract; leave `Touches`/`Checks`/`Renders` as they are.
+
+**B3. Grilling: reuse, do not duplicate** (Impact: Low, M)
+- Gap: `skills/foreman/SKILL.md` §2 carries its own fallback interview and an install nudge for `grill-me`; Matt's `grill-me` is a one-line user-invoked skill that calls the shared `grilling` skill (the router/shared-reference pattern in SKILL-MECHANICS). 
+- Target files: `skills/foreman/SKILL.md` §2, `references/optional-dependencies.md`.
+- Task: reduce §2 to "invoke `grilling` (or `grill-me`); if neither is installed, read `references/grilling-fallback.md`". Saves ~150 tokens per run and removes a drifting copy.
+
+**B4. Add an eval loop for the skills themselves** (Impact: Medium, M+R)
+- Gap: the repo has solid tests for code (guard, coordinator) but none for prompt behaviour; the agentskills guide says to read execution traces and refine with real runs, and Anthropic says to tune compaction prompts on real traces. Today the knowledge sits in one-off handoff files and `/foreman-diagnose`.
+- Target files: `scripts/trace-report.mjs` (new), `extensions/coordination/coordinator.ts` (write usage into `<task>.json`), `references/diagnosing-a-run.md`, `docs/verification-log.md`.
+- Task: persist per-worker `usage` (input/output/cache tokens, turns, tool calls, guard denials by reason) in the run json; `trace-report.mjs <run-dir>` prints the table used in this audit. Add 3 replay fixtures (the readme-gap steps 0, 6 and 15 handoffs) to compare token cost and block count before/after each change in this plan.
+
+#### C. Missing guardrails and failure modes
+
+**C1. Circuit breaker for repeated identical failures** (Impact: High, R)
+- Gap: step 0 was dispatched six times with the same "guard refused X" outcome, and the orchestrator only changed the wording of the handoff. Nothing in the coordinator counts attempts. This is the runaway-loop failure mode.
+- Target files: `extensions/coordination/coordinator.ts`, `extensions/coordination/index.ts` (tool result text), `skills/plan-runner/SKILL.md` §3.5, `extensions/coordination/smoke-test.ts`.
+- Task: count dispatches per `(planSlug, planStep)` and remember the last `Blocked-on`/error. From the 3rd dispatch of a step whose last two outcomes were `blocked`/`failed`, the `foreman_delegate` result says "attempt N; previous attempts ended: <reasons>. Rule on it (skip, degrade, change approach) or ask the user before dispatching again." Baseline-type steps degrade after one failure (see D2).
+
+**C2. Mid-task retry for transient provider errors, with shared back-off** (Impact: High, R)
+- Gap: `lib/retry.ts` only retries a worker that produced no output, so every 429/503 that hit a working builder (steps 10, 12, 14, 17, plus the 503 "credential validation failed") surfaced as `failed` and needed a manual resume dispatch. Back-off is per worker, no jitter, 3 retries at 30/60/120 s, and parallel workers hit the limit together.
+- Target files: `lib/retry.ts`, `lib/retry-test.ts`, `extensions/coordination/spawn-worker.ts`, `extensions/coordination/coordinator.ts` (shared gate), `lib/spawn.ts`.
+- Task: (1) add 503 "credential validation" to `TRANSIENT_RE`; (2) on a transient failure after output, re-spawn with a generated resume preamble ("run `git status` and `git log -3`, continue from what exists, commit only your paths") and a cap of 2; (3) a coordinator-level gate: after a 429, pause new spawns for the back-off (jittered, honour `retry-after` when present) and halve effective concurrency, restoring one slot per clean finish; (4) default `FOREMAN_MAX_WORKERS` for writer roles 2 (override via env).
+
+**C3. Orphaned workers leave evidence** (Impact: Medium, R)
+- Gap: `recover()` reports `orphaned (orchestrator restarted)` with no detail and the run md does not exist, so the orchestrator hit ENOENT and had to guess whether partial work existed.
+- Target files: `extensions/coordination/coordinator.ts` (`recover`, `delegate`), `extensions/coordination/spawn-worker.ts`.
+- Task: write a stub `<task>.md` at spawn time; in `recover()` add the last assistant text from `<task>.events.jsonl` and `git status --short` of the worker cwd to the notification; make task ids unique per session (`t1` repeated across 5 run ids).
+
+**C4. Worktree-aware workdir and working isolation** (Impact: High, R)
+- Gap: workers start in the main checkout while the plan runs in `.worktrees/readme-gap`. Auto-isolation then branched from the main checkout's HEAD (`master`), rewrote the handoff path to a non-existent `<iso>/.worktrees/readme-gap`, and lacked `.venv`; workers kept editing the shared plan worktree, so two writers collided (step 10 vs 16 i18n key counts). `.foreman/` writes for `qa`/`shipper` were refused because the guard root was the main checkout.
+- Target files: `lib/worktree.ts`, `lib/worktree-test.ts`, `extensions/coordination/spawn-worker.ts`, `extensions/coordination/index.ts` (new `workdir` param, set by plan-runner step 0), `extensions/worker-guard/policy.ts`, `skills/plan-runner/SKILL.md`, `references/using-worktrees.md`.
+- Task: `foreman_delegate` takes/remembers `workdir`; workers spawn with `cwd = workdir` and the guard root follows; isolation branches from `workdir` HEAD, merges back into it, symlinks untracked environment dirs (`.venv`, `node_modules`) and only rewrites paths under the workdir; plan-steps lint flags overlapping `Touches` inside one `## Parallel` wave and plan-runner runs those serially.
+
+**C5. Guard false positives that stopped real work** (Impact: High, R)
+- Gap (verified by running the current `policy.ts`): `mkdir .foreman` itself is denied for `qa`/`shipper` (`segs.length > 1` check); writes to `<linked worktree>/.foreman/…` are denied for scoped roles when cwd is the main checkout; `P=…; for s in …; do $P … >/tmp/o_$s.txt; done` is denied (assignment plus loop do not compose in `vars.ts`); `../x` redirects are denied for scoped roles; `python3 -c "…len(json.load(open(f)))"` is denied for planner/reviewer. A denial also forces `Status: blocked`, so a refused probe turned an otherwise complete review into `blocked`.
+- Target files: `extensions/worker-guard/policy.ts`, `extensions/worker-guard/vars.ts`, `extensions/worker-guard/smoke-test.ts`, `references/worker-common.md` (including the report contract: new `Guard-denied:` field), `references/worker-guard.md`.
+- Task: allow the `.foreman` directory itself and `<linked worktree>/.foreman/**` for scoped roles; compose `expandForLoop` with literal-variable resolution; resolve relative redirects and judge the result; widen the `python3 -c` probe to pure expressions over `json.load(open(...))`, `len`, `print`; replace the denial suffix with "continue the remaining work, list the denied command under `Guard-denied:`" and keep `blocked` for denials that prevent the core deliverable (coordinator marks `completed` with a note otherwise). Add each case from the directAds run as a regression test.
+
+**C6. Check promises before making them** (Impact: Medium, R)
+- Gap: the plan promised `Renders: yes` screenshots but Playwright was missing, so six UI steps shipped "unrendered"; the reviewer cannot run tests and trusted QA's report; two worker "all green" claims were wrong and were caught only by a later QA pass.
+- Target files: `agents/planner.md` (pre-flight list), `skills/plan-runner/SKILL.md` (step 0), `extensions/coordination/coordinator.ts` (post-step check), `agents/reviewer.md`.
+- Task: plan-runner step 0 probes the render tool and test runner once and tells the user up front; after a builder reports `completed` the coordinator runs the step's declared `Checks:` itself (via `scripts/run-suites.mjs`) and annotates the notification `verified: yes|no|n/a`; reviewer asks for a `qa` pass on any range changed after the last QA.
+
+#### D. Orchestrator behaviour (skills)
+
+**D1.** Plan Status section created by plan-runner on first run; `Status` is the source of truth the notifications point at (Impact: Medium, M). Files: `skills/plan-runner/SKILL.md`, `lib/plan-steps.ts`.
+**D2.** Baseline steps: one attempt, then record "baseline unavailable" and continue (Impact: Medium, T). Files: `skills/plan-runner/SKILL.md`, `agents/plan-step-builder.md`.
+**D3.** `/foreman resume` command reads ledger, plan Status, orphan notes and re-dispatches instead of the user typing "resume" (Impact: Medium, R). Files: `extensions/foreman-mode/index.ts`, `extensions/foreman-mode/prompts.ts`, `lib/mode.ts`.
+**D4.** Session reminder once per session; drop the pre-gathered `git status` block on `resume` (it is stale by definition) (Impact: Low, T). File: `extensions/session-reminder/index.ts`.
+
+#### E. Worker activity visibility (can I tell working from stuck?)
+
+**E1. Live activity line per worker, with stuck detection** (Impact: High, R)
+- Gap: the widget (0.3.4) shows `▶ step 13 · Carousel UI · 4m43s`: it proves the process is alive, not that the worker is doing anything. `runPiJson` already receives every event of the worker's JSON stream but keeps only `message_end` and drops `message_update`, `tool_execution_start/update/end` and the `usage` they carry, so nothing about the current action reaches the UI. Real cases from the directAds run where this mattered: the planner's single 33k-token write call (minutes of silence), a QA suite that ran ~3 minutes, a worker that sat in the same blocked loop. Anthropic ctx: lightweight identifiers/metadata give agents (and humans) a signal about what is happening without loading the data; agentskills: read traces, not just final outputs.
+- Target files: new `lib/activity.ts` (pure tracker) + `lib/activity-test.ts`; `lib/spawn.ts` (`RunPiJsonOptions.onEvent`, called for every parsed event before the `message_end` filter); `extensions/coordination/spawn-worker.ts` (wire it); `extensions/coordination/coordinator.ts` (Task.activity, `snapshot()`); `lib/workers.ts` (`renderWorkersUi`, `renderReport`); `lib/i18n/en.ts` and `pt-BR` catalogs; `scripts/herdr-tail.mjs` (optional); `extensions/coordination/smoke-test.ts`.
+- Task:
+  1. `ActivityTracker.feed(event, now)` keeps: `phase` (`starting | thinking | writing | tool | waiting`), `label`, `lastEventAt`, `lastProgressAt`, turns, tool-call count, live output tokens and cost (from `usage` in `message_update`), and a ring of the last 5 actions.
+  2. Phase rules from the event types seen in real logs: `thinking_start/delta` → thinking, label = last ~70 chars of the thinking text when present (`thinking_delta` carries text; may be empty or redacted with some providers, then show the phase only); `toolcall_start/delta` → writing, label = `<tool> <path or command head>` with bytes streamed so far (partial `arguments` length), so a 140KB write shows `writing docs/plans/x.md · 48 KB`; `tool_execution_start` → tool, label = command head (60 chars) and file path, elapsed since start; `text_delta` → `reporting`; no event since `turn_end` → waiting for the provider.
+  3. Health, shown as a glyph: `●` active (event in the last 20s), `◐` waiting (20-90s, or a tool running past its normal time), `⚠` silent (> 90s with no tool running, configurable `FOREMAN_STUCK_AFTER_S`), `⟳` repeating (same tool and same target 3 times in a row, or the same failing command), `✖` hit a guard denial (shows the first words of the reason).
+  4. Widget line: `● step 13 · Carousel UI · 4m43s · writing app/static/js/builder.js 38 KB · 21 tools · 14k out`. `/foreman-status` expands each worker: last 5 actions with timings, the last thinking snippet, tokens and cost so far, the guard denials count.
+  5. Notify once (UI + herdr) when a worker flips to `⚠` or `⟳`, and clear it when it recovers. No kill: the existing 30 min timeout stays; the notification names the worker and its last action so you can decide.
+  6. Write the tracker state to `.foreman/runs/<run>/<task>.status.json` (atomic, at most every 2s). This lets the herdr pane and a later session read it, and it is the evidence C3 needs when an orchestrator restart orphans a worker (last action, tokens, last event time).
+  7. Token neutral: the activity is UI/disk only and is never sent to the orchestrator's context (the orchestrator still gets only the final notification). The event log keeps filtering `message_update` so it does not grow.
+- Acceptance: a unit test feeds a recorded stream (take the first 200 lines of a real worker log, with `message_update`) and asserts the labels and phase transitions; a fake silent stream flips to `⚠` after the threshold; a stream with three identical `bash` calls flips to `⟳`; the widget stays one line per worker at 100 columns (truncate the label, never the elapsed time).
+- Not verified: that every provider streams `thinking_delta` text (the directAds orchestrator transcript shows empty thinking blocks while worker logs contain thinking text), so the thinking snippet is best effort and the phase is the reliable signal.
+
+### Suggested order
+
+1. **Phase A (mechanical, high leverage, one worker at a time):** C5 (guard), C4 (workdir), C2+C3 (retry/orphans), A4 (`--no-skills`), E1 (activity visibility; do it early so the later phases can be watched), A9 (planner `edit`).
+2. **Phase B (token cuts, measurable with B4 fixtures):** B4 fixtures first, then A1, A2, A5, A3.
+3. **Phase C (prompt/skill rewrites, verify by replay):** A6, B1, B3, A7, A8, D1-D4, C1, C6, B2.
+
+### Fontes (audit)
+
+- Anthropic, "Effective context engineering for AI agents": https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents (context rot, smallest high-signal token set, tool-result clearing, just-in-time context, compaction, note-taking, sub-agents).
+- Anthropic, "Code execution with MCP": https://www.anthropic.com/engineering/code-execution-with-mcp (tool definitions and intermediate results as the two token sinks; filter in the execution environment).
+- Agent Skills specification and "Best practices for skill creators": https://agentskills.io/specification, https://agentskills.io/skill-creation/best-practices (progressive disclosure: ~100-token metadata, < 5,000-token body, < 500 lines; gotchas; defaults not menus; validation loops; refine from traces).
+- Matt Pocock: AI Coding Dictionary https://www.aihero.dev/ai-coding-dictionary (smart/dumb zone, compaction, handoff artifact, progressive disclosure, subagent); `mattpocock/skills` (`writing-for-agents`, `grill-me`/`grilling`, `to-spec`), read from the installed copies in `~/.agents/skills/`.
+- pi docs shipped with 1.5.2: `docs/skills.md`, `docs/compaction.md`, `docs/extensions.md` (`context`, `session_before_compact`, output truncation), `docs/cli.md`, `docs/codemode.md`, `docs/mcp.md`.
+- Anthropic `anthropics/skills` repo (index and README only: skills are a directory with `SKILL.md` plus `scripts/`, `references/`, `templates/`). Not read in depth.
+
+Not verified: the `earendil-works/pi` monorepo docs on GitHub (read the installed copies instead), whether `ctx.getContextUsage()` can drive an automatic compaction nudge (documented, not tried), and the behaviour of `--no-skills` together with the `pi-claude-cli` provider.
+
 ## Fontes
 
 - https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md
