@@ -13,7 +13,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
-import { readStepTitle } from "../../lib/plan-steps.ts";
+import { readOverlapsFor, readStepTitle } from "../../lib/plan-steps.ts";
 
 import { ROLES, type Role } from "../../lib/roles.ts";
 export { ROLES, type Role };
@@ -681,6 +681,18 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			thinkingLevel: opts.thinkingLevel,
 		};
 		t.title = readStepTitle(deps.root, t.planSlug, t.planStep);
+		// Lint: a parallel-wave step sharing files with a step that is running right now.
+		let overlapWarning = "";
+		if (t.planSlug && t.planStep !== undefined) {
+			for (const o of readOverlapsFor(deps.root, t.planSlug, t.planStep)) {
+				const busy = [...tasks.values()].some(
+					(r) => r.state === "running" && r.planSlug === t.planSlug && r.planStep === o.other,
+				);
+				if (busy) {
+					overlapWarning += ` Warning: step ${t.planStep} shares files with running step ${o.other} (${o.paths.join(", ")}); dispatch it after step ${o.other} finishes next time.`;
+				}
+			}
+		}
 		tasks.set(taskId, t);
 		writeMeta(t, { created_at: new Date(now()).toISOString() });
 		if (running < maxWorkers) startTask(t);
@@ -696,7 +708,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			state,
 			ack:
 				`Dispatched ${taskId} (${state}). END YOUR TURN now: you will be woken with a <task-notification> ` +
-				`when it finishes (full report at ${outputRel(taskId)}). Do not poll or wait.`,
+				`when it finishes (full report at ${outputRel(taskId)}). Do not poll or wait.${overlapWarning}`,
 		};
 	}
 

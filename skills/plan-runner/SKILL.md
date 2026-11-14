@@ -35,6 +35,13 @@ already isolated, otherwise get the user's consent before creating a
 worktree for this plan's run. Skip it only if the user declines or the
 project gives you no way to create one; work in place then.
 
+Once you know the worktree path (or the project root when working in
+place), pass it as `workdir: "<absolute path>"` on **every**
+`foreman_delegate` call. Workers then start in that checkout, so the guard
+root, `.foreman` writes and isolation all point at the plan's worktree, not
+the main checkout. The extension remembers it for the run; a later value
+replaces it.
+
 Entering orchestrator mode is the `/plan-runner` command's job, not yours:
 do not create files or edit `.gitignore` to mark anything. Read
 `references/orchestrator-mode.md` in this plugin once per session — it is the
@@ -133,11 +140,15 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   TURN. Each completion wakes you with its own notification (batched if they
   land together). Handle each as it arrives; start the next wave only once
   every notification for the current wave is in and the plan's Status
-  section confirms the dependencies are merged/decided.
+  section confirms the dependencies are merged/decided. Exception: if two
+  steps of the wave list a shared file or a parent directory in their
+  `Touches`, dispatch them one after the other, not together (the
+  extension appends a "shares files with running step" warning to the ack
+  when you do collide).
 - A merge frees new steps — on the notification that completes it, dispatch
   everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
-- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`. It is the only dispatch path (`subagent` is unavailable).
+- Every `foreman_delegate` call carries `role`, `plan_step`, `plan_slug` and `workdir`. It is the only dispatch path (`subagent` is unavailable).
 
 ### 2.5. Rulings, not stalls
 

@@ -824,6 +824,36 @@ async function main() {
 		h2.cleanup();
 	}
 
+	// Step 6. Overlap warning on delegate.
+	{
+		const h = harness({ maxWorkers: 8 });
+		mkdirSync(join(h.root, "docs", "plans"), { recursive: true });
+		writeFileSync(join(h.root, "docs", "plans", "wave.md"), [
+			"## Parallel",
+			"1. **One** (Touches: `lib/a.ts`, `lib/i18n/en.ts`)",
+			"2. **Two** (Touches: `lib/i18n/en.ts`)",
+			"3. **Three** (Touches: `docs/z.md`)",
+		].join("\n"));
+		const a1 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "a", plan_slug: "wave", plan_step: 1 });
+		check("no warning for the first step of a wave", !/shares files/.test(a1.ack));
+		const a2 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "b", plan_slug: "wave", plan_step: 2 });
+		check("delegate ack warns on overlap with a running step", /step 2 shares files with running step 1/.test(a2.ack) && /lib\/i18n\/en\.ts/.test(a2.ack) && a2.state === "running");
+		const a3 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "c", plan_slug: "wave", plan_step: 3 });
+		check("no warning when Touches are disjoint", !/shares files/.test(a3.ack));
+		h.finish(a1.task_id, ok("done"));
+		await new Promise((r) => setTimeout(r, 30));
+		const a4 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "d", plan_slug: "wave", plan_step: 2 });
+		check("no warning once the overlapping step finished", !/shares files/.test(a4.ack));
+		const h2 = harness({ maxWorkers: 8 });
+		mkdirSync(join(h2.root, "docs", "plans"), { recursive: true });
+		writeFileSync(join(h2.root, "docs", "plans", "seq.md"), "1. **One** (Touches: `a.ts`)\n2. **Two** (Touches: `a.ts`)\n");
+		h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "a", plan_slug: "seq", plan_step: 1 });
+		const b2 = h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "b", plan_slug: "seq", plan_step: 2 });
+		check("no warning when the plan has no Parallel section", !/shares files/.test(b2.ack));
+		h.cleanup();
+		h2.cleanup();
+	}
+
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
 	if (savedModeEnv !== undefined) process.env.FOREMAN_PI_MODE = savedModeEnv;
 
