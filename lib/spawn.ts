@@ -82,6 +82,8 @@ export interface RunPiJsonOptions {
 	invocation?: PiInvocation;
 	/** Append the child's raw JSON event stream here (lets a herdr pane follow it live). */
 	logFile?: string;
+	/** Called with every parsed JSON event (incl. message_update) before the message_end filter; exceptions are swallowed. */
+	onEvent?: (event: any) => void;
 	/** Override the SIGTERM -> SIGKILL delay (tests). */
 	killGraceMs?: number;
 }
@@ -151,6 +153,13 @@ export function runPiJson(args: string[], opts: RunPiJsonOptions): PiRunHandle {
 				event = JSON.parse(line);
 			} catch {
 				return;
+			}
+			if (opts.onEvent) {
+				try {
+					opts.onEvent(event);
+				} catch {
+					// activity is UI-only; it must never break collection
+				}
 			}
 			if (event?.type !== "message_end") return;
 			const m = event.message;

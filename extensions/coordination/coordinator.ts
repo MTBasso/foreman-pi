@@ -11,9 +11,10 @@
  * `<task-notification>` blocks. The ledger is appended (sync) before delivery.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
+import { createActivityTracker, type ActivityTracker } from "../../lib/activity.ts";
 import { sharedGate, type BackoffGate } from "../../lib/backoff.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 import { readOverlapsFor, readStepTitle } from "../../lib/plan-steps.ts";
@@ -45,6 +46,10 @@ export interface SpawnRequest {
 	runDir: string;
 	model?: string;
 	thinkingLevel?: string;
+	/** Every JSON event of the worker's stream (hot path: keep it O(1), never emit per event). */
+	onEvent?(event: unknown): void;
+	/** A retry/resume attempt (attempt >= 1) is starting: activity restarts. */
+	onAttempt?(attempt: number): void;
 }
 
 export interface WorkerResult {
@@ -145,6 +150,9 @@ interface Task {
 	/** Where the worker runs (handle.cwd once spawned, else the requested cwd). */
 	cwd?: string;
 	handle?: WorkerHandle;
+	/** Live activity of the worker (fed from its event stream). */
+	activity?: ActivityTracker;
+	lastStatusAt?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
 	killedByShutdown?: boolean;
@@ -166,6 +174,7 @@ const SUMMARY_MAX = 400;
 const LEDGER_SUMMARY_MAX = 200;
 const ORPHAN_SUMMARY = "orphaned (orchestrator restarted)";
 const GIT_STATUS_TIMEOUT_MS = 5000;
+const STATUS_WRITE_MS = 2000;
 const STUB_PREFIX = (taskId: string) => `# ${taskId}`;
 
 /** True when the file is the coordinator's start-of-task placeholder, not a report. */
@@ -203,6 +212,24 @@ function lastTextFromEvents(file: string): string {
 			}
 		}
 		return finalReport(messages);
+	} catch {
+		return "";
+	}
+}
+
+/** "last: <action>; <n> tokens out; last event <s>s ago" from a status.json; "" when missing or unreadable. */
+function readStatusSummary(file: string, at: number): string {
+	try {
+		if (!existsSync(file)) return "";
+		const v = JSON.parse(readFileSync(file, "utf8"))?.view;
+		if (!v || typeof v !== "object") return "";
+		const recent = Array.isArray(v.recent) ? v.recent : [];
+		const action = v.label ? [v.phase, v.label].filter(Boolean).join(" ") : (recent.length ? recent[recent.length - 1]?.label : "") || v.phase || "";
+		const parts: string[] = [];
+		if (action) parts.push(`last action: ${collapse(String(action))}`);
+		if (typeof v.outTokens === "number") parts.push(`${v.outTokens} tokens out`);
+		if (typeof v.lastEventAt === "number" && v.lastEventAt > 0) parts.push(`last event ${Math.max(0, Math.round((at - v.lastEventAt) / 1000))}s ago`);
+		return parts.join("; ");
 	} catch {
 		return "";
 	}
@@ -480,6 +507,20 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		}
 	}
 
+	/** Atomic <task>.status.json (temp + rename). Best effort. */
+	function writeStatus(t: Task, final = false) {
+		if (!t.activity) return;
+		const at = now();
+		t.lastStatusAt = at;
+		const file = join(runDir, `${t.taskId}.status.json`);
+		try {
+			writeFileSync(`${file}.tmp`, JSON.stringify({ updated_at: new Date(at).toISOString(), cwd: t.cwd ?? null, ...(final ? { finished: true } : {}), view: t.activity.view(at) }));
+			renameSync(`${file}.tmp`, file);
+		} catch {
+			// evidence only
+		}
+	}
+
 	/** Placeholder report so the orchestrator never hits ENOENT; finishTask overwrites it, recover() ignores it. */
 	function writeStub(t: Task) {
 		try {
@@ -505,6 +546,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		t.state = "running";
 		t.startedAt = now();
 		t.cwd = t.workdir ?? deps.root;
+		const activity = createActivityTracker();
+		activity.reset(now());
+		t.activity = activity;
 		writeStub(t);
 		writeMeta(t, { started_at: new Date(now()).toISOString() });
 		let handle: WorkerHandle;
@@ -517,6 +561,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				runDir,
 				model: t.model,
 				thinkingLevel: t.thinkingLevel,
+				onEvent: (event) => {
+					const at = now();
+					activity.feed(event, at);
+					if (at - (t.lastStatusAt ?? 0) >= STATUS_WRITE_MS) writeStatus(t);
+				},
+				onAttempt: () => activity.reset(now()),
 			});
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
@@ -586,6 +636,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		if (t.timer) clearTimeout(t.timer);
 		running--;
 		if (ISOLATABLE_ROLES.has(t.role)) runningWriters = Math.max(0, runningWriters - 1);
+		writeStatus(t, true);
 		if (stopped || t.killedByShutdown || t.aborted) {
 			checkIdle();
 			emitChange();
@@ -1016,8 +1067,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					// no meta
 				}
 				const last = lastTextFromEvents(join(runPath, `${e.taskId}.events.jsonl`));
+				const act = readStatusSummary(join(runPath, `${e.taskId}.status.json`), now());
+				if (act) summary = `${ORPHAN_SUMMARY} — ${act}`;
 				const paths = gitStatusShort(cwd).split("\n").filter((l) => l.trim() !== "").length;
-				if (last) summary = truncate(`${ORPHAN_SUMMARY} — last output: ${collapse(last)}`, SUMMARY_MAX);
+				if (last) summary = truncate(`${summary} — last output: ${collapse(last)}`, SUMMARY_MAX);
 				if (paths > 0) partial = paths;
 			}
 			recovered.push({

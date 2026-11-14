@@ -50,7 +50,7 @@ interface Sent {
 	ledgerLinesAtSend: number;
 }
 
-function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate } = {}) {
+function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate; now?: () => number } = {}) {
 	const root = opts.root ?? mkdtempSync(join(tmpdir(), "foreman-coord-"));
 	const workers = new Map<string, { req: SpawnRequest; resolve: (r: WorkerResult) => void; killed: boolean }>();
 	const spawned: string[] = [];
@@ -66,6 +66,7 @@ function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boole
 		resolveWorkdir: opts.resolveWorkdir,
 		maxWriters: opts.maxWriters,
 		gate: opts.gate,
+		...(opts.now ? { now: opts.now } : {}),
 		spawn(req) {
 			spawned.push(req.taskId);
 			let resolve!: (r: WorkerResult) => void;
@@ -967,6 +968,70 @@ async function main() {
 		]);
 		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "next" });
 		check("seq is seeded from recovered entries so the next task id is higher", ack.task_id === "t8-qa", ack.task_id);
+		h.cleanup();
+	}
+
+	// Step 12: activity wiring and status.json.
+	{
+		let clock = 1_000_000;
+		const h = harness({ now: () => clock });
+		let changes = 0;
+		h.coord.onChange(() => changes++);
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const statusPath = join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.status.json`);
+		const ev = (i: number) => ({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `x${i}` } });
+		const before = changes;
+		check("SpawnRequest carries onEvent and onAttempt", typeof req.onEvent === "function" && typeof req.onAttempt === "function");
+		req.onEvent!(ev(0));
+		check("status.json is written on the first event", existsSync(statusPath));
+		const first = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json has view, updated_at and cwd", first.view?.phase === "reporting" && typeof first.updated_at === "string" && typeof first.cwd === "string");
+		clock += 500;
+		for (let i = 1; i < 50; i++) req.onEvent!(ev(i));
+		const second = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json is written at most every 2 s (fake clock)", second.updated_at === first.updated_at);
+		clock += 2000;
+		req.onEvent!(ev(99));
+		const third = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json rewritten after 2 s", third.updated_at !== first.updated_at);
+		check("status.json is atomic: no temp file is left behind", !existsSync(`${statusPath}.tmp`));
+		check("no emitChange per event", changes === before);
+		check("getTask(id).activity exposes the tracker", h.coord.getTask(ack.task_id)?.activity?.view(clock).phase === "reporting");
+		req.onEvent!({ type: "turn_end" });
+		req.onAttempt!(1);
+		check("tracker resets on retry attempt", h.coord.getTask(ack.task_id)!.activity!.view(clock).turns === 0 && h.coord.getTask(ack.task_id)!.activity!.view(clock).phase === "idle");
+		req.onEvent!({ type: "turn_end" });
+		clock += 100;
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		const fin = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json final write on finish", fin.view.turns === 1 && fin.finished === true, JSON.stringify(fin).slice(0, 200));
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-status-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n");
+		writeFileSync(
+			join(dir, "t1-qa.status.json"),
+			JSON.stringify({ updated_at: new Date().toISOString(), cwd: root, view: { phase: "tool", label: "npm test", lastEventAt: Date.now() - 42_000, outTokens: 1234, recent: [{ label: "bash npm run build", durationMs: 10, isError: false, at: 1 }] } }),
+		);
+		writeFileSync(join(dir, "t1-qa.events.jsonl"), JSON.stringify({ type: "message_end", message: assistant("log fallback text") }) + "\n");
+		writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\n");
+		writeFileSync(join(dir, "t2-qa.events.jsonl"), JSON.stringify({ type: "message_end", message: assistant("only the log") }) + "\n");
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" },
+			{ runId: "old", taskId: "t2-qa", role: "qa", state: "running", output: ".foreman/runs/old/t2-qa.md" },
+		]);
+		await h.coord.whenIdle();
+		const ns = h.sent.flatMap((s) => s.message.details.notifications) as any[];
+		const n1 = ns.find((n) => n.taskId === "t1-qa");
+		const n2 = ns.find((n) => n.taskId === "t2-qa");
+		check("recover reads status.json into the orphan summary", /npm test/.test(n1.summary) && /1234/.test(n1.summary) && /4\ds ago/.test(n1.summary), n1.summary);
+		check("recover keeps the events log as fallback without status.json", /only the log/.test(n2.summary) && !/tokens/.test(n2.summary), n2.summary);
 		h.cleanup();
 	}
 

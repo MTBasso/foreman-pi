@@ -93,7 +93,10 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	const buildArgs = (resume?: ResumeInfo): string[] => [...args, `Task: ${resume ? `${resumePreamble(resume.n)}\n\n` : ""}${promptText}`];
 	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
 	const handle = runWithRetry(
-		(_attempt, resume) => runPiJson(buildArgs(resume), { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }),
+		(attempt, resume) => {
+			if (attempt > 0) req.onAttempt?.(attempt);
+			return runPiJson(buildArgs(resume), { cwd, logFile, onEvent: req.onEvent, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } });
+		},
 		{
 			...(Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {}),
 			gate: sharedGate,

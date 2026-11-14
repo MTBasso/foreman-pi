@@ -43,6 +43,27 @@ async function main() {
 		check("logFile captures raw stdout", r.messages.length === 1 && fs.readFileSync(lf, "utf-8").includes("message_end"));
 	}
 
+	// onEvent sees every parsed event; messages and the log keep their filters.
+	{
+		const script = `
+			const out = (o) => console.log(JSON.stringify(o));
+			out({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "hi" } });
+			out({ type: "tool_execution_start", toolName: "bash", args: { command: "ls" } });
+			out({ type: "message_end", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } });
+		`;
+		const seen: any[] = [];
+		const lf = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-ev-")), "ev.jsonl");
+		const r = await runPiJson([], { cwd, logFile: lf, invocation: node(script), onEvent: (e) => seen.push(e) }).done;
+		const types = seen.map((e) => e.type);
+		check("onEvent receives message_update and tool events that the messages array drops", types.includes("message_update") && types.includes("tool_execution_start") && types.includes("message_end"), types.join(","));
+		const plain = await runPiJson([], { cwd, invocation: node(script) }).done;
+		check("messages array is unchanged by onEvent", JSON.stringify(r.messages) === JSON.stringify(plain.messages) && r.messages.length === 1);
+		const log = fs.readFileSync(lf, "utf-8").trim().split("\n");
+		check("events log keeps only message_end lines with onEvent set", log.length === 1 && log[0].includes("message_end"));
+		const thrower = await runPiJson([], { cwd, invocation: node(script), onEvent: () => { throw new Error("boom"); } }).done;
+		check("a throwing onEvent does not break message collection", thrower.messages.length === 1 && thrower.code === 0);
+	}
+
 	// Error stopReason is surfaced.
 	{
 		const script = `console.log(JSON.stringify({ type: "message_end", message: { role: "assistant", stopReason: "error", errorMessage: "boom", content: [] } }));`;
