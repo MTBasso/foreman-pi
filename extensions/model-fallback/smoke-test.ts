@@ -20,6 +20,7 @@ function makeFakeApi(opts: { fallbackConfigured: boolean }) {
   const handlers: Record<string, Handler[]> = {};
   const sent: Array<{ message: any; options?: any }> = [];
   let registeredRoute: ((req: any, ctx: any) => any) | undefined;
+  const commands: Record<string, any> = {};
 
   const catalog: Record<
     string,
@@ -52,6 +53,9 @@ function makeFakeApi(opts: { fallbackConfigured: boolean }) {
       (handlers[event] ??= []).push(handler);
       return () => {};
     },
+    registerCommand(name: string, options: any) {
+      commands[name] = options;
+    },
     registerVirtualModel(def: any) {
       registeredRoute = def.route;
     },
@@ -64,6 +68,7 @@ function makeFakeApi(opts: { fallbackConfigured: boolean }) {
     api,
     handlers,
     sent,
+    commands,
     modelRegistry,
     route: (req: any) => registeredRoute!(req, { modelRegistry }),
   };
@@ -87,10 +92,14 @@ async function main() {
 
   // --- Scenario 1: normal reply, no refusal -> stays on primary, no retry triggered.
   {
-    const { api, handlers, sent, modelRegistry } = makeFakeApi({
+    const { api, handlers, sent, modelRegistry, commands } = makeFakeApi({
       fallbackConfigured: true,
     });
     await extension(api as any);
+    check(
+      'refuseless command is registered',
+      typeof commands['refuseless']?.handler === 'function'
+    );
     const messages = [userMsg("what's 2+2?"), assistantMsg('anthropic', '4.')];
 
     await fire(handlers, 'agent_end', { messages }, { modelRegistry });
