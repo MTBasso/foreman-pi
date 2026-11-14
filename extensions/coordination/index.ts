@@ -36,6 +36,7 @@ import {
 	ROLES,
 	TASK_ENTRY_TYPE,
 } from "./coordinator.ts";
+import { resolveWorkdir } from "../../lib/worktree.ts";
 import { spawnWorker } from "./spawn-worker.ts";
 
 const STATUS_KEY = "foreman-workers";
@@ -48,6 +49,12 @@ const DelegateParams = Type.Object({
 	plan_step: Type.Optional(Type.Number({ description: "Plan step number this task belongs to (for the ledger)." })),
 	plan_slug: Type.Optional(
 		Type.String({ description: "Plan slug (docs/plans/<slug>.md); first non-empty value is latched for the run." }),
+	),
+	workdir: Type.Optional(
+		Type.String({
+			description:
+				"Absolute path of the plan worktree (or the repo root) the worker runs in. Set once by plan-runner step 0 to the plan worktree; remembered for later delegates in the run, a new value replaces it.",
+		}),
 	),
 });
 
@@ -137,6 +144,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 			coord = createCoordinator({
 				root: cwd,
 				spawn,
+				resolveWorkdir,
 				sendMessage: (m, o) => {
 					const ns = ((m as any).details?.notifications ?? []) as Notification[];
 					for (const n of ns) {

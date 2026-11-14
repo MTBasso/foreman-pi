@@ -29,6 +29,8 @@ export interface DelegateInput {
 	handoff_prompt: string;
 	plan_step?: number;
 	plan_slug?: string;
+	/** Absolute path of the plan worktree (or the root); latched for later delegates, a new value re-latches. */
+	workdir?: string;
 }
 
 export interface SpawnRequest {
@@ -102,6 +104,8 @@ export interface CoordinatorDeps {
 	maxWorkers?: number;
 	batchMs?: number;
 	timeoutMs?: number;
+	/** Validates a requested workdir and returns its real path; throws on a bad one. Default: identity. */
+	resolveWorkdir?(root: string, requested: string): string;
 	/** Test hook: deterministic run id. */
 	runId?: string;
 }
@@ -119,6 +123,8 @@ interface Task {
 	prompt: string;
 	planStep?: number;
 	planSlug?: string;
+	/** Worker cwd: the latched workdir, undefined = deps.root. */
+	workdir?: string;
 	/** Plan-step title for the widget (parsed from docs/plans/<slug>.md at delegate time). */
 	title?: string;
 	state: TaskState;
@@ -330,6 +336,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	let seq = 0;
 	let running = 0;
 	let planSlug: string | undefined;
+	let latchedWorkdir: string | undefined;
 	let busy = false;
 	let stopped = false;
 	let batchSeq = 0;
@@ -378,6 +385,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					role: t.role,
 					plan_step: t.planStep ?? null,
 					plan_slug: t.planSlug ?? null,
+					...(t.workdir ? { workdir: t.workdir } : {}),
 					state: t.state,
 					handoff_prompt: t.prompt,
 					output: outputRel(t.taskId),
@@ -421,7 +429,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				taskId: t.taskId,
 				role: t.role,
 				prompt: t.prompt,
-				cwd: deps.root,
+				cwd: t.workdir ?? deps.root,
 				runDir,
 				model: t.model,
 				thinkingLevel: t.thinkingLevel,
@@ -647,6 +655,11 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		if (typeof input.handoff_prompt !== "string" || input.handoff_prompt.trim() === "") {
 			throw new Error("handoff_prompt must be a non-empty string.");
 		}
+		const requestedWorkdir = input.workdir?.trim();
+		if (requestedWorkdir) {
+			// Validate before any state changes so a bad path spawns nothing and latches nothing.
+			latchedWorkdir = deps.resolveWorkdir ? deps.resolveWorkdir(deps.root, requestedWorkdir) : requestedWorkdir;
+		}
 		stopped = false;
 		ensureRunDir();
 		const slug = input.plan_slug?.trim();
@@ -661,6 +674,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			prompt: input.handoff_prompt,
 			planStep: typeof input.plan_step === "number" ? input.plan_step : undefined,
 			planSlug: slug || planSlug,
+			workdir: latchedWorkdir,
 			title: undefined,
 			state: "queued",
 			model: opts.model,

@@ -48,7 +48,7 @@ interface Sent {
 	ledgerLinesAtSend: number;
 }
 
-function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string } = {}) {
+function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string } = {}) {
 	const root = opts.root ?? mkdtempSync(join(tmpdir(), "foreman-coord-"));
 	const workers = new Map<string, { req: SpawnRequest; resolve: (r: WorkerResult) => void; killed: boolean }>();
 	const spawned: string[] = [];
@@ -61,6 +61,7 @@ function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boole
 		batchMs: 20,
 		timeoutMs: opts.timeoutMs ?? 0,
 		isOrchestratorActive: () => active,
+		resolveWorkdir: opts.resolveWorkdir,
 		spawn(req) {
 			spawned.push(req.taskId);
 			let resolve!: (r: WorkerResult) => void;
@@ -792,6 +793,35 @@ async function main() {
 		const m = /Package root: (\S+)/.exec(sample);
 		check("compose: Package root line is the real path and exists", !!m && m[1] === PACKAGE_ROOT && existsSync(join(m[1], "references", "worker-common.md")));
 		check("compose: {{PACKAGE_ROOT}} also substituted in the agent body", composeWorkerPrompt({ systemPrompt: "see {{PACKAGE_ROOT}}/x" }).includes(`see ${PACKAGE_ROOT}/x`));
+	}
+
+	// Step 5. workdir: remembered per run, used as the worker cwd.
+	{
+		const fakeResolve = (root: string, req: string) => {
+			if (!req.startsWith("/wt/")) throw new Error(`workdir ${req} is not allowed`);
+			return req;
+		};
+		const h = harness({ maxWorkers: 8, resolveWorkdir: fakeResolve });
+		const a1 = h.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: "/wt/one" });
+		const req1 = h.workers.get(a1.task_id)!.req;
+		check("delegate passes workdir as SpawnRequest.cwd and keeps runDir under root", req1.cwd === "/wt/one" && req1.runDir === join(h.root, ".foreman", "runs", h.coord.runId));
+		const a2 = h.coord.delegate({ role: "qa", handoff_prompt: "b" });
+		check("workdir is remembered for later delegates in the run", h.workers.get(a2.task_id)!.req.cwd === "/wt/one");
+		const a3 = h.coord.delegate({ role: "qa", handoff_prompt: "c", workdir: "/wt/two" });
+		const a4 = h.coord.delegate({ role: "qa", handoff_prompt: "d" });
+		check("per-call workdir overrides the remembered one", h.workers.get(a3.task_id)!.req.cwd === "/wt/two" && h.workers.get(a4.task_id)!.req.cwd === "/wt/two");
+		const before = h.spawned.length;
+		let threw = false;
+		try { h.coord.delegate({ role: "qa", handoff_prompt: "e", workdir: "/etc" }); } catch { threw = true; }
+		const a5 = h.coord.delegate({ role: "qa", handoff_prompt: "f" });
+		check("invalid workdir throws from delegate and spawns nothing", threw && h.spawned.length === before + 1 && h.workers.get(a5.task_id)!.req.cwd === "/wt/two");
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman", "runs", h.coord.runId, `${a1.task_id}.json`), "utf8"));
+		check("meta json records workdir", meta.workdir === "/wt/one");
+		const h2 = harness();
+		const b1 = h2.coord.delegate({ role: "qa", handoff_prompt: "x" });
+		check("no workdir: cwd is the root", h2.workers.get(b1.task_id)!.req.cwd === h2.root);
+		h.cleanup();
+		h2.cleanup();
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

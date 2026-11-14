@@ -870,6 +870,17 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("relative ../ redirect judged on resolved path", !blocked(sub("qa", "echo x > ../.foreman/x.log")) && blocked(sub("qa", "echo x > ../x.txt")) && blocked(sub("qa", "echo x > ../../outside/x")) && blocked(sub("qa", "echo x > ../.foreman/../src/x")));
 }
 
+// --- C4 step 5: qa running with cwd = a linked worktree ----------------------------------------
+{
+	const sib = path.join(base, "sibling-wt");
+	const inWt = (role: string, cmd: string) => checkBash(role, sib, cmd, opts);
+	check("guard: qa with cwd = linked worktree may write .foreman/qa-logs/x.log",
+		!checkBash("qa", sib, "mkdir -p .foreman/qa-logs", opts).block &&
+		!inWt("qa", "echo x > .foreman/qa-logs/x.log").block &&
+		!checkWrite("qa", sib, ".foreman/qa-logs/x.log", opts).block &&
+		checkWrite("qa", sib, "src/a.ts", opts).block);
+}
+
 // --- C5 step 2: literal vars composed with for-loops; python read-only probe grammar -------------
 {
 	const blocked = (v: { block: boolean }) => v.block;
