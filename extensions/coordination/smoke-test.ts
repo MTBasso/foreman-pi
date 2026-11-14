@@ -1186,6 +1186,34 @@ async function main() {
 		if (savedBatch14 === undefined) delete process.env.FOREMAN_BATCH_MS; else process.env.FOREMAN_BATCH_MS = savedBatch14;
 	}
 
+	// usage in the run json (B4)
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const msg = (u: Record<string, unknown>) => ({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash" }], usage: u } });
+		req.onEvent!(msg({ input: 5, output: 7, cacheRead: 11, cacheWrite: 13, cost: { total: 0.5 } }));
+		req.onAttempt!(1);
+		req.onEvent!(msg({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1, cost: { total: 0.25 } }));
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.json`), "utf8"));
+		const u = meta.usage;
+		check("coordinator meta json has usage after finish", !!u && u.input === 6 && u.output === 8 && u.cacheRead === 12 && u.cacheWrite === 14 && u.turns === 2 && u.toolCalls === 2 && u.attempts === 2 && u.cost === 0.75 && u.guardDenials?.total === 0, JSON.stringify(u));
+		check("meta json keeps the raw handoff next to usage", meta.handoff_prompt === "go");
+	}
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const bad = { get type(): string { throw new Error("boom"); } };
+		let threw = false;
+		try { req.onEvent!(bad); } catch { threw = true; }
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		check("usage feed throwing does not fail the task", !threw && h.sent.length === 1 && /status: completed/.test(h.sent[0].message.content));
+	}
+
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
 	if (savedModeEnv !== undefined) process.env.FOREMAN_PI_MODE = savedModeEnv;
 

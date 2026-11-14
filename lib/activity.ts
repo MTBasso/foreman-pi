@@ -40,7 +40,7 @@ const THINK_LABEL = 70;
 const THINK_KEEP = 200;
 const TARGET_HEAD = 60;
 const ARGS_KEEP = 2000;
-const DENIAL_PREFIX = "Blocked by the foreman worker guard";
+export const DENIAL_PREFIX = "Blocked by the foreman worker guard";
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null;

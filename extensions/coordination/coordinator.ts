@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
 import { createActivityTracker, type ActivityTracker } from "../../lib/activity.ts";
+import { createUsageTally, type UsageTally } from "../../lib/usage.ts";
 import { sharedGate, type BackoffGate } from "../../lib/backoff.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 import { readOverlapsFor, readStepTitle } from "../../lib/plan-steps.ts";
@@ -154,6 +155,8 @@ interface Task {
 	handle?: WorkerHandle;
 	/** Live activity of the worker (fed from its event stream). */
 	activity?: ActivityTracker;
+	/** Per-worker usage tally (all attempts); written to the run json in finishTask. */
+	usage?: UsageTally;
 	lastStatusAt?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
@@ -570,6 +573,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		const activity = createActivityTracker({ stuckAfterMs: stuckAfterMs });
 		activity.reset(now());
 		t.activity = activity;
+		const usage = createUsageTally();
+		usage.noteAttempt();
+		t.usage = usage;
 		writeStub(t);
 		writeMeta(t, { started_at: new Date(now()).toISOString(), ...(workdirFallback ? { workdir_fallback: workdirFallback } : {}) });
 		let handle: WorkerHandle;
@@ -584,10 +590,26 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				thinkingLevel: t.thinkingLevel,
 				onEvent: (event) => {
 					const at = now();
-					activity.feed(event, at);
+					try {
+						usage.feed(event);
+					} catch {
+						// usage is best effort; never break the stream
+					}
+					try {
+						activity.feed(event, at);
+					} catch {
+						// activity is best effort too
+					}
 					if (at - (t.lastStatusAt ?? 0) >= STATUS_WRITE_MS) writeStatus(t);
 				},
-				onAttempt: () => activity.reset(now()),
+				onAttempt: () => {
+					try {
+						usage.noteAttempt();
+					} catch {
+						// best effort
+					}
+					activity.reset(now());
+				},
 			});
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
@@ -737,6 +759,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				signal: r.signal,
 				error: error ?? null,
 				summary,
+				...(t.usage ? { usage: t.usage.snapshot() } : {}),
 				...contractInfo,
 			});
 		} catch {
