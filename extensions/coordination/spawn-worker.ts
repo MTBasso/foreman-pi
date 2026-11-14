@@ -17,7 +17,7 @@ import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
 import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
-import { runWithRetry } from "../../lib/retry.ts";
+import { resumePreamble, runWithRetry, type ResumeInfo } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 
@@ -60,6 +60,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpDir: string | undefined;
+	let promptText = "";
 	try {
 		const systemPrompt = composeWorkerPrompt(agent);
 		if (systemPrompt.trim()) {
@@ -68,7 +69,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			fs.writeFileSync(promptFile, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 			args.push("--append-system-prompt", promptFile);
 		}
-		args.push(`Task: ${inlineOrPointerPrompt(prompt, req.runDir, req.taskId)}`);
+		promptText = inlineOrPointerPrompt(prompt, req.runDir, req.taskId);
 	} catch (e) {
 		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 		releaseWriter();
@@ -86,7 +87,13 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		}
 		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
 	}
-	const handle = runWithRetry((attempt) => runPiJson(args, { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }));
+	// A resume attempt prepends the preamble; the child is --no-session, so git state is the memory.
+	const buildArgs = (resume?: ResumeInfo): string[] => [...args, `Task: ${resume ? `${resumePreamble(resume.n)}\n\n` : ""}${promptText}`];
+	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
+	const handle = runWithRetry(
+		(_attempt, resume) => runPiJson(buildArgs(resume), { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }),
+		Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {},
+	);
 	const cleanupTmp = () => {
 		if (!tmpDir) return;
 		try {
