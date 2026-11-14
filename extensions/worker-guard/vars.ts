@@ -10,9 +10,13 @@
  * the value is certain.
  *
  * Rules (all must hold for a name to be substituted):
- *  - the command has no subshell/brace groups, backticks, `$(`, compound
- *    keywords (if/while/for/case/...), `&&`, `||`, `|`, or `&` (assignment
- *    might not run, or run in a subshell);
+ *  - the command has no subshell/brace groups, backticks, `$(` or compound
+ *    keywords (if/while/for/case/...);
+ *  - `&&`, `||`, `|` and `&` are allowed (so `2>&1`, pipes and `mkdir -p $D && ...`
+ *    resolve) because the assignment must itself be a whole statement, must be the
+ *    ONLY `NAME=` occurrence in the command, and the statement before it must not
+ *    end in `&&`, `||`, `|` or `|&` (a continued line would make it conditional or
+ *    run it in a pipeline subshell);
  *  - the assignment is a whole statement `NAME=literal` / `export NAME=literal`
  *    starting at the beginning of the command or after `;` / newline;
  *  - literal is [A-Za-z0-9_./:@%+,=-]+ (optionally in one pair of quotes): no
@@ -155,7 +159,8 @@ function substitute(text: string, name: string, value: string): string {
 
 export function resolveLiteralVars(command: string): string {
 	if (!command.includes("$")) return command;
-	if (/[`()]|\$\(|&|\|/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
+	if (/[`()]|\$\(/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
+	if (/(^|[\s;&|])\{(\s|$)/.test(command)) return command; // brace group: the assignment inside might be conditional
 	if (COMPOUND.test(command)) return command;
 	const parsed = statements(command);
 	if (!parsed) return command;
@@ -183,7 +188,9 @@ export function resolveLiteralVars(command: string): string {
 		const asg = new RegExp(`(^|[\\s;])(?:export\\s+)?${name}=`, "g");
 		const bareHits = (command.match(bare) ?? []).length;
 		const asgHits = (command.match(asg) ?? []).length;
-		if (bareHits > asgHits) continue;
+		if (bareHits > asgHits || asgHits !== 1) continue;
+		const prev = a.stmtIndex > 0 ? parsed.stmts[a.stmtIndex - 1].text : "";
+		if (/(\|\||&&|\||\|&)\s*(#[^\n]*)?$/.test(prev.trimEnd())) continue; // assignment is on a continued line: conditional or in a pipeline
 		const edits: Array<[number, number]> = [];
 		parsed.stmts.forEach((s, idx) => {
 			if (idx <= a.stmtIndex) return;

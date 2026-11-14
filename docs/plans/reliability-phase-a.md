@@ -225,7 +225,7 @@ Phase A makes the worker pipeline reliable before any token work: the guard stop
 Source of truth for plan-runner; update a step to `merged` only when it is on `feat/foreman-reliability`.
 
 - Step 1: merged
-- Step 2: not started
+- Step 2: merged
 - Step 3: not started
 - Step 4: not started
 - Step 5: not started

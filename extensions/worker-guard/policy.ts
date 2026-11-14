@@ -1203,7 +1203,29 @@ const FIND_BAD = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fpr
 
 const PY_NAMES = /^python(3(\.\d+)?)?$/;
 const PIP_NAMES = /^pip3?$/;
-const PY_STMT = /^(import [\w.]+( as \w+)?(, ?[\w.]+( as \w+)?)*|from [\w.]+ import [\w., *]+|print\((?:"[^"\\$`]*"|'[^'\\$`]*'|[A-Za-z_][\w.]*)\)|print\(hasattr\([\w.]+, ?(?:"\w+"|'\w+')\)\))$/;
+const PY_STR = /^(?:"[^"\\$`]*"|'[^'\\$`]*')$/;
+const PY_NAME = /^[A-Za-z_][\w.]*$/;
+const PY_STMT = /^(import [\w.]+( as \w+)?(, ?[\w.]+( as \w+)?)*|from [\w.]+ import [\w., *]+|print\(hasattr\([\w.]+, ?(?:"\w+"|'\w+')\)\))$/;
+
+/** `<expr>` of a read-only probe: name, string literal, `len|sorted|str|list(<expr>)`, or `json.load(open(<string-or-name>))` (single argument, so read-only). The whole text must parse. */
+function pyExprOk(s: string, depth = 0): boolean {
+	s = s.trim();
+	if (depth > 6) return false;
+	if (PY_NAME.test(s) || PY_STR.test(s)) return true;
+	const j = /^json\.load\(\s*open\(\s*([^()]+?)\s*\)\s*\)$/.exec(s);
+	if (j) return PY_NAME.test(j[1]) || PY_STR.test(j[1]);
+	const f = /^(?:len|sorted|str|list)\(([\s\S]*)\)$/.exec(s);
+	return f ? pyExprOk(f[1], depth + 1) : false;
+}
+
+/** One statement of a read-only probe: `import x`, `from x import y`, `NAME = "<literal>"`, `print(<expr>)`. */
+function pyStmtOk(x: string): boolean {
+	if (PY_STMT.test(x)) return true;
+	const asg = /^([A-Za-z_]\w*)\s*=\s*([\s\S]+)$/.exec(x);
+	if (asg) return PY_STR.test(asg[2].trim());
+	const p = /^print\(([\s\S]*)\)$/.exec(x);
+	return p ? pyExprOk(p[1]) : false;
+}
 
 /** Read-only probes a planner needs: `python -c "import x; print(x.__version__)"`, `pip show|list|freeze|check`. */
 function interpreterProbeProblem(name: string, args: Word[]): string | undefined | null {
@@ -1217,9 +1239,9 @@ function interpreterProbeProblem(name: string, args: Word[]): string | undefined
 	}
 	if (ops.length === 2 && ops[0].text === "-c") {
 		const stmts = ops[1].text.split(/\s*;\s*|\n/).map((x) => x.trim()).filter(Boolean);
-		if (stmts.length > 0 && stmts.every((x) => PY_STMT.test(x))) return undefined;
+		if (stmts.length > 0 && stmts.every(pyStmtOk)) return undefined;
 	}
-	return `"${name}" is only allowed for read-only probes: -c with import / from-import / print(name) statements, or pip show|list|freeze|check`;
+	return `"${name}" is only allowed for read-only probes: -c with import / from-import / NAME = "literal" / print(<expr>) statements (expr: name, string, len|sorted|str|list(...), json.load(open(file))), or pip show|list|freeze|check`;
 }
 
 function readonlyProblem(ctx: Ctx, name: string, args: Word[]): string | undefined {

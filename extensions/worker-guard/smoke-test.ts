@@ -870,6 +870,61 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("relative ../ redirect judged on resolved path", !blocked(sub("qa", "echo x > ../.foreman/x.log")) && blocked(sub("qa", "echo x > ../x.txt")) && blocked(sub("qa", "echo x > ../../outside/x")) && blocked(sub("qa", "echo x > ../.foreman/../src/x")));
 }
 
+// --- C5 step 2: literal vars composed with for-loops; python read-only probe grammar -------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const P = `${repo}/.foreman/tool`;
+	check("literal var assigned then used inside a for-loop redirect is judged on the real path",
+		!blocked(bash("qa", `P=${P}; for s in a b c; do $P run $s > ${tmp}/o_$s.txt; done`)) &&
+		!blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s > .foreman/o_$s.txt 2>&1; done`)) &&
+		!blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s 2>&1 | tail -3 > .foreman/o_$s.txt; done`)) &&
+		!blocked(bash("qa", `D=.foreman/o; mkdir -p $D && for s in a b c; do echo $s > $D/$s.txt; done`)) &&
+		!blocked(bash("qa", `D=.foreman/o\nfor s in a b c; do\n echo $s > $D/$s.txt 2>&1\ndone`)));
+	check("the real path is still judged after composing (qa into src / outside)",
+		blocked(bash("qa", `D=src; for s in a b; do echo $s > $D/$s.txt 2>&1; done`)) &&
+		blocked(bash("qa", `D=${outside}; mkdir -p .foreman/x && for s in a b; do echo $s > $D/$s.txt; done`)) &&
+		blocked(bash("qa", `D=src; echo a 2>&1 | tail -1 > $D/x.txt`)));
+	check("same with a variable the loop reassigns stays denied",
+		blocked(bash("qa", `D=.foreman/o; for D in /etc; do echo x > $D/y 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o; for s in a b; do D=/etc; echo x > $D/$s 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o\nfalse || D=src\necho x > $D/y 2>&1`)) &&
+		blocked(bash("qa", `D=.foreman/o; D=src; mkdir -p .foreman/z && echo x > $D/y`)));
+	check("conditional assignment on a continued line is not trusted",
+		blocked(bash("qa", `false &&\nD=.foreman/o\necho x > $D/y`)) &&
+		blocked(bash("qa", `false ||\nD=.foreman/o\necho x > $D/y`)) &&
+		blocked(bash("qa", `echo a |\nD=.foreman/o\necho x > $D/y`)));
+	check("loop over a glob stays denied",
+		blocked(bash("qa", `D=.foreman/o; for s in *.txt; do echo x > $D/$s 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o; for s in $(ls); do echo x > $D/$s; done`)));
+
+	const ok = (c: string) => !blocked(bash("planner", c));
+	const no = (c: string) => blocked(bash("planner", c));
+	check("planner may run python3 -c json.load(open) len print",
+		ok(`python3 -c "import json; print(len(json.load(open('data.json'))))"`) &&
+		ok(`python3 -c 'import json; f = "a.json"; print(len(json.load(open(f))))'`) &&
+		ok(`python3 -c "import json; print(sorted(json.load(open('x.json'))))"`) &&
+		ok(`python3 -c "import json; print(str(len(list(json.load(open('x.json'))))))"`) &&
+		ok(`python3 -c "import json; d = json.load(open('x.json'))"`) === false &&
+		ok(`python3 -c 'import json\nf = "a.json"\nprint(json.load(open(f)))'`));
+	check("planner may not python3 -c open(..., \"w\")",
+		no(`python3 -c "print(open('x','w'))"`) &&
+		no(`python3 -c "import json; print(json.load(open('x','w')))"`) &&
+		no(`python3 -c "import json; print(json.load(open('x', mode='w')))"`) &&
+		no(`python3 -c "import json; print(len(open('x')))"`) &&
+		no(`python3 -c "f = open('x', 'w')"`) &&
+		no(`python3 -c "import json; print(json.dump(1, open('x')))"`));
+	check("planner may not python3 -c exec/eval/__import__/os.system",
+		no(`python3 -c "exec('x=1')"`) && no(`python3 -c "print(eval('1'))"`) && no(`python3 -c "print(len(eval('1')))"`) &&
+		no(`python3 -c "__import__('os').system('ls')"`) && no(`python3 -c "print(__import__('os'))"`) &&
+		no(`python3 -c "import os; print(os.system('ls'))"`) && no(`python3 -c "import os; os.system('ls')"`) &&
+		no(`python3 -c "print(len(json.load(open(f))), exec('1'))"`) &&
+		no(`python3 -c "print(len(a), len(b))"`) && no(`python3 -c 'f = "$HOME"; print(f)'`) && no(`python3 -c "print(len(json.load(open(f))"`));
+	check("reviewer same probes as planner",
+		!blocked(bash("reviewer", `python3 -c "import json; print(len(json.load(open('data.json'))))"`)) &&
+		blocked(bash("reviewer", `python3 -c "print(open('x','w'))"`)) && blocked(bash("reviewer", `python3 -c "exec('1')"`)) &&
+		blocked(bash("reviewer", `python3 -c "import os; os.system('ls')"`)) && blocked(bash("reviewer", `python3 -c "__import__('os')"`)));
+}
+
 fs.rmSync(base, { recursive: true, force: true });
 console.log(failures === 0 ? `All ${total} worker-guard checks passed.` : `${failures} of ${total} worker-guard check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);
