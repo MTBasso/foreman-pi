@@ -148,7 +148,7 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
 - A merge frees new steps — on the notification that completes it, dispatch
   everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
-- Every `foreman_delegate` call carries `role`, `plan_step`, `plan_slug` and `workdir`. It is the only dispatch path (`subagent` is unavailable).
+- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`, plus `workdir`. It is the only dispatch path (`subagent` is unavailable).
 
 ### 2.5. Rulings, not stalls
 
