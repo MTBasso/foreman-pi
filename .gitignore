@@ -1,3 +1,4 @@
 node_modules/
 .foreman/
 *.log
+.env
