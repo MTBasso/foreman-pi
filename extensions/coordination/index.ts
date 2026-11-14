@@ -112,7 +112,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 
 	/** Redraw status bar + widget from the current snapshot; clear them when nothing is live. */
 	function refreshUi() {
-		const rendered = renderWorkersUi(snapshot(), Date.now());
+		const rendered = renderWorkersUi(snapshot(), Date.now(), process.stdout.columns || 100);
 		const live = rendered.status !== undefined;
 		if (live && !ticker) {
 			// Elapsed times move without any state change, so tick while workers are live.

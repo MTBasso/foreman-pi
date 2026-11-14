@@ -985,7 +985,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		let queuedCount = 0;
 		for (const t of tasks.values()) {
 			if (t.state === "running") {
-				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, title: t.title, startedAt: t.startedAt ?? now() });
+				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, title: t.title, startedAt: t.startedAt ?? now(), ...(t.activity ? { activity: t.activity.view(now()) } : {}) });
 			} else if (t.state === "queued") {
 				queuedCount++;
 			} else {

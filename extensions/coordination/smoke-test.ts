@@ -524,6 +524,34 @@ async function main() {
 		check("render: no raw placeholders", ![en.status!, pt.status!, ...en.widget!, ...pt.widget!, en.rep, pt.rep].some((x) => /\{\w+\}/.test(x)));
 		const none = renderReport(empty, { active: false, source: "default" }, now);
 		check("report: empty state says nothing ran", none.includes(t("report.none")) && /off \(default\)/.test(none));
+
+		// E1 task 4: activity line and report detail.
+		const view = (o: Partial<import("../../lib/activity.ts").ActivityView> = {}): import("../../lib/activity.ts").ActivityView => ({
+			phase: "writing", label: "write app/static/js/builder.js 38 KB", bytes: 38_000, lastEventAt: now - 1000, turns: 3, toolCalls: 21, outTokens: 14_000, cost: 0.42,
+			recent: [], health: "active", denials: 0, lastDenial: "", ...o,
+		});
+		const snapA = (a?: import("../../lib/activity.ts").ActivityView, cols?: number, title = "Carousel UI") =>
+			renderWorkersUi({ running: [{ taskId: "t1-dev", role: "dev", planStep: 13, title, startedAt: now - 283_000, activity: a }], queued: 0, finished: [] }, now, cols).widget![0];
+		check("widget line for an active writing worker matches the documented shape", snapA(view()) === "● step 13 · Carousel UI · 4m43s · writing app/static/js/builder.js 38 KB · 21 tools · 14k out", snapA(view()));
+		const glyphs: Array<[import("../../lib/activity.ts").Health, string]> = [["active", "●"], ["waiting", "◐"], ["silent", "⚠"], ["repeating", "⟳"], ["denied", "✖"]];
+		check("each health glyph renders for its state", glyphs.every(([h, g]) => snapA(view({ health: h })).startsWith(`${g} step 13`)));
+		const longLine = snapA(view({ label: `write ${"very/long/dir/".repeat(20)}file.ts 90 KB` }), 100);
+		check("line at 100 columns is one line and keeps elapsed time when the label is long", Array.from(longLine).length <= 100 && !longLine.includes("\n") && longLine.startsWith("● step 13 · Carousel UI · 4m43s · writing") && longLine.endsWith("…"), longLine);
+		const narrow = snapA(view(), 30);
+		check("narrow width never cuts glyph, step/title or elapsed", narrow.startsWith("● step 13 · Carousel UI · 4m43s") && Array.from(narrow).length <= 40);
+		check("no-activity worker keeps the old line", snapA(undefined) === "▶ step 13 · Carousel UI · 4m43s" && snapA(view({ phase: "idle", label: "", turns: 0, toolCalls: 0, outTokens: 0, cost: 0 })) === "▶ step 13 · Carousel UI · 4m43s");
+		const qf = renderWorkersUi({ running: [{ taskId: "t1-dev", role: "dev", startedAt: now - 5000, activity: view() }], queued: 2, finished: [{ taskId: "t0-qa", role: "qa", state: "failed", finishedAt: now }] }, now).widget!;
+		check("queued and finished lines unchanged", qf[1] === "… 2 queued" && qf[2] === `${GLYPHS.failed} qa · failed`, JSON.stringify(qf));
+		const recent = Array.from({ length: 7 }, (_, i) => ({ label: `bash cmd${i}`, durationMs: 2000 + i * 1000, isError: false, at: now }));
+		const liveA: WorkersSnapshot = { running: [{ taskId: "t1-dev", role: "dev", planStep: 13, startedAt: now - 60_000, activity: view({ recent: recent.slice(0, 5), denials: 2, lastDenial: "Blocked by the foreman worker guard: x", health: "silent", lastEventAt: now - 95_000 }) }], queued: 0, finished: [] };
+		const repEn = renderReport(liveA, { active: true, source: "entry" }, now);
+		check("renderReport lists last 5 actions, tokens and denial count", [0, 1, 2, 3, 4].every((i) => repEn.includes(`bash cmd${i}`)) && repEn.includes("14k output tokens") && repEn.includes("21 tool calls") && repEn.includes("guard denials: 2") && repEn.includes("$0.42") && repEn.includes("no events for 95s"), repEn);
+		process.env.FOREMAN_LANG = "pt-BR";
+		const repPt = renderReport(liveA, { active: true, source: "entry" }, now);
+		const linePt = snapA(view());
+		delete process.env.FOREMAN_LANG;
+		check("pt-BR renders the same structure", repPt.split("\n").length === repEn.split("\n").length && repPt.includes("negações do guard: 2") && repPt.includes("sem eventos há 95s") && linePt.startsWith("● etapa 13 · Carousel UI · 4m43s · escrevendo") && ![repPt, linePt].some((x) => /\{\w+\}/.test(x)), repPt);
+		check("empty / no running workers still returns {}", Object.keys(renderWorkersUi(empty, now, 100)).length === 0);
 	}
 
 	// Phase 7c. index.ts: status bar, widget, events, /foreman-status, abort (fake spawn).
@@ -983,7 +1011,10 @@ async function main() {
 		const ev = (i: number) => ({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `x${i}` } });
 		const before = changes;
 		check("SpawnRequest carries onEvent and onAttempt", typeof req.onEvent === "function" && typeof req.onAttempt === "function");
+		check("snapshot: running worker has no activity data yet (renders the old line)", renderWorkersUi(h.coord.snapshot(), clock).widget![0].startsWith("▶ "));
 		req.onEvent!(ev(0));
+		const sa = h.coord.snapshot().running[0].activity;
+		check("snapshot: running worker carries the tracker view", sa?.phase === "reporting" && sa.health === "active" && renderWorkersUi(h.coord.snapshot(), clock).widget![0].startsWith("● "));
 		check("status.json is written on the first event", existsSync(statusPath));
 		const first = JSON.parse(readFileSync(statusPath, "utf8"));
 		check("status.json has view, updated_at and cwd", first.view?.phase === "reporting" && typeof first.updated_at === "string" && typeof first.cwd === "string");

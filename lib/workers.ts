@@ -4,6 +4,7 @@
  * smoke tests can call the renderers directly.
  */
 import { t } from "./i18n.ts";
+import type { ActivityView } from "./activity.ts";
 import type { ModeSource } from "./mode.ts";
 
 /** Coordination publishes a `WorkersSnapshot` on this channel after every change. */
@@ -14,7 +15,7 @@ export const WORKERS_ABORT_EVENT = "foreman:workers:abort";
 export type FinishedState = "completed" | "failed" | "blocked" | "aborted";
 
 export interface WorkersSnapshot {
-	running: Array<{ taskId: string; role: string; planStep?: number; title?: string; startedAt: number }>;
+	running: Array<{ taskId: string; role: string; planStep?: number; title?: string; startedAt: number; activity?: ActivityView }>;
 	queued: number;
 	/** Most recent first, already capped. */
 	finished: Array<{ taskId: string; role: string; state: FinishedState; planStep?: number; title?: string; finishedAt: number }>;
@@ -68,15 +69,86 @@ function workerLabel(w: { role: string; planStep?: number; title?: string }): st
 	return w.title ? `${step} · ${w.title}` : step;
 }
 
+const HEALTH_GLYPHS: Record<ActivityView["health"], string> = { active: "●", waiting: "◐", silent: "⚠", repeating: "⟳", denied: "✖" };
+
+const cpLen = (s: string): number => Array.from(s).length;
+
+/** Shorten to `max` code points with a trailing ellipsis (never cuts below one char plus the ellipsis). */
+function ellipsize(s: string, max: number): string {
+	const cps = Array.from(s);
+	if (cps.length <= max) return s;
+	if (max <= 0) return "";
+	return `${cps.slice(0, max - 1).join("")}…`;
+}
+
+/** No activity yet: nothing has been seen on the stream. */
+function hasActivity(a: ActivityView | undefined): a is ActivityView {
+	return !!a && !(a.phase === "idle" && a.turns === 0 && a.toolCalls === 0 && !a.label && a.outTokens === 0);
+}
+
+function phaseWord(p: ActivityView["phase"]): string {
+	switch (p) {
+		case "thinking":
+			return t("activity.phase.thinking");
+		case "writing":
+			return t("activity.phase.writing");
+		case "tool":
+			return t("activity.phase.tool");
+		case "reporting":
+			return t("activity.phase.reporting");
+		case "waiting":
+			return t("activity.phase.waiting");
+		default:
+			return t("activity.phase.idle");
+	}
+}
+
+function healthWord(h: ActivityView["health"]): string {
+	switch (h) {
+		case "active":
+			return t("activity.health.active");
+		case "waiting":
+			return t("activity.health.waiting");
+		case "silent":
+			return t("activity.health.silent");
+		case "repeating":
+			return t("activity.health.repeating");
+		default:
+			return t("activity.health.denied");
+	}
+}
+
+function compactTokens(n: number): string {
+	return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+/** Current-action text: phase word plus label (the tool name is dropped while a call is being written). */
+function actionText(a: ActivityView): string {
+	let label = a.label;
+	if (a.phase === "writing") label = label.replace(/^\S+\s*/, "");
+	return [phaseWord(a.phase), label].filter(Boolean).join(" ");
+}
+
+function runningWidgetLine(r: WorkersSnapshot["running"][number], now: number, columns: number): string {
+	const base = `${RUNNING_GLYPH} ${workerLabel(r)} · ${formatElapsed(now - r.startedAt)}`;
+	const a = r.activity;
+	if (!hasActivity(a)) return base;
+	const head = `${HEALTH_GLYPHS[a.health]} ${workerLabel(r)} · ${formatElapsed(now - r.startedAt)}`;
+	const tail = [actionText(a), t("widget.tools", { count: a.toolCalls }), t("widget.out", { tokens: compactTokens(a.outTokens) })].join(" · ");
+	const room = columns - cpLen(head) - 3; // " · "
+	if (room < 2) return head;
+	return `${head} · ${ellipsize(tail, room)}`;
+}
+
 /**
  * Status-bar text and widget lines. Both are undefined (cleared) when nothing
  * is running or queued; only the latest finished worker rides along, and only next to live ones.
  */
-export function renderWorkersUi(s: WorkersSnapshot, now: number): { status?: string; widget?: string[] } {
+export function renderWorkersUi(s: WorkersSnapshot, now: number, columns = 100): { status?: string; widget?: string[] } {
 	if (activeCount(s) === 0) return {};
 	const status = t("status.workers", { running: s.running.length, queued: s.queued });
 	const widget: string[] = [];
-	for (const r of s.running) widget.push(`${RUNNING_GLYPH} ${workerLabel(r)} · ${formatElapsed(now - r.startedAt)}`);
+	for (const r of s.running) widget.push(runningWidgetLine(r, now, columns));
 	if (s.queued > 0) widget.push(`… ${t("widget.queued", { count: s.queued })}`);
 	const last = s.finished[0];
 	if (last) widget.push(`${GLYPHS[last.state]} ${workerLabel(last)}${last.state === "completed" ? "" : ` · ${stateLabel(last.state)}`}`);
@@ -102,7 +174,10 @@ export function renderReport(s: WorkersSnapshot, mode: { active: boolean; source
 	];
 	if (s.running.length > 0) {
 		lines.push(t("report.running"));
-		for (const r of s.running) lines.push(`  ${runningLine(r, now)}`);
+		for (const r of s.running) {
+			lines.push(`  ${runningLine(r, now)}`);
+			if (hasActivity(r.activity)) lines.push(...activityLines(r.activity, now));
+		}
 	}
 	if (s.finished.length > 0) {
 		lines.push(t("report.recent"));
@@ -110,4 +185,33 @@ export function renderReport(s: WorkersSnapshot, mode: { active: boolean; source
 	}
 	if (s.running.length === 0 && s.queued === 0 && s.finished.length === 0) lines.push(t("report.none"));
 	return lines.join("\n");
+}
+
+function activityLines(a: ActivityView, now: number): string[] {
+	const out = [`    ${t("report.activity.health", { health: healthWord(a.health), reason: healthReason(a, now) })}`];
+	out.push(`    ${t("report.activity.now", { action: actionText(a) })}`);
+	out.push(`    ${t("report.activity.usage", { tools: a.toolCalls, tokens: compactTokens(a.outTokens), cost: a.cost.toFixed(2) })}`);
+	if (a.denials > 0) out.push(`    ${t("report.activity.denials", { count: a.denials, last: a.lastDenial })}`);
+	const recent = a.recent.slice(-5);
+	if (recent.length > 0) {
+		out.push(`    ${t("report.activity.recent")}`);
+		for (const x of recent) out.push(`      ${x.isError ? "✗" : "✓"} ${x.label} · ${formatElapsed(x.durationMs)}`);
+	}
+	return out;
+}
+
+function healthReason(a: ActivityView, now: number): string {
+	const secs = Math.max(0, Math.floor((now - a.lastEventAt) / 1000));
+	switch (a.health) {
+		case "active":
+			return t("activity.reason.active");
+		case "waiting":
+			return t("activity.reason.waiting", { secs });
+		case "silent":
+			return t("activity.reason.silent", { secs });
+		case "repeating":
+			return t("activity.reason.repeating");
+		default:
+			return t("activity.reason.denied", { count: a.denials });
+	}
 }
