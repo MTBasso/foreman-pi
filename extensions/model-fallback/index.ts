@@ -40,6 +40,23 @@ import type {
   ModelRouteRequest,
 } from '@earendil-works/pi-coding-agent';
 
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Pi doesn't read .env files. Load the package-root .env (KEY=VALUE lines)
+// into process.env without overriding anything already exported.
+try {
+  const envPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.env');
+  for (const line of readFileSync(envPath, 'utf8').split('\n')) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_]\w*)\s*=\s*(.*?)\s*$/);
+    if (!m || m[1] in process.env) continue;
+    process.env[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2');
+  }
+} catch {
+  // no .env -- rely on the real environment
+}
+
 const PRIMARY_PROVIDER = 'anthropic';
 const FALLBACK_PROVIDER = 'refuseless';
 
@@ -115,6 +132,40 @@ function routeTo(
 
 export default function (pi: ExtensionAPI) {
   let pendingFallbackRetry = false;
+
+  // /refuseless [id-or-substring] -- switch straight to a refuseless model,
+  // bypassing the hybrid router. No arg: pick from a list.
+  pi.registerCommand('refuseless', {
+    description: 'Switch to a refuseless model (no arg = pick from list)',
+    async handler(args, ctx) {
+      const all = ctx.modelRegistry
+        .getAll()
+        .filter((m) => m.provider === FALLBACK_PROVIDER);
+      if (all.length === 0) {
+        ctx.ui.notify('No refuseless models in catalog (check models.json).', 'error');
+        return;
+      }
+      const q = (args ?? '').trim().toLowerCase();
+      let model = q
+        ? all.find((m) => m.id.toLowerCase() === q) ??
+          all.find((m) => m.id.toLowerCase().includes(q))
+        : undefined;
+      if (!model) {
+        if (q) ctx.ui.notify(`No refuseless model matches "${q}".`, 'warning');
+        const pick = await ctx.ui.select('Refuseless model', all.map((m) => m.id));
+        model = all.find((m) => m.id === pick);
+        if (!model) return;
+      }
+      if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+        ctx.ui.notify('REFUSELESS_API_KEY is not set; switching anyway.', 'warning');
+      }
+      const ok = await pi.setModel(model);
+      ctx.ui.notify(
+        ok ? `Switched to refuseless/${model.id}` : `Could not switch to ${model.id}`,
+        ok ? 'info' : 'error'
+      );
+    },
+  });
 
   pi.registerVirtualModel({
     provider: VIRTUAL_PROVIDER,
