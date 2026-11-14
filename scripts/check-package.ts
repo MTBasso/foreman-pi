@@ -34,7 +34,7 @@ const WATCHED_FILES = ["settings.json", "auth.json", "models.json"];
 const EXPECTED_EXTENSIONS = ["context-filter", "coordination", "foreman-mode", "model-fallback", "orchestrator-guardrail", "session-reminder", "worker-guard"];
 const EXPECTED_SKILLS = ["design-preview", "foreman", "plan-runner", "project-memory"];
 /** Slash commands registered by this package's extensions. */
-const EXPECTED_EXTENSION_COMMANDS: string[] = ["foreman", "foreman-audit", "foreman-diagnose", "foreman-status", "plan-runner"];
+const EXPECTED_EXTENSION_COMMANDS: string[] = ["foreman", "foreman-audit", "foreman-diagnose", "foreman-status", "plan-runner", "refuseless"];
 const EXPECTED_AGENTS = [
 	"backend-dev",
 	"codebase-auditor",
