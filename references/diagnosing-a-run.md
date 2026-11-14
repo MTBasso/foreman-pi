@@ -32,6 +32,12 @@ before reaching for anything else:
   `.foreman/plan-runner/<plan-slug>/progress.md`. This is the single best
   source for "was a step re-dispatched" and "what rulings were made and
   when" — read it in full, in order.
+- **Per-worker run files** under `.foreman/runs/<run-id>/`:
+  `<task>.status.json` (live activity snapshot: phase, health, last
+  actions, tokens, cwd; rewritten at most every 2 s and once more when the
+  worker finishes) and `<task>.events.jsonl` (always-on log of the worker's
+  `message_end` events). Both survive an orphaned or killed worker, so read
+  them to see what it was doing when it stopped.
 - **`FOREMAN_MEMORY.md`**'s decisions log, for `foreman`-mode runs and for
   any ruling logged there (see the "Rulings, not stalls" sections in
   `foreman`/`plan-runner`).

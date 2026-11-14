@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+Reliability Phase A.
+
+### Added
+
+- `workdir` parameter on delegation: workers run in the plan's worktree (latched per run) instead of the orchestrator's cwd (C4).
+- Mid-task resume: a worker that produced output and then hit a transient provider error is resumed from git state, up to `FOREMAN_MAX_RESUMES` (default 2), counted apart from no-output retries; a shared back-off gate and a writer cap `FOREMAN_MAX_WRITERS` (default 2) (C2).
+- Orphan evidence: always-on `<task>.events.jsonl`, `<task>.status.json`, a stub report and unique task ids, so an orphaned worker leaves a trail (C3).
+- Live activity: a per-worker activity line in the widget and `/foreman-status`, stuck detection with a one-time notification (`FOREMAN_STUCK_AFTER_S`, default 90, `0` disables; nothing is killed) (E1).
+- `Guard-denied:` field in the worker foreman-report, surfaced in the task notification (C5).
+
+### Changed
+
+- Workers start with `--no-skills`; set `FOREMAN_WORKER_SKILLS=1` to load your global skills (A4).
+- Guard denials are non-fatal: the worker is told to skip that command and continue; the guard composes literal variables with for-loops and pipes, allows `.foreman` dirs and widens the python read-only probe (C5).
+- The planner can `edit` its plan file (`docs/plans/<slug>.md`) instead of re-emitting it, with large-plan and revision rules (A9).
+
+### Fixed
+
+- Transient `credential validation` errors are now retried (C2).
+- plan-runner lints overlapping Touches in a parallel wave (C4).
+
 ## [0.3.4]
 
 ### Changed
