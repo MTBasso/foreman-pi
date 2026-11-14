@@ -1,0 +1,1 @@
+{"role":"plan-step-builder","plan_step":1,"baseline":{"handoffTokens":4,"turns":1,"toolCalls":0,"input":2,"output":2,"cacheRead":2,"cacheWrite":2,"guardDenials":{"total":0,"byReason":{}}}}

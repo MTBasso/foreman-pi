@@ -88,3 +88,22 @@ its citation. End with:
 - If a real plugin gap surfaced (not just a one-off mistake this run made),
   name the specific file/section of `foreman`/`plan-runner`/an agent that
   should change, and let the user decide whether to act on it now.
+
+## Measuring a change
+
+To put numbers on cost (before/after a prompt or plugin change), run the audit
+table over a run dir:
+
+```
+node <package-root>/scripts/trace-report.mjs .foreman/runs/<run> [--baseline <dir>] [--json]
+```
+
+One row per task. Columns: `handoff` = tokens of the dispatch text
+(`ceil(chars / 4)`, from `handoff_prompt`), `turns` = assistant messages,
+`tools` = tool calls, `in`/`out` = input/output tokens, `cacheR`/`cacheW` =
+cache read/write tokens, `cost` = provider cost, `denied` = worker-guard
+denials. Usage comes from the `usage` field of `<task>.json`; runs that predate
+it are recomputed from `<task>.events.jsonl`, and unreadable files are listed as
+`skipped:`. The footer gives totals, per-role totals, median handoff tokens and
+the top denial reasons. `--baseline <dir>` matches tasks to fixture files
+(`role`, `plan_step`, `baseline`) and prints current minus baseline per column.
