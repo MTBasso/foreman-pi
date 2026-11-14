@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate } from "./worktree.ts";
+import { blockReport, createWorktree, finishWorktree, isolateMode, resolveWorkdir, retargetPrompt, shouldIsolate } from "./worktree.ts";
 
 let failures = 0;
 const check = (n: string, ok: boolean, d?: unknown) => { if (!ok) { failures++; console.log(`FAIL - ${n}${d ? ` (${String(d)})` : ""}`); } };
@@ -63,6 +63,49 @@ check("repo paths retargeted", rp.includes(`${w1.path}/src/a.ts`));
 check(".foreman paths untouched", rp.includes(`${root}/.foreman/runs/r/t1.md`) && !rp.includes(`${w1.path}/.foreman`));
 const br = blockReport("did stuff\n--- foreman-report ---\nStatus: completed\nSummary: x\nBlocked-on: none\n--- end foreman-report ---", "conflict in a", w1);
 check("blockReport flips status", br.startsWith("[BLOCKED]") && /Status: blocked/.test(br) && /Blocked-on: conflict in a/.test(br));
+
+// --- step 4: linked-worktree base, env dirs, safe rewriting, resolveWorkdir ---
+g(root, "branch", "plan-branch");
+const planWt = path.join(root, ".worktrees", "plan-slug");
+g(root, "worktree", "add", "-q", planWt, "plan-branch");
+const mainHeadBefore = g(root, "rev-parse", "HEAD");
+fs.writeFileSync(`${root}/.gitignore`, ".venv/\nnode_modules/\n");
+g(root, "add", ".gitignore"); g(root, "commit", "-qm", "ignore env");
+g(planWt, "merge", "-q", "main");
+fs.mkdirSync(`${planWt}/.venv`); fs.writeFileSync(`${planWt}/.venv/marker`, "v\n");
+fs.mkdirSync(`${planWt}/node_modules`); fs.writeFileSync(`${planWt}/node_modules/marker`, "n\n");
+fs.mkdirSync(`${planWt}/venv`); fs.writeFileSync(`${planWt}/venv/marker`, "x\n"); // not ignored
+const mainHead = g(root, "rev-parse", "HEAD");
+const lw = createWorktree(planWt, "t9-builder")!;
+check("linked-root worktree created", !!lw && fs.existsSync(lw.path), JSON.stringify(lw));
+check("linked-root exclude resolves to the shared file", g(planWt, "rev-parse", "--git-path", "info/exclude").endsWith("info/exclude") && fs.readFileSync(path.resolve(planWt, g(planWt, "rev-parse", "--git-path", "info/exclude")), "utf-8").includes(".foreman/"));
+check(".foreman excluded in the linked worktree status", !g(planWt, "status", "--porcelain").includes(".foreman"), g(planWt, "status", "--porcelain"));
+fs.writeFileSync(`${lw.path}/lw.txt`, "lw\n");
+const lm = await finishWorktree(lw, "t9");
+check("worktree from a linked-worktree root merges back into that worktree's branch, not main",
+	lm.merged && fs.existsSync(`${planWt}/lw.txt`) && !fs.existsSync(`${root}/lw.txt`) && g(root, "rev-parse", "HEAD") === mainHead && g(planWt, "rev-parse", "--abbrev-ref", "HEAD") === "plan-branch", JSON.stringify(lm));
+check("main HEAD untouched", mainHeadBefore !== "" && g(root, "rev-parse", "HEAD") === mainHead);
+
+const ev = createWorktree(planWt, "t10-env")!;
+check(".venv and node_modules are symlinked when ignored",
+	fs.lstatSync(`${ev.path}/.venv`).isSymbolicLink() && fs.lstatSync(`${ev.path}/node_modules`).isSymbolicLink() && fs.readFileSync(`${ev.path}/.venv/marker`, "utf-8") === "v\n");
+check("non-ignored env dir is not symlinked", !fs.existsSync(`${ev.path}/venv`) || !fs.lstatSync(`${ev.path}/venv`).isSymbolicLink());
+check("symlinked env dirs do not show in git status", g(ev.path, "status", "--porcelain") === "", g(ev.path, "status", "--porcelain"));
+await finishWorktree(ev, "t10");
+check("env worktree cleaned up with source dirs intact", !fs.existsSync(ev.path) && fs.existsSync(`${planWt}/.venv/marker`));
+
+const fakeIso = { root: planWt, path: `${planWt}/.foreman/worktrees/t1`, branch: "foreman/t1" };
+const rt = retargetPrompt(`read ${planWt}/docs/x and ${planWt}/.foreman/runs/r.md and ${planWt}-other/y and ${fakeIso.path}/z`, fakeIso);
+check("retargetPrompt does not duplicate the .worktrees segment",
+	rt.includes(`${fakeIso.path}/docs/x`) && !rt.includes(`${fakeIso.path}/.worktrees`) && rt.includes(`${planWt}/.foreman/runs/r.md`) && rt.includes(`${planWt}-other/y`) && rt.includes(`${fakeIso.path}/z`) && !rt.includes(`${fakeIso.path}/.foreman/worktrees/t1/.foreman`), rt);
+
+check("resolveWorkdir accepts root and a sibling worktree",
+	resolveWorkdir(root, root) === root && resolveWorkdir(root, planWt) === planWt && resolveWorkdir(planWt, root) === root);
+let e1 = "", e2 = "", e3 = "";
+try { resolveWorkdir(root, os.tmpdir()); } catch (e: any) { e1 = String(e.message); }
+try { resolveWorkdir(root, `${root}/a.txt`); } catch (e: any) { e2 = String(e.message); }
+try { resolveWorkdir(root, `${root}/nope`); } catch (e: any) { e3 = String(e.message); }
+check("resolveWorkdir rejects a path outside the repo and a non-directory", e1.includes(planWt) && e1.includes(root) && !!e2 && !!e3, [e1, e2, e3].join(" | "));
 
 // not a repo
 check("non-repo => no worktree", createWorktree(fs.mkdtempSync(path.join(os.tmpdir(), "nogit-")), "t1") === undefined);

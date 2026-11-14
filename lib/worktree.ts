@@ -43,22 +43,71 @@ export interface Isolated {
 	root: string;
 }
 
-/** Create the worktree from the current HEAD of `root`; returns undefined if root is not a git repo or creation fails. */
+/** Untracked environment dirs shared (symlinked) from the base dir into an isolated tree. */
+const SHARED_ENV_DIRS = [".venv", "venv", "node_modules"];
+
+/** Append a pattern line to the repo's shared info/exclude (resolves to the common dir from inside a linked worktree). */
+function addExclude(root: string, line: string, matcher: RegExp) {
+	const file = path.resolve(root, git(root, ["rev-parse", "--git-path", "info/exclude"]));
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	const cur = fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "";
+	if (!matcher.test(cur)) fs.appendFileSync(file, `${cur && !cur.endsWith("\n") ? "\n" : ""}${line}\n`);
+}
+
+/**
+ * Create the worktree from the current HEAD of `root`; returns undefined if root is not a git repo or creation fails.
+ * `root` is the workdir: the main checkout or a linked worktree. The new branch forks from that tree's HEAD and
+ * `finishWorktree` merges back into whatever branch `root` has checked out.
+ */
 export function createWorktree(root: string, taskId: string): Isolated | undefined {
 	if (!tryGit(root, ["rev-parse", "--git-dir"]).ok) return undefined;
 	const wt = path.join(root, ".foreman", "worktrees", taskId);
 	const branch = `foreman/${taskId}`;
 	try {
-		const exclude = git(root, ["rev-parse", "--git-path", "info/exclude"]);
-		const file = path.resolve(root, exclude);
-		fs.mkdirSync(path.dirname(file), { recursive: true });
-		const cur = fs.existsSync(file) ? fs.readFileSync(file, "utf-8") : "";
-		if (!/^\/?\.foreman\/?$/m.test(cur)) fs.appendFileSync(file, `${cur && !cur.endsWith("\n") ? "\n" : ""}.foreman/\n`);
+		addExclude(root, ".foreman/", /^\/?\.foreman\/?$/m);
 	} catch {
 		// best effort: an untracked .foreman/ is only cosmetic
 	}
 	const r = tryGit(root, ["worktree", "add", "-q", "-b", branch, wt, "HEAD"]);
-	return r.ok ? { path: wt, branch, root } : undefined;
+	if (!r.ok) return undefined;
+	shareEnvDirs(root, wt);
+	return { path: wt, branch, root };
+}
+
+/** Symlink ignored env dirs (.venv, node_modules) from `root` into the new tree; non-ignored ones are skipped so `git add -A` cannot commit them. */
+function shareEnvDirs(root: string, wt: string) {
+	for (const name of SHARED_ENV_DIRS) {
+		try {
+			const src = path.join(root, name);
+			const dst = path.join(wt, name);
+			if (!fs.existsSync(src) || fs.existsSync(dst) || !tryGit(root, ["check-ignore", "-q", name]).ok) continue;
+			fs.symlinkSync(src, dst, "dir");
+			// A `name/` pattern does not match a symlink; make sure the link stays untracked-and-ignored.
+			if (!tryGit(wt, ["check-ignore", "-q", name]).ok) addExclude(root, `/${name}`, new RegExp(`^/${name.replace(/\./g, "\\.")}/?$`, "m"));
+		} catch {
+			// best effort
+		}
+	}
+}
+
+/** Validate a requested workdir: must be a directory equal to `root` or one of its git worktrees. Returns the real path. */
+export function resolveWorkdir(root: string, requested: string): string {
+	const real = (p: string) => fs.realpathSync(p);
+	const realRoot = real(root);
+	const allowed = new Set<string>([realRoot]);
+	const list = tryGit(root, ["worktree", "list", "--porcelain"]);
+	if (list.ok) {
+		for (const line of list.out.split("\n")) {
+			if (!line.startsWith("worktree ")) continue;
+			try { allowed.add(real(line.slice(9))); } catch { /* pruned worktree */ }
+		}
+	}
+	const fail = (why: string) => new Error(`workdir ${requested} ${why}; allowed: ${[...allowed].join(", ")}`);
+	let resolved: string;
+	try { resolved = real(requested); } catch { throw fail("does not exist"); }
+	if (!fs.statSync(resolved).isDirectory()) throw fail("is not a directory");
+	if (!allowed.has(resolved)) throw fail("is not the repo root or one of its git worktrees");
+	return resolved;
 }
 
 export type MergeResult = { merged: true; commits: number; note?: string } | { merged: false; conflict: string };
@@ -106,7 +155,9 @@ function cleanup(iso: Isolated) {
 /** Rewrite absolute repo paths in a handoff to point into the worktree (never `.foreman/`: reports stay shared). */
 export function retargetPrompt(prompt: string, iso: Isolated): string {
 	const esc = iso.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const rewritten = prompt.replace(new RegExp(`${esc}(?!/\\.foreman)`, "g"), iso.path);
+	// Only whole-path occurrences of root: not a longer sibling name, not `<root>/.foreman/...` (shared reports),
+	// and not a path already inside the isolated tree (iso.path lives under root/.foreman/worktrees).
+	const rewritten = prompt.replace(new RegExp(`${esc}(?![\\w-])(?!\\.\\w)(?!/\\.foreman)`, "g"), iso.path);
 	const note =
 		`> Isolated worktree: your working directory is ${iso.path} (branch ${iso.branch}), a private checkout of ${iso.root}. ` +
 		`Other workers cannot see your files and you cannot see theirs. Commit your work; it is merged back when you finish. ` +
