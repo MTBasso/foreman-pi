@@ -625,7 +625,7 @@ check("every role has a policy kind", ROLES.every((r) => ["readonly", "scoped", 
 const W: [string, string, boolean][] = [
 	["qa", ".foreman/../src/a.txt", true],
 	["qa", "./.foreman/./a.txt", false],
-	["qa", ".foreman", true],
+	["qa", ".foreman", false],
 	["qa", ".foreman/tosrc/new.ts", true],
 	["qa", "link-out/x", true],
 	["qa", `${repo}/.foreman/a.md`, false],
@@ -842,6 +842,32 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	for (const c of ['python3 -c "import os; os.remove(\'x\')"', 'python3 -c "open(\'x\',\'w\')"', 'python3 script.py', 'python3 -c "import os;os.system(\'ls\')"', 'pip install foo', 'python3 -m http.server', 'python3 -c "print($HOME)"'])
 		check(`planner may not run: ${c}`, blocked(bash("planner", c)));
 	check("reviewer gets the same probes", !blocked(bash("reviewer", 'python3 -c "import json"')));
+}
+
+// --- C5 step 1: .foreman directory and sibling-worktree .foreman for scoped roles -----------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const sib = path.join(base, "sibling-wt");
+	const sibB = (role: string, cmd: string) => checkBash(role, repo, cmd, opts);
+	check("fixture: sibling worktree exists (c5)", fs.existsSync(sib));
+	check("qa may mkdir .foreman", !blocked(bash("qa", "mkdir .foreman")));
+	check("shipper may mkdir -p .foreman/qa-logs", !blocked(bash("shipper", "mkdir -p .foreman/qa-logs")));
+	check("codebase-auditor may mkdir -p .foreman/x", !blocked(bash("codebase-auditor", "mkdir -p .foreman/x")));
+	check("qa may write <sibling worktree>/.foreman/x from main cwd", !blocked(write("qa", `${sib}/.foreman/x`)) && !blocked(sibB("qa", `echo x > ${sib}/.foreman/qa-logs/x.log`)) && !blocked(sibB("qa", `mkdir -p ${sib}/.foreman/qa-logs`)));
+	check("shipper may write <sibling worktree>/.foreman/x from main cwd", !blocked(write("shipper", `${sib}/.foreman/x`)));
+	check("qa may mkdir the sibling .foreman directory itself", !blocked(sibB("qa", `mkdir ${sib}/.foreman`)));
+	check("qa may not write <sibling worktree>/src/a.ts", blocked(write("qa", `${sib}/src/a.ts`)) && blocked(sibB("qa", `echo x > ${sib}/src/a.ts`)));
+	check("qa may not write <sibling worktree>/.git/config", blocked(write("qa", `${sib}/.git/config`)) && blocked(sibB("qa", `echo x > ${sib}/.git/config`)));
+	check("qa may not write the sibling worktree root", blocked(write("qa", `${sib}/x.txt`)) && blocked(write("qa", sib)));
+	check("qa may not write <sibling worktree>/.foreman-x or .foreman/../src", blocked(write("qa", `${sib}/.foreman-x/a`)) && blocked(write("qa", `${sib}/.foreman/../src/a.txt`)) && blocked(sibB("qa", `echo x > ${sib}/.foreman/../src/a.txt`)));
+	check("qa may not write a symlink in sibling .foreman escaping to src", (() => { fs.mkdirSync(`${sib}/.foreman`, { recursive: true }); fs.mkdirSync(`${sib}/src`, { recursive: true }); fs.symlinkSync(`${sib}/src`, `${sib}/.foreman/tosrc`); return blocked(write("qa", `${sib}/.foreman/tosrc/f`)); })());
+	check("outside dir .foreman stays denied", blocked(write("qa", `${outside}/.foreman/x`)) && blocked(sibB("qa", `mkdir -p ${outside}/.foreman`)));
+	check("planner/reviewer may not mkdir .foreman", blocked(bash("planner", "mkdir .foreman")) && blocked(bash("reviewer", "mkdir -p .foreman/x")));
+	check(".foreman/../src/a.txt still denied", blocked(bash("qa", "echo x > .foreman/../src/a.txt")) && blocked(write("qa", ".foreman/../src/a.txt")) && blocked(bash("qa", "mkdir .foreman/../src2")));
+	check(".git still denied for qa", blocked(bash("qa", "mkdir .git/x")) && blocked(write("qa", ".git/config")));
+	// relative ../ redirect judged on the resolved path
+	const sub = (role: string, cmd: string) => checkBash(role, repo, `cd src && ${cmd}`, opts);
+	check("relative ../ redirect judged on resolved path", !blocked(sub("qa", "echo x > ../.foreman/x.log")) && blocked(sub("qa", "echo x > ../x.txt")) && blocked(sub("qa", "echo x > ../../outside/x")) && blocked(sub("qa", "echo x > ../.foreman/../src/x")));
 }
 
 fs.rmSync(base, { recursive: true, force: true });

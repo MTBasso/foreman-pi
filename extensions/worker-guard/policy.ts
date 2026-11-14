@@ -187,7 +187,13 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 		case "shipper": {
 			// Scratch output in the temp dir is harmless and was the most common false block.
 			if (allowTmp && rel === null && inside(ctx.tmp, abs, true)) return undefined;
-			if (segs[0] === ".foreman" && segs.length > 1) return undefined;
+			if (segs[0] === ".foreman") return undefined;
+			// The .foreman directory of a linked worktree of this repo (plan worktree) is scratch space too.
+			// `abs` is already resolved (`..` popped, symlinks followed), so `.foreman/../src` cannot match here.
+			if (rel === null) {
+				const wt = siblingWorktrees(ctx.root).find((w) => inside(w, abs));
+				if (wt && path.relative(wt, abs).split(path.sep)[0] === ".foreman") return undefined;
+			}
 			if (ctx.kind === "scoped" && rel === "FOREMAN_AUDIT.md") return undefined;
 			const allowed = ctx.kind === "scoped" ? ".foreman/ and FOREMAN_AUDIT.md" : ".foreman/";
 			return `role "${ctx.role}" may only write under ${allowed}, but "${shown}" resolves to ${abs}`;
