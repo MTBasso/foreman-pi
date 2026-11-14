@@ -55,7 +55,7 @@ const DelegateParams = Type.Object({
 	workdir: Type.Optional(
 		Type.String({
 			description:
-				"Absolute path of the plan worktree (or the repo root) the worker runs in. Set once by plan-runner step 0 to the plan worktree; remembered for later delegates in the run, a new value replaces it.",
+				"Absolute path of the plan worktree (or the repo root) the worker runs in. Set once by plan-runner step 0 to the plan worktree; remembered for later delegates in the run, a new value replaces it; an empty string or \".\" clears it.",
 		}),
 	),
 });

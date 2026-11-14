@@ -11,7 +11,7 @@
  * `<task-notification>` blocks. The ledger is appended (sync) before delivery.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
 import { createActivityTracker, type ActivityTracker } from "../../lib/activity.ts";
@@ -184,11 +184,25 @@ function isStubReport(taskId: string, text: string): boolean {
 	return text.startsWith(`${STUB_PREFIX(taskId)} RUNNING`);
 }
 
+/** At most 5 items, each at most 200 chars, with a `+N more` marker. */
+function capGuardDenied(items: string[]): string {
+	const shown = items.slice(0, 5).map((s) => (s.length > 200 ? s.slice(0, 200) : s));
+	return shown.join(" | ") + (items.length > 5 ? ` | +${items.length - 5} more` : "");
+}
+
 /** `git status --short` in `cwd`, hooks off, 5 s cap; "" when the dir is gone, not a repo, or anything fails. */
+function isDir(p: string): boolean {
+	try {
+		return statSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 function gitStatusShort(cwd: string | undefined): string {
 	if (!cwd || !existsSync(cwd)) return "";
 	try {
-		return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "status", "--short"], {
+		return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "status", "--short"], {
 			cwd,
 			timeout: GIT_STATUS_TIMEOUT_MS,
 			stdio: ["ignore", "pipe", "ignore"],
@@ -397,7 +411,7 @@ export function formatBlock(n: Notification): string {
 		`plan-step: ${n.planStep ?? "-"}`,
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
-		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${n.guardDenied.join(" | ")}`] : []),
+		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${capGuardDenied(n.guardDenied)}`] : []),
 		...(n.partial !== undefined ? [`partial: ${n.partial} changed paths`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
 		...(n.contract === "missing" || n.contract === "malformed" ? [`report-contract: ${n.contract}`] : []),
@@ -548,19 +562,23 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		if (ISOLATABLE_ROLES.has(t.role)) runningWriters++;
 		t.state = "running";
 		t.startedAt = now();
-		t.cwd = t.workdir ?? deps.root;
+		let workdirFallback: string | undefined;
+		if (t.workdir && !isDir(t.workdir)) {
+			workdirFallback = `workdir ${t.workdir} no longer exists; using root`;
+			t.cwd = deps.root;
+		} else t.cwd = t.workdir ?? deps.root;
 		const activity = createActivityTracker({ stuckAfterMs: stuckAfterMs });
 		activity.reset(now());
 		t.activity = activity;
 		writeStub(t);
-		writeMeta(t, { started_at: new Date(now()).toISOString() });
+		writeMeta(t, { started_at: new Date(now()).toISOString(), ...(workdirFallback ? { workdir_fallback: workdirFallback } : {}) });
 		let handle: WorkerHandle;
 		try {
 			handle = deps.spawn({
 				taskId: t.taskId,
 				role: t.role,
 				prompt: t.prompt,
-				cwd: t.workdir ?? deps.root,
+				cwd: t.cwd,
 				runDir,
 				model: t.model,
 				thinkingLevel: t.thinkingLevel,
@@ -816,7 +834,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			throw new Error("handoff_prompt must be a non-empty string.");
 		}
 		const requestedWorkdir = input.workdir?.trim();
-		if (requestedWorkdir) {
+		if (requestedWorkdir === "" || requestedWorkdir === ".") latchedWorkdir = undefined;
+		else if (requestedWorkdir) {
 			// Validate before any state changes so a bad path spawns nothing and latches nothing.
 			latchedWorkdir = deps.resolveWorkdir ? deps.resolveWorkdir(deps.root, requestedWorkdir) : requestedWorkdir;
 		}

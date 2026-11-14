@@ -11,6 +11,7 @@ Reliability Phase A.
 - Orphan evidence: always-on `<task>.events.jsonl`, `<task>.status.json`, a stub report and unique task ids, so an orphaned worker leaves a trail (C3).
 - Live activity: a per-worker activity line in the widget and `/foreman-status`, stuck detection with a one-time notification (`FOREMAN_STUCK_AFTER_S`, default 90, `0` disables; nothing is killed) (E1).
 - `Guard-denied:` field in the worker foreman-report, surfaced in the task notification (C5).
+- plan-runner lints overlapping Touches in a parallel wave (C4).
 
 ### Changed
 
@@ -21,7 +22,6 @@ Reliability Phase A.
 ### Fixed
 
 - Transient `credential validation` errors are now retried (C2).
-- plan-runner lints overlapping Touches in a parallel wave (C4).
 
 ## [0.3.4]
 

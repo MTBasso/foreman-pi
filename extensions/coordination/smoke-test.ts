@@ -758,6 +758,13 @@ async function main() {
 		check("parseFinalBlock reads Guard-denied", pgd.contract === "ok" && pgd.status === "completed" && pgd.guardDenied.length === 2 && pgd.guardDenied[0] === "python3 -c 'exec(1)'" && pgd.guardDenied[1] === "npm test", JSON.stringify(pgd.guardDenied));
 		check("parseFinalBlock: Guard-denied none/absent is empty", parseFinalBlock(blk("Status: completed\nSummary: s\nGuard-denied: none")).guardDenied.length === 0 && parseFinalBlock(blk("Status: completed\nSummary: s")).guardDenied.length === 0);
 		check("formatBlock omits guard-denied when empty", !formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: [] }).includes("guard-denied"));
+		{
+			const many = Array.from({ length: 8 }, (_, i) => `cmd${i}`);
+			const f = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: many });
+			check("formatBlock caps guard-denied at 5 items with +N more", f.includes("cmd4") && !f.includes("cmd5") && f.includes("+3 more"), f);
+			const long = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: ["x".repeat(500)] });
+			check("formatBlock caps each guard-denied item at 200 chars", long.includes("x".repeat(200)) && !long.includes("x".repeat(201)));
+		}
 		check("formatBlock includes guard-denied when present", formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: ["npm test", "rm x"] }).includes("guard-denied: npm test | rm x"));
 		const nb = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "ok" });
 		const nm = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "malformed" });
@@ -831,29 +838,56 @@ async function main() {
 
 	// Step 5. workdir: remembered per run, used as the worker cwd.
 	{
+		const wtBase = mkdtempSync(join(tmpdir(), "foreman-wt-"));
+		const wt1 = join(wtBase, "one");
+		const wt2 = join(wtBase, "two");
+		mkdirSync(wt1);
+		mkdirSync(wt2);
 		const fakeResolve = (root: string, req: string) => {
-			if (!req.startsWith("/wt/")) throw new Error(`workdir ${req} is not allowed`);
+			if (!req.startsWith(wtBase)) throw new Error(`workdir ${req} is not allowed`);
 			return req;
 		};
 		const h = harness({ maxWorkers: 8, resolveWorkdir: fakeResolve });
-		const a1 = h.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: "/wt/one" });
+		const a1 = h.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: wt1 });
 		const req1 = h.workers.get(a1.task_id)!.req;
-		check("delegate passes workdir as SpawnRequest.cwd and keeps runDir under root", req1.cwd === "/wt/one" && req1.runDir === join(h.root, ".foreman", "runs", h.coord.runId));
+		check("delegate passes workdir as SpawnRequest.cwd and keeps runDir under root", req1.cwd === wt1 && req1.runDir === join(h.root, ".foreman", "runs", h.coord.runId));
 		const a2 = h.coord.delegate({ role: "qa", handoff_prompt: "b" });
-		check("workdir is remembered for later delegates in the run", h.workers.get(a2.task_id)!.req.cwd === "/wt/one");
-		const a3 = h.coord.delegate({ role: "qa", handoff_prompt: "c", workdir: "/wt/two" });
+		check("workdir is remembered for later delegates in the run", h.workers.get(a2.task_id)!.req.cwd === wt1);
+		const a3 = h.coord.delegate({ role: "qa", handoff_prompt: "c", workdir: wt2 });
 		const a4 = h.coord.delegate({ role: "qa", handoff_prompt: "d" });
-		check("per-call workdir overrides the remembered one", h.workers.get(a3.task_id)!.req.cwd === "/wt/two" && h.workers.get(a4.task_id)!.req.cwd === "/wt/two");
+		check("per-call workdir overrides the remembered one", h.workers.get(a3.task_id)!.req.cwd === wt2 && h.workers.get(a4.task_id)!.req.cwd === wt2);
 		const before = h.spawned.length;
 		let threw = false;
 		try { h.coord.delegate({ role: "qa", handoff_prompt: "e", workdir: "/etc" }); } catch { threw = true; }
 		const a5 = h.coord.delegate({ role: "qa", handoff_prompt: "f" });
-		check("invalid workdir throws from delegate and spawns nothing", threw && h.spawned.length === before + 1 && h.workers.get(a5.task_id)!.req.cwd === "/wt/two");
+		check("invalid workdir throws from delegate and spawns nothing", threw && h.spawned.length === before + 1 && h.workers.get(a5.task_id)!.req.cwd === wt2);
 		const meta = JSON.parse(readFileSync(join(h.root, ".foreman", "runs", h.coord.runId, `${a1.task_id}.json`), "utf8"));
-		check("meta json records workdir", meta.workdir === "/wt/one");
+		check("meta json records workdir", meta.workdir === wt1);
 		const h2 = harness();
 		const b1 = h2.coord.delegate({ role: "qa", handoff_prompt: "x" });
 		check("no workdir: cwd is the root", h2.workers.get(b1.task_id)!.req.cwd === h2.root);
+		// Latch cleared by an empty value or ".".
+		for (const clear of ["", "."]) {
+			const hc = harness({ resolveWorkdir: fakeResolve });
+			hc.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: wt1 });
+			const c2 = hc.coord.delegate({ role: "qa", handoff_prompt: "b", workdir: clear });
+			const c3 = hc.coord.delegate({ role: "qa", handoff_prompt: "c" });
+			check(`workdir ${JSON.stringify(clear)} clears the latch`, hc.workers.get(c2.task_id)!.req.cwd === hc.root && hc.workers.get(c3.task_id)!.req.cwd === hc.root);
+			hc.cleanup();
+		}
+		// Latched dir deleted before start: fall back to root, note in meta.
+		{
+			const hd = harness({ resolveWorkdir: fakeResolve });
+			const gone = join(wtBase, "gone");
+			mkdirSync(gone);
+			hd.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: gone });
+			rmSync(gone, { recursive: true });
+			const d2 = hd.coord.delegate({ role: "qa", handoff_prompt: "b" });
+			const m = JSON.parse(readFileSync(join(hd.root, ".foreman", "runs", hd.coord.runId, `${d2.task_id}.json`), "utf8"));
+			check("deleted workdir falls back to root with workdir_fallback note", hd.workers.get(d2.task_id)!.req.cwd === hd.root && typeof m.workdir_fallback === "string" && m.workdir_fallback.includes(gone) && m.cwd === hd.root, JSON.stringify(m));
+			hd.cleanup();
+		}
+		rmSync(wtBase, { recursive: true, force: true });
 		h.cleanup();
 		h2.cleanup();
 	}
