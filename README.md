@@ -139,6 +139,7 @@ An explicit model bypasses the `foreman/hybrid` fallback layer.
 | `FOREMAN_MODEL_<ROLE>` / `FOREMAN_MODEL_<TIER>` | unset | Model override per role or tier. |
 | `FOREMAN_THINKING_<ROLE>` | unset | Thinking-level override per role. |
 | `FOREMAN_MAX_WORKERS` | 4 | Concurrent workers; extra delegations queue. |
+| `FOREMAN_MAX_WRITERS` | 2 | Concurrent writer workers (builders, devs, bugfixers); extra writers queue while readers still start. Counts toward `FOREMAN_MAX_WORKERS`. |
 | `FOREMAN_BATCH_MS` | 300 | Debounce window for batching completions. |
 | `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | Per-worker timeout (0 disables). |
 | `FOREMAN_ABORT_WAIT_MS` | 7000 | How long `/foreman off` waits for workers to stop after confirming. |

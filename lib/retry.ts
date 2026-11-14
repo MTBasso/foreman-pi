@@ -44,6 +44,10 @@ export interface RetryOptions {
 	maxResumes?: number;
 	baseMs?: number;
 	sleep?: (ms: number) => Promise<void>;
+	/** Called before each back-off sleep with the failed result and the worker's own back-off (ms). */
+	onTransient?: (r: PiRunResult, backoffMs: number) => void;
+	/** Shared back-off gate: the sleep is at least `gate.remainingMs()`. */
+	gate?: { remainingMs(): number };
 }
 
 export function runWithRetry(start: (attempt: number, resume?: ResumeInfo) => PiRunHandle, opts: RetryOptions = {}): PiRunHandle {
@@ -51,6 +55,10 @@ export function runWithRetry(start: (attempt: number, resume?: ResumeInfo) => Pi
 	const maxResumes = opts.maxResumes ?? 2;
 	const baseMs = opts.baseMs ?? 30_000;
 	const sleep = opts.sleep ?? ((ms) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); }));
+	const wait = (r: PiRunResult, own: number) => {
+		opts.onTransient?.(r, own);
+		return sleep(Math.max(own, opts.gate?.remainingMs() ?? 0));
+	};
 	let killed = false;
 	let current: PiRunHandle | undefined;
 
@@ -63,10 +71,10 @@ export function runWithRetry(start: (attempt: number, resume?: ResumeInfo) => Pi
 			const r = await current.done;
 			if (killed) return r;
 			if (isTransientFailure(r) && retries < maxRetries) {
-				await sleep(baseMs * 2 ** retries++);
+				await wait(r, baseMs * 2 ** retries++);
 				resume = undefined;
 			} else if (isMidTaskTransient(r) && resumes < maxResumes) {
-				await sleep(baseMs * 2 ** resumes++);
+				await wait(r, baseMs * 2 ** resumes++);
 				resume = { previous: r, n: resumes };
 			} else return r;
 			if (killed) return r;

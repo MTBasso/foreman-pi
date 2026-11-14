@@ -142,6 +142,7 @@ strong. Um modelo explícito contorna a camada de fallback do `foreman/hybrid`.
 | `FOREMAN_MODEL_<ROLE>` / `FOREMAN_MODEL_<TIER>` | não definidas | Sobrescrita de modelo por papel ou tier. |
 | `FOREMAN_THINKING_<ROLE>` | não definida | Sobrescrita do nível de thinking por papel. |
 | `FOREMAN_MAX_WORKERS` | 4 | Workers simultâneos; delegações extras entram na fila. |
+| `FOREMAN_MAX_WRITERS` | 2 | Workers escritores simultâneos (builders, devs, bugfixers); os extras entram na fila enquanto os leitores continuam iniciando. Conta dentro de `FOREMAN_MAX_WORKERS`. |
 | `FOREMAN_BATCH_MS` | 300 | Janela de debounce para agrupar conclusões. |
 | `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | Timeout por worker (0 desativa). |
 | `FOREMAN_ABORT_WAIT_MS` | 7000 | Quanto o `/foreman off` espera os workers pararem após a confirmação. |

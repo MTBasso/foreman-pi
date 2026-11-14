@@ -17,6 +17,7 @@ import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
 import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
+import { isRateLimit, sharedGate } from "../../lib/backoff.ts";
 import { resumePreamble, runWithRetry, type ResumeInfo } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
@@ -92,7 +93,14 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
 	const handle = runWithRetry(
 		(_attempt, resume) => runPiJson(buildArgs(resume), { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }),
-		Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {},
+		{
+			...(Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {}),
+			gate: sharedGate,
+			onTransient: (r, backoffMs) => {
+				const text = `${r.errorMessage ?? ""}\n${r.stderr ?? ""}`;
+				if (isRateLimit(text)) sharedGate.noteRateLimit(text, backoffMs);
+			},
+		},
 	);
 	const cleanupTmp = () => {
 		if (!tmpDir) return;

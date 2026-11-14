@@ -13,6 +13,8 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
+import { sharedGate, type BackoffGate } from "../../lib/backoff.ts";
+import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 import { readOverlapsFor, readStepTitle } from "../../lib/plan-steps.ts";
 
 import { ROLES, type Role } from "../../lib/roles.ts";
@@ -102,6 +104,10 @@ export interface CoordinatorDeps {
 	now?: () => number;
 	isOrchestratorActive?: () => boolean;
 	maxWorkers?: number;
+	/** Cap on concurrent writer roles (ISOLATABLE_ROLES); env FOREMAN_MAX_WRITERS, default 2. */
+	maxWriters?: number;
+	/** Shared rate-limit back-off gate; default is the process-wide `sharedGate`. */
+	gate?: BackoffGate;
 	batchMs?: number;
 	timeoutMs?: number;
 	/** Validates a requested workdir and returns its real path; throws on a bad one. Default: identity. */
@@ -322,6 +328,8 @@ export function formatBlock(n: Notification): string {
 export function createCoordinator(deps: CoordinatorDeps) {
 	const now = deps.now ?? Date.now;
 	const maxWorkers = Math.max(1, deps.maxWorkers ?? envInt("FOREMAN_MAX_WORKERS", 4));
+	const maxWriters = Math.max(1, deps.maxWriters ?? envInt("FOREMAN_MAX_WRITERS", 2));
+	const gate = deps.gate ?? sharedGate;
 	const batchMs = deps.batchMs ?? envInt("FOREMAN_BATCH_MS", 300);
 	const timeoutMs = deps.timeoutMs ?? envInt("FOREMAN_WORKER_TIMEOUT_MS", 30 * 60 * 1000);
 	const isActive = deps.isOrchestratorActive ?? (() => true);
@@ -335,6 +343,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	const queue: Task[] = [];
 	let seq = 0;
 	let running = 0;
+	let runningWriters = 0;
+	let pumpTimer: ReturnType<typeof setTimeout> | undefined;
 	let planSlug: string | undefined;
 	let latchedWorkdir: string | undefined;
 	let busy = false;
@@ -420,6 +430,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 
 	function startTask(t: Task) {
 		running++;
+		if (ISOLATABLE_ROLES.has(t.role)) runningWriters++;
 		t.state = "running";
 		t.startedAt = now();
 		writeMeta(t, { started_at: new Date(now()).toISOString() });
@@ -473,14 +484,34 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	}
 
 	function pump() {
-		while (!stopped && running < maxWorkers && queue.length > 0) {
-			startTask(queue.shift()!);
+		if (pumpTimer) {
+			clearTimeout(pumpTimer);
+			pumpTimer = undefined;
+		}
+		if (stopped) return;
+		const limit = gate.limit(maxWorkers);
+		while (!stopped && running < limit && queue.length > 0) {
+			// Never start while the shared gate is paused; re-arm from the gate each time.
+			const wait = gate.remainingMs();
+			if (wait > 0) {
+				pumpTimer = setTimeout(() => {
+					pumpTimer = undefined;
+					pump();
+				}, wait + 5);
+				pumpTimer.unref?.();
+				return;
+			}
+			// First queued task that fits; a capped writer keeps its place and readers may pass it.
+			const i = queue.findIndex((q) => !ISOLATABLE_ROLES.has(q.role) || runningWriters < maxWriters);
+			if (i < 0) return;
+			startTask(queue.splice(i, 1)[0]);
 		}
 	}
 
 	function finishTask(t: Task, r: WorkerResult) {
 		if (t.timer) clearTimeout(t.timer);
 		running--;
+		if (ISOLATABLE_ROLES.has(t.role)) runningWriters = Math.max(0, runningWriters - 1);
 		if (stopped || t.killedByShutdown || t.aborted) {
 			checkIdle();
 			emitChange();
@@ -552,6 +583,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract }
 			: {};
 		t.state = status;
+		if (status === "completed") gate.noteCleanFinish();
 		try {
 			writeMeta(t, {
 				finished_at: new Date(now()).toISOString(),
@@ -695,9 +727,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		}
 		tasks.set(taskId, t);
 		writeMeta(t, { created_at: new Date(now()).toISOString() });
-		if (running < maxWorkers) startTask(t);
-		else {
-			queue.push(t);
+		queue.push(t);
+		pump();
+		if (t.state === "queued") {
 			persist(t);
 			emitChange();
 		}
@@ -750,6 +782,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		if (batchTimer) clearTimeout(batchTimer);
 		batchTimer = undefined;
 		queue.length = 0;
+		if (pumpTimer) clearTimeout(pumpTimer);
+		pumpTimer = undefined;
 		for (const t of tasks.values()) {
 			if (t.state === "running" || t.state === "queued") {
 				const wasRunning = t.state === "running";
@@ -784,6 +818,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	 */
 	function abortAll(): Promise<number> {
 		queue.length = 0;
+		if (pumpTimer) clearTimeout(pumpTimer);
+		pumpTimer = undefined;
 		const exits: Promise<unknown>[] = [];
 		let count = 0;
 		for (const t of tasks.values()) {

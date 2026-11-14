@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createBackoffGate, type BackoffGate } from "../../lib/backoff.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { PACKAGE_ROOT, composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { t } from "../../lib/i18n.ts";
@@ -48,7 +49,7 @@ interface Sent {
 	ledgerLinesAtSend: number;
 }
 
-function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string } = {}) {
+function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate } = {}) {
 	const root = opts.root ?? mkdtempSync(join(tmpdir(), "foreman-coord-"));
 	const workers = new Map<string, { req: SpawnRequest; resolve: (r: WorkerResult) => void; killed: boolean }>();
 	const spawned: string[] = [];
@@ -62,6 +63,8 @@ function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boole
 		timeoutMs: opts.timeoutMs ?? 0,
 		isOrchestratorActive: () => active,
 		resolveWorkdir: opts.resolveWorkdir,
+		maxWriters: opts.maxWriters,
+		gate: opts.gate,
 		spawn(req) {
 			spawned.push(req.taskId);
 			let resolve!: (r: WorkerResult) => void;
@@ -852,6 +855,49 @@ async function main() {
 		check("no warning when the plan has no Parallel section", !/shares files/.test(b2.ack));
 		h.cleanup();
 		h2.cleanup();
+	}
+
+	{
+		// Step 8: shared back-off gate and writer cap.
+		const savedWriters = process.env.FOREMAN_MAX_WRITERS;
+		delete process.env.FOREMAN_MAX_WRITERS;
+		const h = harness({ maxWorkers: 8, gate: createBackoffGate() });
+		const w1 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w1" });
+		const w2 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w2" });
+		const w3 = h.coord.delegate({ role: "frontend-dev", handoff_prompt: "w3" });
+		check("FOREMAN_MAX_WRITERS default is 2", w1.state === "running" && w2.state === "running" && w3.state === "queued");
+		const r1 = h.coord.delegate({ role: "reviewer", handoff_prompt: "r1" });
+		const w4 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w4" });
+		check("readers start while two writers run and a third writer queues", r1.state === "running" && w4.state === "queued" && h.coord.stats().queued === 2);
+		h.finish(w1.task_id, ok("done"));
+		await sleep(30);
+		check("queued writer keeps its place and starts when a writer finishes", h.spawned.includes(w3.task_id) && !h.spawned.includes(w4.task_id) && h.coord.stats().queued === 1);
+		h.finish(w2.task_id, ok("done"));
+		await sleep(30);
+		check("next queued writer starts in order", h.spawned.includes(w4.task_id));
+		for (const id of [...h.workers.keys()]) h.finish(id, ok("x"));
+		await sleep(60);
+		h.cleanup();
+		if (savedWriters !== undefined) process.env.FOREMAN_MAX_WRITERS = savedWriters;
+
+		const gate = createBackoffGate({ now: () => Date.now(), rng: () => 0.5 });
+		const g = harness({ maxWorkers: 4, gate });
+		const a = g.coord.delegate({ role: "reviewer", handoff_prompt: "a" });
+		const b = g.coord.delegate({ role: "reviewer", handoff_prompt: "b" });
+		gate.noteRateLimit("429", 150);
+		gate.noteRateLimit("529 overloaded", 100);
+		check("two workers hitting 429 share one pause (coordinator)", gate.remainingMs() > 100 && gate.remainingMs() <= 150);
+		const c = g.coord.delegate({ role: "reviewer", handoff_prompt: "c" });
+		check("coordinator does not start a queued task while paused", c.state === "queued" && !g.spawned.includes(c.task_id));
+		g.finish(a.task_id, ok("a"));
+		g.finish(b.task_id, ok("b"));
+		await sleep(60);
+		check("still queued before the pause ends", !g.spawned.includes(c.task_id));
+		await sleep(200);
+		check("coordinator starts it after the pause ends", g.spawned.includes(c.task_id));
+		for (const id of [...g.workers.keys()]) g.finish(id, ok("x"));
+		await sleep(60);
+		g.cleanup();
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
