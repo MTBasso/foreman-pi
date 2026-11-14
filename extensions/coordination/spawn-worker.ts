@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
-import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
+import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerBaseArgs, workerEnv } from "../../lib/spawn.ts";
 import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
 import { isRateLimit, sharedGate } from "../../lib/backoff.ts";
 import { resumePreamble, runWithRetry, type ResumeInfo } from "../../lib/retry.ts";
@@ -54,7 +54,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	const cwd = iso?.path ?? req.cwd;
 	const prompt = iso ? retargetPrompt(req.prompt, iso) : req.prompt;
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = workerBaseArgs(agent.name, process.env, { cwd });
 	const chosen = resolveModel(agent, process.env, { model: req.model, thinking: req.thinkingLevel });
 	if (chosen.model) args.push("--model", chosen.model);
 	if (chosen.thinking) args.push("--thinking", chosen.thinking);

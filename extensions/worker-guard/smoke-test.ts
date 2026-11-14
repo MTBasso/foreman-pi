@@ -765,7 +765,7 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 {
 	const src = readFileSync(new URL("../coordination/spawn-worker.ts", import.meta.url), "utf8");
 	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("...workerEnv(agent.name)"));
-	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes('"--no-session"'));
+	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes("workerBaseArgs(") && readFileSync(new URL("../../lib/spawn.ts", import.meta.url), "utf8").includes('"--no-session"'));
 }
 
 // --- v0.3 loosening: tmp scratch for scoped roles, read-only git forms, no stash -------------

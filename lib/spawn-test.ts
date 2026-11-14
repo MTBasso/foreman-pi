@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson } from "./spawn.ts";
+import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerBaseArgs } from "./spawn.ts";
 
 let failures = 0;
 function check(name: string, ok: boolean, detail?: string) {
@@ -135,6 +135,36 @@ async function main() {
 		const m = /const logFile\s*=([^;]*);/.exec(src);
 		check("events log is written without herdr", !!m && !m[1].includes("panesEnabled") && m[1].includes("events.jsonl"), m?.[1]);
 		check("herdr pane stays conditional on panesEnabled()", /if \(panesEnabled\(\)\)/.test(src));
+	}
+
+	// Step 10: workers start without the user's global skills.
+	{
+		const base = workerBaseArgs("builder", {});
+		check("workerBaseArgs includes --no-skills by default", base.includes("--no-skills"));
+		check("FOREMAN_WORKER_SKILLS=1 removes it", !workerBaseArgs("builder", { FOREMAN_WORKER_SKILLS: "1" }).includes("--no-skills"));
+		check("args still contain --mode json -p --no-session", base.slice(0, 4).join(" ") === "--mode json -p --no-session");
+		check("no --no-extensions and no --no-context-files", !base.includes("--no-extensions") && !base.includes("--no-context-files"));
+
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-skills-"));
+		try {
+			const dir = path.join(root, ".agents", "skills", "impeccable");
+			const noHome = path.join(root, "nohome");
+			const withDirOpts = { cwd: root, home: noHome };
+			const emptyOpts = { cwd: path.join(root, "empty"), home: noHome };
+			fs.mkdirSync(dir, { recursive: true });
+			let ok = true;
+			for (const role of ["qa", "frontend-dev", "codebase-auditor"]) {
+				const a = workerBaseArgs(role, {}, withDirOpts);
+				const i = a.indexOf("--skill");
+				ok = ok && i >= 0 && a[i + 1] === dir;
+			}
+			check("impeccable --skill is added only for qa/frontend-dev/codebase-auditor when the dir exists", ok);
+			check("no --skill when the dir is missing", !workerBaseArgs("qa", {}, emptyOpts).includes("--skill"));
+			check("no --skill for other roles", !workerBaseArgs("builder", {}, withDirOpts).includes("--skill"));
+			check("no --skill when FOREMAN_WORKER_SKILLS=1", !workerBaseArgs("qa", { FOREMAN_WORKER_SKILLS: "1" }, withDirOpts).includes("--skill"));
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
 	}
 }
 
