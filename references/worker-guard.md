@@ -81,7 +81,8 @@ Details worth knowing:
 This is a heuristic guard, not a sandbox.
 
 - `scripts/run-suites.mjs`: its child processes are not judged by the guard; it
-  only runs the suites named on the command line. The reviewer (read-only) never runs it.
+  validates suites (no leading `-`, so no flag injection; `--python`/`--pyright`
+  must be absolute) and only runs the named suite paths. The reviewer (read-only) never runs it.
 - Interpreters and build tools write anywhere: `node script.js`,
   `python x.py`, `make`, `npm run ...`, `git` hooks, `awk`, `tar`, `curl -o`.
   Only commands the parser can see are judged.

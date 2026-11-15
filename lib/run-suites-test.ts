@@ -49,6 +49,30 @@ try {
 		check("suites run serially in the order given", r.status === 0 && order === "bab" && r.stdout.indexOf("node:b.mjs") < r.stdout.indexOf("node:a.mjs"));
 	}
 	{
+		const marker = join(d, "marker.txt");
+		const evil = `--eval=require('fs').writeFileSync(${JSON.stringify(marker)},'x')`;
+		for (const s of [`node:${evil}`, "py:-pplugin", "npm:--prefix=/tmp"]) {
+			const r = exec(d, s);
+			check(`leading-dash suite rejected: ${s.slice(0, 12)}`, r.status === 2 && /must not start with "-"/.test(r.stderr) && !existsSync(marker) && !r.stdout.includes("PASS"));
+		}
+		const rel = exec(d, "--python", "python3", "py:x");
+		check("relative --python rejected", rel.status === 2 && /absolute/.test(rel.stderr));
+		check("relative --pyright rejected", exec(d, "--pyright", "pyright").status === 2);
+		check("missing --cwd rejected", spawnSync(process.execPath, [script, "--cwd", join(d, "nope"), "node:ok.mjs"], { encoding: "utf8" }).status === 2);
+	}
+	{
+		const fakePy = join(d, "fakepy");
+		writeFileSync(fakePy, `#!/usr/bin/env node\nrequire('fs').writeFileSync(${JSON.stringify(join(d, "pyargs.txt"))}, process.argv.slice(2).join(' '));\n`);
+		chmodSync(fakePy, 0o755);
+		const r = exec(d, "--python", fakePy, "py:tests/test_x.py");
+		check("py: suite runs python -m pytest <path>", r.status === 0 && readFileSync(join(d, "pyargs.txt"), "utf8") === "-m pytest tests/test_x.py");
+		writeFileSync(join(d, "package.json"), JSON.stringify({ name: "t", version: "1.0.0", scripts: { good: "node -e 0", bad: "node -e \"process.exit(1)\"" } }));
+		const g = exec(d, "npm:good");
+		check("npm: suite passing exits 0", g.status === 0 && /^PASS npm:good/m.test(g.stdout));
+		const b = exec(d, "npm:bad");
+		check("npm: suite failing exits 1", b.status === 1 && /^FAIL npm:bad/m.test(b.stdout));
+	}
+	{
 		const diag = (items: [string, number, string, string][]) => JSON.stringify({ generalDiagnostics: items.map(([file, line, rule, message]) => ({ file, severity: "error", message, rule, range: { start: { line: line - 1, character: 0 } } })).concat([{ file: "w.py", severity: "warning", message: "warn", rule: "r", range: { start: { line: 0, character: 0 } } }] as any) });
 		const fake = (name: string, json: string) => { const p = join(d, name); writeFileSync(p, `#!/usr/bin/env node\nconsole.log(${JSON.stringify(json)});\nprocess.exit(1);\n`); chmodSync(p, 0o755); return p; };
 		const base = join(d, "base.txt");

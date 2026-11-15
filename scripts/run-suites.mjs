@@ -5,14 +5,14 @@
 //   suite: py:<path> (python -m pytest <path>) | node:<path> | npm:<script>
 // Exit 0 all pass, 1 any failure (or NEW pyright errors), 2 usage error.
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const USAGE = "usage: run-suites.mjs [--cwd DIR] [--python ABS] [--pyright ABS --baseline FILE] [--timeout-s N] <py:PATH|node:PATH|npm:SCRIPT>...";
 const usage = (msg) => { console.error(msg ? `${msg}\n${USAGE}` : USAGE); process.exit(2); };
 
-const opts = { cwd: process.cwd(), python: "python3", pyright: null, baseline: null, timeoutS: 600 };
+const opts = { cwd: process.cwd(), python: null, pyright: null, baseline: null, timeoutS: 600 };
 const suites = [];
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i++) {
@@ -28,8 +28,12 @@ for (let i = 0; i < argv.length; i++) {
 	} else if (a.startsWith("--")) usage(`unknown option ${a}`);
 	else suites.push(a);
 }
+for (const [flag, v] of [["--python", opts.python], ["--pyright", opts.pyright]])
+	if (v !== null && !isAbsolute(v)) usage(`${flag} must be an absolute path: ${v}`);
+try { if (!statSync(opts.cwd).isDirectory()) throw 0; } catch { usage(`--cwd is not a directory: ${opts.cwd}`); }
 if (opts.baseline && !opts.pyright) usage("--baseline needs --pyright");
 for (const s of suites) if (!/^(py|node|npm):.+/.test(s)) usage(`unprefixed suite: ${s}`);
+for (const s of suites) if (s.slice(s.indexOf(":") + 1).startsWith("-")) usage(`suite target must not start with "-": ${s}`);
 if (!suites.length && !opts.pyright) usage("no suites given");
 
 const CAP = 300;
@@ -40,7 +44,7 @@ const sanitise = (s) => s.replace(/[^A-Za-z0-9._-]+/g, "_");
 function command(suite) {
 	const i = suite.indexOf(":");
 	const kind = suite.slice(0, i), rest = suite.slice(i + 1);
-	if (kind === "py") return [opts.python, ["-m", "pytest", rest]];
+	if (kind === "py") return [opts.python ?? "python3", ["-m", "pytest", rest]];
 	if (kind === "node") return [process.execPath, [rest]];
 	return ["npm", ["run", rest]];
 }
