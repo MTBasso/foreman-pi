@@ -13,7 +13,10 @@
  * mode commands.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { t } from "../../lib/i18n.ts";
+import { planPreflight, planRoots } from "../../lib/plan-preflight.ts";
 import {
 	createModeTracker,
 	envOverride,
@@ -35,6 +38,11 @@ function abortWaitMs(): number {
 	if (raw === undefined || raw === "") return DEFAULT_ABORT_WAIT_MS;
 	const n = Number(raw);
 	return Number.isFinite(n) && n >= 0 ? n : DEFAULT_ABORT_WAIT_MS;
+}
+
+/** True when `cmd` is an existing file in a PATH directory. Filesystem only: nothing is executed. */
+function commandOnPath(cmd: string): boolean {
+	return (process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, cmd)));
 }
 
 export default function (pi: ExtensionAPI) {
@@ -187,7 +195,29 @@ export default function (pi: ExtensionAPI) {
 			const plan = resolvePlanPath(arg, ctx.cwd);
 			if (!plan.exists) say(ctx, t("cmd.plan.missing", { path: plan.path }), "warning");
 			if (!enter(ctx)) return;
-			send(buildPlanRunnerPrompt(plan.path, plan.exists), ctx);
+			let preflight: string | undefined;
+			try {
+				if (plan.exists) {
+					const read = (p: string): string | undefined => {
+						try {
+							return readFileSync(p, "utf8");
+						} catch {
+							return undefined;
+						}
+					};
+					const planText = readFileSync(plan.path, "utf8");
+					preflight = planPreflight({
+						planText,
+						roots: planRoots(ctx.cwd, plan.path),
+						exists: existsSync,
+						onPath: commandOnPath,
+						readFile: read,
+					});
+				}
+			} catch {
+				preflight = undefined;
+			}
+			send(buildPlanRunnerPrompt(plan.path, plan.exists, undefined, preflight), ctx);
 		},
 	});
 }

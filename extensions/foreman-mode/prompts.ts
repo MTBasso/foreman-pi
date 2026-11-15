@@ -98,8 +98,8 @@ export function buildDiagnosePrompt(problem: string, root: string = PACKAGE_ROOT
 	].join("\n\n");
 }
 
-export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: string = PACKAGE_ROOT): string {
-	return [
+export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: string = PACKAGE_ROOT, preflight?: string): string {
+	const parts = [ 
 		"You are now the plan-runner orchestrator. Follow the plan-runner skill below.",
 		MODE_NOTE,
 		preface(root),
@@ -108,5 +108,7 @@ export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: s
 		"--- end plan-runner skill ---",
 		`Plan to run: ${planPath}` +
 			(exists ? "" : "\n(The file did not exist when the command ran: verify the path with the user before dispatching anything.)"),
-	].join("\n\n");
+	];
+	if (preflight) parts.push(`--- preflight (gathered by the extension; do not re-run) ---\n${preflight}`);
+	return parts.join("\n\n");
 }

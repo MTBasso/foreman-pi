@@ -306,6 +306,15 @@ async function main() {
 		const busy = makeCtx({ hasUI: true, cwd, idle: false });
 		await a.commands["plan-runner"].handler("my-slug", busy.ctx);
 		check("/plan-runner when busy: followUp", a.sent.at(-1)?.options?.deliverAs === "followUp");
+		// preflight: a readable plan gets the block; an unreadable one still sends the prompt
+		writeFileSync(join(cwd, "docs", "plans", "pf.md"), "## Steps\n\n1. **A** (Touches: a)\n   - Checks: `npm run test:nonexistent-xyz`\n   - Renders: no\n");
+		await a.commands["plan-runner"].handler("pf", c.ctx);
+		const pfMsg = a.sent.at(-1)!.content as string;
+		check("/plan-runner appends the preflight block for a readable plan", pfMsg.includes("--- preflight (gathered by the extension; do not re-run) ---") && /Status/.test(pfMsg.split("--- preflight")[1] ?? ""));
+		const nPre = a.sent.length;
+		mkdirSync(join(cwd, "docs", "plans", "dir.md"));
+		await a.commands["plan-runner"].handler("dir.md", c.ctx);
+		check("unreadable plan yields no block, command still sends the prompt", a.sent.length === nPre + 1 && !(a.sent.at(-1)!.content as string).includes("--- preflight"));
 		rmSync(home, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
 		resetEnv();
