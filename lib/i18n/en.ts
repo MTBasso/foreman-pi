@@ -18,7 +18,7 @@ export const en = {
 	"confirm.cancelled": "Cancelled.",
 
 	// Commands: descriptions
-	"cmd.foreman.desc": "Enter orchestrator mode and start the foreman workflow (/foreman off to leave)",
+	"cmd.foreman.desc": "Enter orchestrator mode and start the foreman workflow (/foreman resume to continue a run, /foreman off to leave)",
 	"cmd.audit.desc": "Enter orchestrator mode and run a read-only codebase audit",
 	"cmd.diagnose.desc": "Diagnose why a foreman or plan-runner run went wrong (does not change mode)",
 	"cmd.planRunner.desc": "Enter orchestrator mode and run an approved plan from docs/plans/",
@@ -35,6 +35,7 @@ export const en = {
 	"cmd.off.refuseNoUi": "{count} workers are running. Run /foreman off interactively or let them finish. Staying in orchestrator mode.",
 	"cmd.off.staying": "Staying in orchestrator mode.",
 	"cmd.off.aborted": "Aborted {count} workers.",
+	"cmd.resume.none": "Nothing to resume: no .foreman/runs state found in this directory.",
 	"cmd.plan.usage": "Usage: /plan-runner <plan file or slug>",
 	"cmd.plan.missing": "Plan file not found: {path}. Sending the path anyway.",
 

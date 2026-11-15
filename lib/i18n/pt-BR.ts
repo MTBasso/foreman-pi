@@ -16,7 +16,7 @@ export const ptBR: Record<keyof typeof en, string> = {
 	"confirm.abortWorkers": "Abortar {count} workers em execução?",
 	"confirm.cancelled": "Cancelado.",
 
-	"cmd.foreman.desc": "Entrar no modo orquestrador e iniciar o fluxo do foreman (/foreman off para sair)",
+	"cmd.foreman.desc": "Entrar no modo orquestrador e iniciar o fluxo do foreman (/foreman resume para retomar uma execução, /foreman off para sair)",
 	"cmd.audit.desc": "Entrar no modo orquestrador e executar uma auditoria somente leitura do código",
 	"cmd.diagnose.desc": "Diagnosticar por que uma execução do foreman ou do plan-runner deu errado (não altera o modo)",
 	"cmd.planRunner.desc": "Entrar no modo orquestrador e executar um plano aprovado em docs/plans/",
@@ -32,6 +32,7 @@ export const ptBR: Record<keyof typeof en, string> = {
 	"cmd.off.refuseNoUi": "{count} workers estão em execução. Execute /foreman off de forma interativa ou espere que terminem. Permanecendo no modo orquestrador.",
 	"cmd.off.staying": "Permanecendo no modo orquestrador.",
 	"cmd.off.aborted": "{count} workers abortados.",
+	"cmd.resume.none": "Nada para retomar: nenhum estado em .foreman/runs neste diretório.",
 	"cmd.plan.usage": "Uso: /plan-runner <arquivo do plano ou slug>",
 	"cmd.plan.missing": "Arquivo do plano não encontrado: {path}. Enviando o caminho mesmo assim.",
 

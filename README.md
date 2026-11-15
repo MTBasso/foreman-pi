@@ -44,6 +44,7 @@ For an already-approved plan under `docs/plans/`, use `/plan-runner <plan>`.
 | Command | What it does |
 |---|---|
 | `/foreman [task]` | Enter orchestrator mode and start the foreman workflow. |
+| `/foreman resume` | Enter orchestrator mode and rebuild the state of the last run (plan Status, ledger tail, unfinished workers) so the orchestrator re-dispatches what is unfinished. Warns and sends nothing when there is no run state. |
 | `/foreman off` | Leave the mode and restore tools. If workers are running it asks for confirmation before aborting them; with no UI it refuses. |
 | `/foreman-status` | Show mode and worker status (no model call). |
 | `/foreman-audit` | Enter orchestrator mode and run a read-only codebase audit. |

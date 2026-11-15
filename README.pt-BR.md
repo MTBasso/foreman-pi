@@ -46,6 +46,7 @@ Para um plano já aprovado em `docs/plans/`, use `/plan-runner <plano>`.
 | Comando | O que faz |
 |---|---|
 | `/foreman [tarefa]` | Entra no modo orquestrador e inicia o fluxo do foreman. |
+| `/foreman resume` | Entra no modo orquestrador e reconstrói o estado da última execução (Status do plano, fim do ledger, workers inacabados) para o orquestrador re-despachar o que falta. Avisa e não envia nada se não houver estado. |
 | `/foreman off` | Sai do modo e restaura as ferramentas. Se houver workers rodando, pede confirmação antes de abortá-los; sem UI, recusa. |
 | `/foreman-status` | Mostra o modo e o estado dos workers (sem chamada ao modelo). |
 | `/foreman-audit` | Entra no modo orquestrador e executa uma auditoria somente leitura da base de código. |

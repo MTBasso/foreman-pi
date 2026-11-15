@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { PACKAGE_ROOT } from "../../lib/agents.ts";
+import { formatResumeState, type ResumeState } from "../../lib/resume-state.ts";
 
 export function stripFrontmatter(text: string): string {
 	const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
@@ -111,4 +112,30 @@ export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: s
 	];
 	if (preflight) parts.push(`--- preflight (gathered by the extension; do not re-run) ---\n${preflight}`);
 	return parts.join("\n\n");
+}
+
+const RESUME_RULE =
+	"Resume the interrupted work: re-dispatch what is unfinished in one response. Never re-dispatch a step that is `merged` or `decided`. Read an unfinished task's report path (with `limit`) before re-dispatching it.";
+
+/** Prompt for `/foreman resume`: pre-assembled state, the resume rule, and (unless already embedded) the skill body. */
+export function buildResumePrompt(state: ResumeState, opts: { includeSkill: boolean }, root: string = PACKAGE_ROOT): string {
+	const planRunner = !!state.planSlug;
+	const marker = planRunner ? "plan-runner" : "foreman";
+	const parts = [
+		`You are the ${planRunner ? "plan-runner" : "foreman"} orchestrator and the user ran /foreman resume.`,
+		MODE_NOTE,
+		formatResumeState(state),
+		RESUME_RULE,
+	];
+	if (opts.includeSkill) {
+		parts.push(preface(root), `--- ${marker} skill ---`, readSkillBody(marker, root), `--- end ${marker} skill ---`);
+	} else {
+		parts.push(`The ${marker} skill is already in this conversation (earlier \`--- ${marker} skill ---\` block): keep following it.`);
+	}
+	return parts.join("\n\n");
+}
+
+/** The marker line of the skill embed `buildResumePrompt` would add. */
+export function skillMarker(state: ResumeState): string {
+	return `--- ${state.planSlug ? "plan-runner" : "foreman"} skill ---`;
 }

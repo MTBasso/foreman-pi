@@ -27,7 +27,8 @@ import {
 } from "../../lib/mode.ts";
 import { safeUi, say } from "../../lib/ui.ts";
 import { activeCount, WORKERS_ABORT_EVENT, WORKERS_EVENT, type WorkersSnapshot } from "../../lib/workers.ts";
-import { buildAuditPrompt, buildDiagnosePrompt, buildForemanPrompt, buildPlanRunnerPrompt, resolvePlanPath } from "./prompts.ts";
+import { gatherResumeState } from "../../lib/resume-state.ts";
+import { buildAuditPrompt, buildDiagnosePrompt, buildForemanPrompt, buildPlanRunnerPrompt, buildResumePrompt, resolvePlanPath, skillMarker } from "./prompts.ts";
 
 const STATUS_KEY = "foreman-mode";
 /** Longer than the SIGTERM -> SIGKILL grace (5s) so a stubborn worker is still reaped before we give up waiting. */
@@ -109,6 +110,15 @@ export default function (pi: ExtensionAPI) {
 		else pi.sendUserMessage(prompt);
 	}
 
+	/** True when a session-branch entry already carries `marker` (an earlier skill embed). Errors mean "no". */
+	function branchHas(ctx: any, marker: string): boolean {
+		try {
+			return JSON.stringify(ctx?.sessionManager?.getBranch?.() ?? []).includes(marker);
+		} catch {
+			return false;
+		}
+	}
+
 	/** Ask coordination to abort every worker; resolves on its ack or after a bounded wait. */
 	function abortWorkers(): Promise<void> {
 		return new Promise<void>((resolve) => {
@@ -155,12 +165,25 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("foreman", {
 		description: t("cmd.foreman.desc"),
-		getArgumentCompletions: (prefix: string) =>
-			"off".startsWith(prefix.toLowerCase()) && prefix !== "" ? [{ value: "off", label: "off" }] : null,
+		getArgumentCompletions: (prefix: string) => {
+			if (prefix === "") return null;
+			const items = ["resume", "off"].filter((v) => v.startsWith(prefix.toLowerCase())).map((v) => ({ value: v, label: v }));
+			return items.length ? items : null;
+		},
 		handler: async (args, ctx) => {
 			const a = (args ?? "").trim();
 			if (/^off$/i.test(a)) {
 				await leave(ctx);
+				return;
+			}
+			if (/^resume$/i.test(a)) {
+				if (!enter(ctx)) return;
+				const state = gatherResumeState(ctx.cwd ?? process.cwd());
+				if (!state) {
+					say(ctx, t("cmd.resume.none"), "warning");
+					return;
+				}
+				send(buildResumePrompt(state, { includeSkill: !branchHas(ctx, skillMarker(state)) }), ctx);
 				return;
 			}
 			if (!enter(ctx)) return;

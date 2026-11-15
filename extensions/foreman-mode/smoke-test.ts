@@ -43,7 +43,7 @@ function stderrCapture() {
 
 function makeApi() {
 	const events = createEventBus();
-	const commands: Record<string, { description?: string; handler: (args: string, ctx: any) => Promise<void> }> = {};
+	const commands: Record<string, { description?: string; getArgumentCompletions?: (p: string) => any; handler: (args: string, ctx: any) => Promise<void> }> = {};
 	const handlers: Record<string, Array<(e: any, c: any) => any>> = {};
 	const sent: Array<{ content: string; options?: any }> = [];
 	const entries: Array<{ type: string; data: any }> = [];
@@ -317,6 +317,43 @@ async function main() {
 		check("unreadable plan yields no block, command still sends the prompt", a.sent.length === nPre + 1 && !(a.sent.at(-1)!.content as string).includes("--- preflight"));
 		rmSync(home, { recursive: true, force: true });
 		rmSync(cwd, { recursive: true, force: true });
+		resetEnv();
+	}
+
+	// --- /foreman resume ---------------------------------------------------------
+	{
+		const cwd = mkdtempSync(join(tmpdir(), "foreman-resume-"));
+		const run = join(cwd, ".foreman", "runs", "20260102-000000-bbbbbb");
+		mkdirSync(run, { recursive: true });
+		mkdirSync(join(cwd, "docs", "plans"), { recursive: true });
+		writeFileSync(join(cwd, "docs", "plans", "rp.md"), "## Steps\n\n1. **A** (Touches: a)\n\n## Status\n\n- Step 1: merged\n- Step 2: not started\n");
+		writeFileSync(join(run, "run.json"), JSON.stringify({ run_id: "r", plan_slug: "rp" }));
+		writeFileSync(join(run, "t1-qa.json"), JSON.stringify({ task_id: "t1-qa", role: "qa", state: "aborted", updated_at: "2026-01-02T00:00:00Z", output: ".foreman/runs/x/t1-qa.md", workdir: "/wt/x" }));
+		const a = makeApi();
+		await extension(a.api);
+		const c = makeCtx({ hasUI: false, cwd });
+		await a.commands.foreman.handler("resume", c.ctx);
+		const m = a.sent[0]?.content ?? "";
+		check("/foreman resume enters the mode and sends the state", a.modeEvents.join() === "true" && m.includes("Step 1: merged") && m.includes("t1-qa") && m.includes("/wt/x") && /Never re-dispatch a step that is `merged` or `decided`/.test(m));
+		check("plan slug selects the plan-runner skill", m.includes("--- plan-runner skill ---") && m.includes(readSkillBody("plan-runner").slice(0, 80)) && !m.includes("--- foreman skill ---"));
+		const withSkill = { ...c.ctx, sessionManager: { getBranch: () => [{ type: "message", message: { content: m } }] } };
+		await a.commands.foreman.handler("RESUME", withSkill);
+		const m2 = a.sent[1]?.content ?? "";
+		check("skill body omitted when the branch already has it, included otherwise", !m2.includes(readSkillBody("plan-runner").slice(0, 80)) && m2.includes("t1-qa") && m.includes(readSkillBody("plan-runner").slice(0, 80)));
+		const n = a.sent.length;
+		await a.commands.foreman.handler("resumed the migration", c.ctx);
+		check("/foreman resumed the migration is a normal request", a.sent.length === n + 1 && a.sent[n].content.includes("--- foreman skill ---") && a.sent[n].content.includes("resumed the migration") && !a.sent[n].content.includes("Resume state"));
+		const empty = mkdtempSync(join(tmpdir(), "foreman-resume-empty-"));
+		const b = makeApi();
+		await extension(b.api);
+		const err = stderrCapture();
+		await b.commands.foreman.handler("resume", makeCtx({ hasUI: false, cwd: empty }).ctx);
+		err.restore();
+		check("/foreman resume with no state warns and sends nothing", b.sent.length === 0 && err.lines.join("").includes(t("cmd.resume.none")));
+		const comp = a.commands.foreman.getArgumentCompletions?.("re");
+		check("/foreman completions offer resume", JSON.stringify(comp) === JSON.stringify([{ value: "resume", label: "resume" }]));
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(empty, { recursive: true, force: true });
 		resetEnv();
 	}
 
