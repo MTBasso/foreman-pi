@@ -18,7 +18,8 @@ import { createActivityTracker, type ActivityTracker } from "../../lib/activity.
 import { createUsageTally, type UsageTally } from "../../lib/usage.ts";
 import { sharedGate, type BackoffGate } from "../../lib/backoff.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
-import { readOverlapsFor, readStepTitle } from "../../lib/plan-steps.ts";
+import { readOverlapsFor, readPlanText, readStepTitle } from "../../lib/plan-steps.ts";
+import { verifyChecks, type VerifyHandle, type VerifyOptions, type VerifyResult } from "../../lib/verify-checks.ts";
 
 import { ROLES, type Role } from "../../lib/roles.ts";
 export { ROLES, type Role };
@@ -87,6 +88,9 @@ export interface Notification {
 	output: string;
 	/** Lines in the output file (report body); absent when unknown. */
 	reportLines?: number;
+	/** C6: independent re-run of the step's declared Checks; absent when not attempted. */
+	verified?: "yes" | "no" | "n/a";
+	verifiedNote?: string;
 	/** From the worker's report block; absent when the contract was not met. */
 	files?: string[];
 	rulings?: string[];
@@ -127,6 +131,10 @@ export interface CoordinatorDeps {
 	timeoutMs?: number;
 	/** Validates a requested workdir and returns its real path; throws on a bad one. Default: identity. */
 	resolveWorkdir?(root: string, requested: string): string;
+	/** C6 verifier; default `verifyChecks` (runs the step's npm Checks through scripts/run-suites.mjs). */
+	verify?: (o: VerifyOptions) => VerifyHandle;
+	/** C6 time budget in ms; default FOREMAN_VERIFY_TIMEOUT_S * 1000 (600 s). */
+	verifyTimeoutMs?: number;
 	/** Test hook: deterministic run id. */
 	runId?: string;
 }
@@ -422,6 +430,7 @@ export function formatBlock(n: Notification): string {
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
 		...(n.reportLines !== undefined ? [`report: ${n.reportLines} lines`] : []),
+		...(n.verified ? [`verified: ${n.verified}${n.verifiedNote ? ` — ${collapse(n.verifiedNote)}` : ""}`] : []),
 		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${capGuardDenied(n.guardDenied)}`] : []),
 		...(n.partial !== undefined ? [`partial: ${n.partial} changed paths`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
@@ -458,6 +467,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	let batchSeq = 0;
 	/** C1: terminal outcomes per `<slug|->#<step>`, oldest first; a completed outcome clears the key. */
 	const attempts = new Map<string, Array<{ state: string; reason: string }>>();
+	/** C6: verifications in flight; they hold notifications, idle waiters and new writers. */
+	const verifications = new Set<{ handle: VerifyHandle; cancelled: boolean }>();
+	const verifyTimeoutMs = deps.verifyTimeoutMs ?? envInt("FOREMAN_VERIFY_TIMEOUT_S", 600) * 1000;
 	const attemptKey = (slug: string | undefined, step: number) => `${slug ?? "-"}#${step}`;
 	function noteAttempt(slug: string | undefined, step: number | undefined, state: string, reason: string) {
 		if (step === undefined) return;
@@ -559,7 +571,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	}
 
 	function checkIdle() {
-		if (running === 0 && queue.length === 0 && pending.length === 0 && !batchTimer) {
+		if (running === 0 && queue.length === 0 && pending.length === 0 && !batchTimer && verifications.size === 0) {
 			for (const w of idleWaiters.splice(0)) w();
 		}
 	}
@@ -706,7 +718,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				return;
 			}
 			// First queued task that fits; a capped writer keeps its place and readers may pass it.
-			const i = queue.findIndex((q) => !ISOLATABLE_ROLES.has(q.role) || runningWriters < maxWriters);
+			// No writer starts while a verification runs in the shared checkout.
+			const i = queue.findIndex((q) => !ISOLATABLE_ROLES.has(q.role) || (runningWriters < maxWriters && verifications.size === 0));
 			if (i < 0) return;
 			startTask(queue.splice(i, 1)[0]);
 		}
@@ -807,7 +820,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		}
 		persist(t, { summary, ...(parsed?.blockedOn ? { blockedOn: parsed.blockedOn } : {}), ...(error ? { error } : {}) });
 
-		pending.push({
+		const note: Notification = {
 			taskId: t.taskId,
 			role: t.role,
 			status,
@@ -817,11 +830,66 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			output: outputRel(t.taskId),
 			...(reportLines !== undefined ? { reportLines } : {}),
 			...contractInfo,
-		});
+		};
+		const v = startVerification(t, status);
+		if (v && !v.handle.immediate) {
+			// Notification is held until the checks finish (or shutdown/abort drops it).
+			verifications.add(v);
+			v.handle.done
+				.catch((): VerifyResult => ({ verified: "n/a", note: "verification failed" }))
+				.then((res) => {
+					verifications.delete(v);
+					if (!stopped && !v.cancelled) {
+						applyVerify(note, res);
+						pending.push(note);
+						scheduleFlush();
+					}
+					pump();
+					checkIdle();
+					emitChange();
+				});
+			emitChange();
+			return;
+		}
+		if (v?.handle.immediate) applyVerify(note, v.handle.immediate);
+		pending.push(note);
 		scheduleFlush();
 		pump();
 		checkIdle();
 		emitChange();
+	}
+
+	function applyVerify(n: Notification, r: VerifyResult) {
+		n.verified = r.verified;
+		if (r.note) n.verifiedNote = r.note;
+		else delete n.verifiedNote;
+	}
+
+	/** C6: only a completed plan-step-builder with a plan slug and step; any failure becomes an immediate n/a. */
+	function startVerification(t: Task, status: TaskStatus): { handle: VerifyHandle; cancelled: boolean } | undefined {
+		if (status !== "completed" || t.role !== "plan-step-builder" || !t.planSlug || t.planStep === undefined) return undefined;
+		if ((process.env.FOREMAN_VERIFY_CHECKS ?? "").trim().toLowerCase() === "off") return undefined;
+		const immediate = (r: VerifyResult) => ({ handle: { immediate: r, done: Promise.resolve(r), kill() {} } as VerifyHandle, cancelled: false });
+		try {
+			if (runningWriters > 0) return immediate({ verified: "n/a", note: "another writer is running" });
+			// Where the merge landed: the latched workdir, else the root (never the removed isolated path).
+			const cwd = t.workdir && isDir(t.workdir) ? t.workdir : deps.root;
+			const handle = (deps.verify ?? verifyChecks)({ cwd, planText: readPlanText(deps.root, t.planSlug), step: t.planStep, timeoutMs: verifyTimeoutMs });
+			return { handle, cancelled: false };
+		} catch (e) {
+			return immediate({ verified: "n/a", note: `verification error: ${collapse(String((e as Error)?.message ?? e)).slice(0, 80)}` });
+		}
+	}
+
+	function cancelVerifications() {
+		for (const v of verifications) {
+			v.cancelled = true;
+			try {
+				v.handle.kill();
+			} catch {
+				// ignore
+			}
+		}
 	}
 
 	function scheduleFlush() {
@@ -991,6 +1059,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	/** Orchestrator is shutting down: kill children, record state, no notifications. */
 	function shutdown() {
 		stopped = true;
+		cancelVerifications();
 		if (batchTimer) clearTimeout(batchTimer);
 		batchTimer = undefined;
 		queue.length = 0;
@@ -1029,6 +1098,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	 * No notification is sent for aborted tasks.
 	 */
 	function abortAll(): Promise<number> {
+		cancelVerifications();
 		queue.length = 0;
 		if (pumpTimer) clearTimeout(pumpTimer);
 		pumpTimer = undefined;

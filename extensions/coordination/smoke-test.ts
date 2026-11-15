@@ -51,7 +51,7 @@ interface Sent {
 	ledgerLinesAtSend: number;
 }
 
-function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate; now?: () => number } = {}) {
+function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate; now?: () => number; verify?: (o: any) => any } = {}) {
 	const root = opts.root ?? mkdtempSync(join(tmpdir(), "foreman-coord-"));
 	const workers = new Map<string, { req: SpawnRequest; resolve: (r: WorkerResult) => void; killed: boolean }>();
 	const spawned: string[] = [];
@@ -67,6 +67,7 @@ function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boole
 		resolveWorkdir: opts.resolveWorkdir,
 		maxWriters: opts.maxWriters,
 		gate: opts.gate,
+		...(opts.verify ? { verify: opts.verify } : {}),
 		...(opts.now ? { now: opts.now } : {}),
 		spawn(req) {
 			spawned.push(req.taskId);
@@ -1353,6 +1354,133 @@ async function main() {
 			check("formatBlock omits the line when unknown", !formatBlock(base).includes("report:"));
 			check("formatBlock prints report line when known", formatBlock({ ...base, reportLines: 7 }).includes("output: .foreman/runs/r/t1-qa.md\nreport: 7 lines\n"));
 		}
+	}
+
+
+	// C6: coordinator-side verification of the step's declared Checks (fake verifier; lib/verify-checks-test.ts covers the runner).
+	{
+		const mkPlan = (root: string) => {
+			mkdirSync(join(root, "docs", "plans"), { recursive: true });
+			writeFileSync(join(root, "docs", "plans", "p.md"), "1. **X** (Touches: a)\n   - Checks: `npm run t`\n");
+		};
+		const fakeVerify = () => {
+			const calls: any[] = [];
+			let killed = 0;
+			let release!: (r: any) => void;
+			const verify = (o: any) => {
+				calls.push(o);
+				const done = new Promise<any>((res) => (release = res));
+				return { done, kill: () => { killed++; release({ verified: "n/a", note: "killed" }); } };
+			};
+			return { verify, calls, killed: () => killed, release: (r: any) => release(r) };
+		};
+		const savedVerify = process.env.FOREMAN_VERIFY_CHECKS;
+		delete process.env.FOREMAN_VERIFY_CHECKS;
+		const go = (h: ReturnType<typeof harness>, role = "plan-step-builder") => h.coord.delegate({ role, handoff_prompt: "x", plan_step: 1, plan_slug: "p" }).task_id;
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = go(h);
+			h.finish(id, ok("built it"));
+			await sleep(100);
+			check("notification waits for verification and idle waiters wait too", h.sent.length === 0 && f.calls.length === 1);
+			let idle = false;
+			void h.coord.whenIdle().then(() => (idle = true));
+			await sleep(50);
+			check("idle waiters wait for verification", !idle && h.sent.length === 0);
+			f.release({ verified: "yes" });
+			await h.coord.whenIdle();
+			check("exit 0 verification adds verified: yes and runs in the root", h.sent.length === 1 && h.sent[0].message.content.includes("\nverified: yes\n") && f.calls[0].cwd === h.root && f.calls[0].step === 1 && f.calls[0].planText.includes("npm run t"));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = go(h);
+			h.finish(id, ok("built it"));
+			await sleep(30);
+			f.release({ verified: "no", note: "FAIL npm:t (.foreman/qa-logs/npm_t.log)" });
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			check("a no never changes status; note is printed", n.status === "completed" && h.sent[0].message.content.includes("verified: no — FAIL npm:t"));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: () => { throw new Error("boom"); } });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await h.coord.whenIdle();
+			check("a throwing verifier yields n/a and the notification still goes out", h.sent.length === 1 && /verified: n\/a/.test(h.sent[0].message.content));
+			h.cleanup();
+			void f;
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const a = go(h);
+			const b = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "y", plan_step: 1, plan_slug: "p" }).task_id;
+			h.finish(a, ok("built it"));
+			await sleep(60);
+			check("concurrent writer running gives n/a", f.calls.length === 0 && /verified: n\/a — another writer is running/.test(h.sent[0]?.message.content ?? ""));
+			h.finish(b, ok("done"));
+			await sleep(60);
+			check("verification runs once no other writer is running", f.calls.length === 1);
+			f.release({ verified: "yes" });
+			await sleep(30);
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h, "qa"), ok("qa green"));
+			h.finish(go(h), { code: 1, signal: null, messages: [], stderr: "bad" });
+			h.finish(go(h), ok("--- foreman-report ---\nStatus: blocked\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: root\n--- end foreman-report ---"));
+			await h.coord.whenIdle();
+			check("other roles and non-completed statuses are not verified", f.calls.length === 0 && h.sent.every((s) => !s.message.content.includes("verified:")));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x" }).task_id;
+			h.finish(id, ok("built it"));
+			await h.coord.whenIdle();
+			check("no plan_step or slug means no verified line", f.calls.length === 0 && !h.sent[0].message.content.includes("verified:"));
+			h.cleanup();
+		}
+		{
+			process.env.FOREMAN_VERIFY_CHECKS = "off";
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await h.coord.whenIdle();
+			check("FOREMAN_VERIFY_CHECKS=off skips", f.calls.length === 0 && !h.sent[0].message.content.includes("verified:"));
+			h.cleanup();
+			delete process.env.FOREMAN_VERIFY_CHECKS;
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await sleep(60);
+			h.coord.shutdown();
+			await sleep(60);
+			check("shutdown during verification kills the child and sends nothing", f.killed() === 1 && h.sent.length === 0);
+			h.cleanup();
+		}
+		{
+			const base = { taskId: "t1-plan-step-builder", role: "plan-step-builder", status: "completed" as const, summary: "s", output: ".foreman/runs/r/t1.md" };
+			check("verified: line appears in formatBlock", formatBlock({ ...base, verified: "yes" }).includes("\nverified: yes\n") && formatBlock({ ...base, verified: "no", verifiedNote: "FAIL x" }).includes("\nverified: no — FAIL x\n") && !formatBlock(base).includes("verified:"));
+		}
+		if (savedVerify !== undefined) process.env.FOREMAN_VERIFY_CHECKS = savedVerify;
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

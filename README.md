@@ -78,6 +78,7 @@ plan-step: 2             # or -
 summary: <first ~400 chars of the worker's report>
 output: .foreman/runs/<run-id>/t1-planner.md
 report: 42 lines         # size of the output file, so you can decide how much to read
+verified: yes            # the step's declared npm Checks re-run by the coordinator (yes, no or n/a)
 </task-notification>
 ```
 
@@ -142,6 +143,8 @@ An explicit model bypasses the `foreman/hybrid` fallback layer.
 | `FOREMAN_MAX_WORKERS` | 4 | Concurrent workers; extra delegations queue. |
 | `FOREMAN_MAX_WRITERS` | 2 | Concurrent writer workers (builders, devs, bugfixers); extra writers queue while readers still start. Counts toward `FOREMAN_MAX_WORKERS`. |
 | `FOREMAN_BACKOFF_DECAY_S` | 300 | Seconds after the last provider rate limit before one slot of the halved worker pool comes back (repeats until the pool is whole again; clean finishes still restore a slot at once). A burst of 429s halves the pool once. `0` disables restoration by time. |
+| `FOREMAN_VERIFY_CHECKS` | on | After a `plan-step-builder` finishes a plan step as `completed`, the notification is held while the step's declared `npm run <script>` Checks (only scripts present in `package.json`, never free text) are re-run through `scripts/run-suites.mjs`, and gets `verified: yes\|no\|n/a`. `off` disables. |
+| `FOREMAN_VERIFY_TIMEOUT_S` | 600 | Time budget in seconds for that verification; on timeout the line is `verified: n/a`. |
 | `FOREMAN_MAX_RESUMES` | 2 | Times a worker that already produced output is resumed after a transient provider error (the retry then continues from git state). Counted separately from the no-output retries; invalid values fall back to 2. |
 | `FOREMAN_STUCK_AFTER_S` | 90 | Seconds of silence (no events, no tool running) before a worker is flagged as stuck with a one-time warning in the UI and herdr; `0` disables stuck detection. Nothing is killed; repeating-command and guard-denial warnings are unaffected. |
 | `FOREMAN_WORKER_SKILLS` | unset | Set to `1` to let workers load your global skills. By default workers start with `--no-skills` (the optional `impeccable` skill is still passed to qa, frontend-dev and codebase-auditor when installed). |

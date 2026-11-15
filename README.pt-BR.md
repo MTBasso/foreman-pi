@@ -80,6 +80,7 @@ plan-step: 2             # ou -
 summary: <primeiros ~400 caracteres do relatório do worker>
 output: .foreman/runs/<run-id>/t1-planner.md
 report: 42 lines         # tamanho do arquivo de saída, para decidir quanto ler
+verified: yes            # Checks npm do passo reexecutados pelo coordenador (yes, no ou n/a)
 </task-notification>
 ```
 
@@ -145,6 +146,8 @@ strong. Um modelo explícito contorna a camada de fallback do `foreman/hybrid`.
 | `FOREMAN_MAX_WORKERS` | 4 | Workers simultâneos; delegações extras entram na fila. |
 | `FOREMAN_MAX_WRITERS` | 2 | Workers escritores simultâneos (builders, devs, bugfixers); os extras entram na fila enquanto os leitores continuam iniciando. Conta dentro de `FOREMAN_MAX_WORKERS`. |
 | `FOREMAN_BACKOFF_DECAY_S` | 300 | Segundos após o último limite de taxa do provedor até uma vaga do pool reduzido voltar (repete até o pool ficar inteiro; término limpo de worker ainda devolve uma vaga na hora). Uma rajada de 429 reduz o pool uma única vez. `0` desativa a restauração por tempo. |
+| `FOREMAN_VERIFY_CHECKS` | ligado | Quando um `plan-step-builder` termina um passo do plano como `completed`, a notificação fica retida enquanto os Checks `npm run <script>` declarados no passo (só scripts presentes em `package.json`, nunca texto livre) são reexecutados via `scripts/run-suites.mjs`, e recebe `verified: yes\|no\|n/a`. `off` desativa. |
+| `FOREMAN_VERIFY_TIMEOUT_S` | 600 | Tempo máximo em segundos dessa verificação; no timeout a linha é `verified: n/a`. |
 | `FOREMAN_MAX_RESUMES` | 2 | Quantas vezes um worker que já produziu saída é retomado após um erro transitório do provedor (a retomada continua a partir do estado do git). Contado à parte das tentativas sem saída; valores inválidos voltam para 2. |
 | `FOREMAN_STUCK_AFTER_S` | 90 | Segundos de silêncio (sem eventos e sem ferramenta rodando) até um worker ser marcado como travado, com um aviso único na UI e no herdr; `0` desativa a detecção. Nada é encerrado; os avisos de comando repetido e de bloqueio do guard não mudam. |
 | `FOREMAN_WORKER_SKILLS` | não definida | Defina como `1` para os workers carregarem suas skills globais. Por padrão os workers iniciam com `--no-skills` (a skill opcional `impeccable` continua sendo passada a qa, frontend-dev e codebase-auditor quando instalada). |
