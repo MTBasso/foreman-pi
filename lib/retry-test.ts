@@ -1,5 +1,6 @@
-import { isMidTaskTransient, isTransientFailure, resumePreamble, runWithRetry, type ResumeInfo } from "./retry.ts";
+import { isMidTaskTransient, isTransientFailure, resumeModeOf, resumePreamble, runWithRetry, type ResumeInfo } from "./retry.ts";
 import type { PiRunResult } from "./spawn.ts";
+import { ROLES } from "./roles.ts";
 
 let failures = 0;
 const check = (n: string, ok: boolean) => { if (!ok) { failures++; console.log(`FAIL - ${n}`); } };
@@ -77,6 +78,39 @@ check("spawnError is never mid-task", !isMidTaskTransient(res({ spawnError: "429
 {
 	const p = resumePreamble(1);
 	check("resumePreamble mentions git status, git log and commit only your paths", /git status/.test(p) && /git log/.test(p) && /commit only your own paths/.test(p) && /foreman-report/.test(p));
+}
+{
+	// kill during a never-resolving back-off resolves done immediately
+	let n = 0;
+	const kk = runWithRetry(() => (n++, h(res({ errorMessage: "429" }))), { sleep: () => new Promise<void>(() => {}) });
+	await new Promise((r) => setTimeout(r, 5));
+	kk.kill();
+	const out = await Promise.race([kk.done.then(() => "done"), new Promise((r) => setTimeout(() => r("hung"), 500))]);
+	check("kill during a never-resolving back-off resolves done immediately", out === "done" && n === 1);
+}
+{
+	let n = 0;
+	const kk = runWithRetry(() => (n++, h(res({ errorMessage: "429" }))), { sleep: async () => {} });
+	kk.kill();
+	await kk.done;
+	check("kill before the first back-off still stops retries", n === 1);
+}
+{
+	const w = resumePreamble(1, "reviewer");
+	check("reviewer preamble says restart and never mentions commit", /start again|restart/i.test(w) && !/commit/i.test(w) && /foreman-report/.test(w));
+	for (const role of ["backend-dev", "frontend-dev", "qa-bugfix", "plan-step-builder"]) {
+		const p = resumePreamble(1, role);
+		check(`writer role ${role} keeps git status, git log, commit only your own paths, foreman-report`, /git status/.test(p) && /git log/.test(p) && /commit only your own paths/.test(p) && /foreman-report/.test(p));
+	}
+	check("writer roles keep git status, git log, commit only your own paths, foreman-report (undefined role)", resumePreamble(1) === resumePreamble(1, "plan-step-builder"));
+	const pl = resumePreamble(1, "planner");
+	check("planner preamble names docs/plans and edit", /docs\/plans/.test(pl) && /\bedit\b/.test(pl) && !/commit/i.test(pl));
+	const sh = resumePreamble(1, "shipper");
+	check("shipper preamble forbids repeating a commit or push", /git status/.test(sh) && /git log -3/.test(sh) && /git branch -vv/.test(sh) && /(not|never) repeat/i.test(sh) && /commit/.test(sh) && /push/.test(sh));
+	check("every ROLES entry has an explicit mode (imports lib/roles.ts)", ROLES.every((r) => resumeModeOf(r) !== undefined));
+	const u = resumePreamble(1, "no-such-role");
+	check("unknown role restarts", /start again|restart/i.test(u) && !/commit/i.test(u));
+	check("existing retry cases unchanged", /resume 1/.test(resumePreamble(1)) && /resume 2/.test(resumePreamble(2, "qa")));
 }
 
 console.log(failures === 0 ? "All retry checks passed." : `${failures} retry check(s) FAILED.`);

@@ -253,7 +253,7 @@ Phase C cuts orchestrator prompt size and closes the last guardrail gaps. Steps 
 Source of truth for plan-runner; mark a step `merged` only when it is on the plan branch.
 
 - Step 1: merged
-- Step 2: not started
+- Step 2: merged
 - Step 3: not started
 - Step 4: not started
 - Step 5: not started
