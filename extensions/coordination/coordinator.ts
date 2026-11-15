@@ -448,6 +448,35 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	let busy = false;
 	let stopped = false;
 	let batchSeq = 0;
+	/** C1: terminal outcomes per `<slug|->#<step>`, oldest first; a completed outcome clears the key. */
+	const attempts = new Map<string, Array<{ state: string; reason: string }>>();
+	const attemptKey = (slug: string | undefined, step: number) => `${slug ?? "-"}#${step}`;
+	function noteAttempt(slug: string | undefined, step: number | undefined, state: string, reason: string) {
+		if (step === undefined) return;
+		const key = attemptKey(slug, step);
+		if (state === "completed") {
+			attempts.delete(key);
+			return;
+		}
+		if (state !== "failed" && state !== "blocked") return;
+		const list = attempts.get(key) ?? [];
+		list.push({ state, reason: truncate(collapse(reason), 100) });
+		attempts.set(key, list);
+	}
+	function attemptWarning(slug: string | undefined, step: number | undefined): string {
+		if (step === undefined) return "";
+		const list = attempts.get(attemptKey(slug, step)) ?? [];
+		const n = list.length + 1;
+		if (n < 3) return "";
+		const last = list.slice(-2);
+		if (!last.every((a) => a.state === "blocked" || a.state === "failed")) return "";
+		const same = last[0].reason === last[1].reason;
+		return (
+			` Attempt ${n} for step ${step}; previous attempts ended: ${list.map((a) => `${a.state} (${a.reason})`).join(", ")}. ` +
+			`Do not re-dispatch with reworded text: rule on it (skip, degrade, change approach) or ask the user.` +
+			(same ? " The last two reasons are identical." : "")
+		);
+	}
 
 	const changeListeners = new Set<() => void>();
 	function emitChange() {
@@ -751,6 +780,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract }
 			: {};
 		t.state = status;
+		noteAttempt(t.planSlug, t.planStep, status, parsed?.blockedOn || error || summary);
 		if (status === "completed") gate.noteCleanFinish();
 		try {
 			writeMeta(t, {
@@ -765,7 +795,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		} catch {
 			// ignore
 		}
-		persist(t, { summary });
+		persist(t, { summary, ...(parsed?.blockedOn ? { blockedOn: parsed.blockedOn } : {}), ...(error ? { error } : {}) });
 
 		pending.push({
 			taskId: t.taskId,
@@ -895,6 +925,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				}
 			}
 		}
+		overlapWarning += attemptWarning(t.planSlug, t.planStep);
 		tasks.set(taskId, t);
 		writeMeta(t, { created_at: new Date(now()).toISOString() });
 		queue.push(t);
@@ -1068,6 +1099,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			// A resumed session must never reuse a task id: continue after the highest tN- seen.
 			const m = /^t(\d+)-/.exec(e.taskId);
 			if (m) seq = Math.max(seq, Number(m[1]));
+		}
+		for (const e of latest.values()) {
+			if (e.recovered || typeof e.planStep !== "number") continue;
+			if (e.state === "completed" || e.state === "failed" || e.state === "blocked") {
+				noteAttempt(e.planSlug, e.planStep, e.state, e.blockedOn || e.error || e.summary || "");
+			}
 		}
 		const recovered: Notification[] = [];
 		for (const e of latest.values()) {

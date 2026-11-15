@@ -1222,6 +1222,95 @@ async function main() {
 		check("usage feed throwing does not fail the task", !threw && h.sent.length === 1 && /status: completed/.test(h.sent[0].message.content));
 	}
 
+	// Step 7 (C1): circuit breaker, advisory text in the delegate ack.
+	{
+		const blocked = (why: string) =>
+			ok(`--- foreman-report ---\nStatus: blocked\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: ${why}\n--- end foreman-report ---`);
+		const failedRes = (): WorkerResult => ({ code: 1, signal: null, messages: [], stderr: "boom" });
+		const attempt = async (h: ReturnType<typeof harness>, step: number | undefined, res: WorkerResult, slug: string | undefined = "cb") => {
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "go", ...(step !== undefined ? { plan_step: step } : {}), ...(slug ? { plan_slug: slug } : {}) });
+			h.finish(a.task_id, res);
+			await h.coord.whenIdle();
+			return a;
+		};
+		const next = (h: ReturnType<typeof harness>, step: number | undefined) => {
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "again", ...(step !== undefined ? { plan_step: step } : {}), plan_slug: "cb" });
+			h.finish(a.task_id, ok("done"));
+			return a.ack;
+		};
+		{
+			const h = harness();
+			const a1 = (await attempt(h, 3, blocked("needs root"))).ack;
+			const a2 = (await attempt(h, 3, blocked("needs sudo"))).ack;
+			check("attempts 1 and 2 of a blocked step carry no warning", !/Attempt/.test(a1) && !/Attempt/.test(a2));
+			const a3 = next(h, 3);
+			check("3rd dispatch after two blocked outcomes warns with both reasons", /Attempt 3 for step 3/.test(a3) && /needs root/.test(a3) && /needs sudo/.test(a3) && /rule on it/.test(a3) && /END YOUR TURN/.test(a3), a3);
+			check("differing reasons are not flagged identical", !/identical/.test(a3));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 2, failedRes());
+			await attempt(h, 2, blocked("x"));
+			check("failed plus blocked counts", /Attempt 3 for step 2/.test(next(h, 2)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 1, blocked("a"));
+			await attempt(h, 1, ok("all good"));
+			await attempt(h, 1, blocked("b"));
+			check("a completed attempt resets the count", !/Attempt/.test(next(h, 1)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 1, blocked("a"));
+			await attempt(h, 2, blocked("a"));
+			check("different plan steps are tracked separately", !/Attempt/.test(next(h, 1)) && !/Attempt/.test(next(h, 2)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, undefined, blocked("a"), undefined);
+			await attempt(h, undefined, blocked("a"), undefined);
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x" });
+			check("no plan_step never warns", !/Attempt/.test(a.ack));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 4, blocked("same  thing"));
+			await attempt(h, 4, blocked("same thing"));
+			check("identical reasons are flagged", /The last two reasons are identical\./.test(next(h, 4)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 5, blocked("a"));
+			await attempt(h, 5, blocked("b"));
+			const ab = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x", plan_step: 5, plan_slug: "cb" });
+			await h.coord.abortAll();
+			await h.coord.whenIdle();
+			const after = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "y", plan_step: 5, plan_slug: "cb" });
+			check("aborted outcomes are ignored", /Attempt 3 for step 5/.test(ab.ack) && /Attempt 3 for step 5/.test(after.ack) && !/aborted/.test(after.ack), after.ack);
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 6, blocked("r1"));
+			await attempt(h, 6, blocked("r2"));
+			const entries = h.entries.filter((e) => e.customType === "foreman-task").map((e) => e.data);
+			check("finish persists blockedOn", entries.some((e) => e.state === "blocked" && e.blockedOn === "r2"));
+			const h2 = harness();
+			h2.coord.recover(entries);
+			const a = h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "z", plan_step: 6, plan_slug: "cb" });
+			check("recover() seeds history so a resumed session warns on its first re-dispatch", /Attempt 3 for step 6/.test(a.ack) && /r1/.test(a.ack) && /r2/.test(a.ack), a.ack);
+			h.cleanup();
+			h2.cleanup();
+		}
+	}
+
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
 	if (savedModeEnv !== undefined) process.env.FOREMAN_PI_MODE = savedModeEnv;
 
