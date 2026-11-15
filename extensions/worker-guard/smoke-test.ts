@@ -913,6 +913,19 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		blocked(bash("qa", `false &&\nD=.foreman/o\necho x > $D/y`)) &&
 		blocked(bash("qa", `false ||\nD=.foreman/o\necho x > $D/y`)) &&
 		blocked(bash("qa", `echo a |\nD=.foreman/o\necho x > $D/y`)));
+	check("for-loop with printf -v on the loop variable is denied or judged on the runtime path",
+		blocked(bash("qa", `for s in x y; do printf -v s '../src/%s' "$s"; echo hi > .foreman/$s; done`)));
+	check("declare, mapfile and getopts on the loop variable denied",
+		blocked(bash("qa", `for s in x y; do declare s=../src/$s; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do declare -n s; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do local s=../src; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do mapfile s < /dev/null; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do getopts ab s; echo hi > .foreman/$s; done`)));
+	check("plain literal for-loop still unrolled (C5 cases unchanged)",
+		!blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
+		!blocked(bash("qa", `for s in x y; do printf '%s' "$s" > .foreman/$s.txt; done`)));
+	check("loop var named like a literal body word falls back to deny",
+		blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
 	check("loop over a glob stays denied",
 		blocked(bash("qa", `D=.foreman/o; for s in *.txt; do echo x > $D/$s 2>&1; done`)) &&
 		blocked(bash("qa", `D=.foreman/o; for s in $(ls); do echo x > $D/$s; done`)));

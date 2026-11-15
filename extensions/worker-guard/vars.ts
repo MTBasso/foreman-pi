@@ -219,6 +219,8 @@ export function expandForLoop(command: string): string {
 	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;
 	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;])done(?=[\s;]|$)/.test(suffix)) return command;
 	if (new RegExp(`(^|[\\s;])${name}=`).test(body) || new RegExp(`(^|[\\s;])${name}=`).test(prefix)) return command;
+	// The loop variable as a bare word in BODY (`printf -v s`, `declare -n s`, `local s`, `mapfile s`, `getopts x s`, ...) may rebind it at runtime: do not unroll.
+	if (new RegExp(`(^|[\\s;])${name}(?=[\\s;]|$)`).test(body)) return command;
 	const copies = words.map((w) => substitute(body.replace(/^\s*;?/, ""), name, w).replace(/[;\s]+$/, ""));
 	return `${prefix.replace(/[;\s]*$/, "")}\n${copies.join("\n")}\n${suffix.replace(/^[;\s]+/, "")}`;
 }
