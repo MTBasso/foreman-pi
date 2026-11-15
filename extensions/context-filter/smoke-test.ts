@@ -2,7 +2,7 @@
  * Smoke test for the context filter (pure pruneMessages + the real `context`
  * handler against a fake ExtensionAPI). Run: npx tsx extensions/context-filter/smoke-test.ts
  */
-import extension, { pruneMessages } from "./index.ts";
+import extension, { pruneHandoffs, pruneMessages } from "./index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -155,6 +155,93 @@ const allText = (arr: any[]) => arr.map(text).join("\n");
 		delete process.env.FOREMAN_CONTEXT_KEEP_PER_ROLE;
 	}
 	console.log(errors.join("\n"));
+}
+
+// Handoff pruning (A1)
+{
+	const big = (n: number) => `handoff ${n} ` + "x".repeat(400);
+	const call = (n: number, over: any = {}) => ({
+		type: "toolCall",
+		id: `c${n}`,
+		name: "foreman_delegate",
+		arguments: { role: "plan-step-builder", plan_slug: "p", plan_step: n, handoff_prompt: big(n), ...over },
+	});
+	const aMsg = (parts: any[]) => ({ role: "assistant", content: parts, timestamp: 5 });
+	const res = (n: number, over: any = {}): any => ({
+		role: "toolResult",
+		toolCallId: `c${n}`,
+		toolName: "foreman_delegate",
+		content: [{ type: "text", text: JSON.stringify({ task_id: `t${n}-plan-step-builder`, run_id: "r1", state: "running" }) }],
+		details: { run_id: "r1", task_id: `t${n}-plan-step-builder` },
+		isError: false,
+		timestamp: 5,
+		...over,
+	});
+	const hp = (m: any, k = 0) => m.content.filter((p: any) => p.type === "toolCall")[k].arguments.handoff_prompt as string;
+	const turns = (): any[] => {
+		const m: any[] = [system, user];
+		for (let n = 1; n <= 5; n++) m.push(aMsg([call(n)]), res(n), notif([note(`t${n}-plan-step-builder`, "plan-step-builder")]));
+		m.pop(); // the 5th dispatch is the latest turn (no notification yet)
+		return m;
+	};
+
+	{
+		const input = turns();
+		const snap = JSON.stringify(input);
+		const out = pruneHandoffs(input);
+		const as = out.filter((m) => m.role === "assistant");
+		check("5 dispatches over 5 turns: only the last turn keeps full handoff", as.slice(0, 4).every((m) => hp(m).startsWith("[handoff pruned:")) && hp(as[4]) === big(5));
+		check("input messages not mutated", JSON.stringify(input) === snap);
+		check("pruned stub names run, task, chars, role and step", hp(as[1]) === `[handoff pruned: ${big(2).length} chars; full text in .foreman/runs/r1/t2-plan-step-builder.json (handoff_prompt); role=plan-step-builder step=2]`);
+		check("pruned call keeps role/plan_slug/plan_step", as[0].content[0].arguments.plan_slug === "p" && as[0].content[0].arguments.plan_step === 1);
+		const again = pruneHandoffs(out);
+		check("pruning twice yields identical output (idempotent)", JSON.stringify(again) === JSON.stringify(out));
+		check("unchanged messages keep identity", out[0] === input[0] && out[1] === input[1]);
+	}
+	{
+		const input: any[] = [user, aMsg([call(1)]), res(1), aMsg([call(2)]), res(2)];
+		const out = pruneHandoffs(input);
+		check("dispatches in the same latest turn all keep full text", out === input);
+		const two: any[] = [user, aMsg([call(1), call(2)]), res(1), res(2), notif([note("t1", "qa")]), aMsg([call(3)]), res(3)];
+		const o2 = pruneHandoffs(two);
+		check("same older message: both calls pruned, latest kept", hp(o2[1], 0).startsWith("[handoff") && hp(o2[1], 1).startsWith("[handoff") && hp(o2[5]) === big(3));
+	}
+	{
+		const input: any[] = [
+			user,
+			aMsg([call(1)]), // no result
+			aMsg([call(2)]), res(2, { isError: true }),
+			aMsg([call(3)]), res(3, { details: undefined, content: [{ type: "text", text: "not json" }] }),
+			notif([note("t1", "qa")]),
+			aMsg([call(4)]), res(4),
+		];
+		check("call without result or with error result is untouched", pruneHandoffs(input) === input);
+		const viaText: any[] = [user, aMsg([call(1)]), res(1, { details: undefined }), notif([note("t1", "qa")])];
+		check("ids fall back to result text JSON", hp(pruneHandoffs(viaText)[1]).includes("r1/t1-plan-step-builder.json"));
+	}
+	{
+		const short: any[] = [user, aMsg([call(1, { handoff_prompt: "y".repeat(300) })]), res(1), notif([note("t1", "qa")])];
+		check("short handoff (<=300 chars) untouched", pruneHandoffs(short) === short);
+	}
+	{
+		const handlers: Record<string, any> = {};
+		extension({ on: (ev: string, h: any) => void (handlers[ev] = h) } as any);
+		const r = handlers.context({ type: "context", messages: turns() });
+		check("handler prunes handoffs by default", !!r && hp(r.messages.filter((m: any) => m.role === "assistant")[0]).startsWith("[handoff"));
+		process.env.FOREMAN_CONTEXT_PRUNE_HANDOFFS = "false";
+		const nm = turns().concat([]);
+		const r2 = handlers.context({ type: "context", messages: nm });
+		check("FOREMAN_CONTEXT_PRUNE_HANDOFFS=false disables", !r2 || r2.messages.filter((m: any) => m.role === "assistant").every((m: any) => !hp(m).startsWith("[handoff")));
+		delete process.env.FOREMAN_CONTEXT_PRUNE_HANDOFFS;
+		process.env.FOREMAN_CONTEXT_PRUNE = "false";
+		check("FOREMAN_CONTEXT_PRUNE=false still disables everything", handlers.context({ type: "context", messages: turns() }) === undefined);
+		delete process.env.FOREMAN_CONTEXT_PRUNE;
+	}
+	{
+		// notification pruning unchanged when handoffs are also present
+		const out = pruneMessages(build(), { keepPerRole: 1 });
+		check("notification pruning still behaves as before", out.length === build().length - 6 + 1 && !!stubOf(out));
+	}
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

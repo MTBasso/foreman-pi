@@ -157,6 +157,61 @@ export function pruneMessages<T = any>(messages: T[], opts: PruneOptions): T[] {
 	return out as T[];
 }
 
+const HANDOFF_MIN_CHARS = 300;
+
+function ids(result: any): { runId: string; taskId: string } | undefined {
+	let runId = result?.details?.run_id;
+	let taskId = result?.details?.task_id;
+	if (typeof runId !== "string" || typeof taskId !== "string" || !runId || !taskId) {
+		try {
+			const j = JSON.parse(textOf(result?.content));
+			runId = typeof runId === "string" && runId ? runId : j?.run_id;
+			taskId = typeof taskId === "string" && taskId ? taskId : j?.task_id;
+		} catch {
+			/* no ids */
+		}
+	}
+	return typeof runId === "string" && runId && typeof taskId === "string" && taskId ? { runId, taskId } : undefined;
+}
+
+/**
+ * Replace the `handoff_prompt` of older `foreman_delegate` calls with a stub that
+ * points at the run json. Latest turn (assistant messages after the last user or
+ * notification message) keeps full text. Calls that cannot be pointed to are untouched.
+ * Pure; changed messages are cloned; the stub depends only on the call and its result.
+ */
+export function pruneHandoffs<T = any>(messages: T[]): T[] {
+	const msgs = messages as any[];
+	let boundary = -1;
+	msgs.forEach((m, i) => {
+		if (m && (m.role === "user" || isNotification(m))) boundary = i;
+	});
+	const results = new Map<string, any>();
+	for (const m of msgs) if (m && m.role === "toolResult" && typeof m.toolCallId === "string") results.set(m.toolCallId, m);
+	let changed = false;
+	const out = msgs.map((m, i) => {
+		if (i >= boundary || !m || m.role !== "assistant" || !Array.isArray(m.content)) return m;
+		let content: any[] | undefined;
+		m.content.forEach((part: any, j: number) => {
+			if (!part || part.type !== "toolCall" || part.name !== "foreman_delegate") return;
+			const hp = part.arguments?.handoff_prompt;
+			if (typeof hp !== "string" || hp.length <= HANDOFF_MIN_CHARS) return;
+			const res = results.get(part.id);
+			if (!res || res.isError) return;
+			const id = ids(res);
+			if (!id) return;
+			const a = part.arguments;
+			const stub = `[handoff pruned: ${hp.length} chars; full text in .foreman/runs/${id.runId}/${id.taskId}.json (handoff_prompt); role=${a.role ?? "-"} step=${a.plan_step ?? "-"}]`;
+			const c: any[] = (content ??= m.content.slice());
+			c[j] = { ...part, arguments: { ...a, handoff_prompt: stub } };
+		});
+		if (!content) return m;
+		changed = true;
+		return { ...m, content };
+	});
+	return changed ? (out as T[]) : messages;
+}
+
 function envKeep(): number {
 	const raw = process.env.FOREMAN_CONTEXT_KEEP_PER_ROLE;
 	if (raw === undefined || raw.trim() === "") return 1;
@@ -168,7 +223,14 @@ export default function (pi: ExtensionAPI) {
 	pi.on("context", (event) => {
 		if (process.env.FOREMAN_CONTEXT_PRUNE === "false") return undefined;
 		const before = event.messages;
-		const after = pruneMessages(before, { keepPerRole: envKeep() });
+		let after = pruneMessages(before, { keepPerRole: envKeep() });
+		if (process.env.FOREMAN_CONTEXT_PRUNE_HANDOFFS !== "false") {
+			const h = pruneHandoffs(after);
+			if (h !== after && process.env.FOREMAN_CONTEXT_DEBUG === "1") {
+				console.error(`[foreman-context-filter] handoffs pruned=${h.filter((m, i) => m !== after[i]).length} messages`);
+			}
+			after = h;
+		}
 		if (process.env.FOREMAN_CONTEXT_DEBUG === "1") {
 			// A pruned message is replaced by one collapsed line, so after can equal before.
 			const pruned = after === before ? 0 : before.filter((m) => !after.includes(m)).length;

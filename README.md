@@ -149,6 +149,7 @@ An explicit model bypasses the `foreman/hybrid` fallback layer.
 | `FOREMAN_KEEP_MODE_TIMEOUT_MS` | 30000 | How long the resume/fork "keep orchestrator mode?" prompt waits. |
 | `FOREMAN_CONTEXT_PRUNE` | true | `false` disables notification pruning. |
 | `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | Completed results kept per role. |
+| `FOREMAN_CONTEXT_PRUNE_HANDOFFS` | true | `false` keeps old `foreman_delegate` handoff text in context (default replaces it with a pointer to the run json; the latest turn is always kept in full). |
 | `FOREMAN_CONTEXT_DEBUG` | off | `1` logs before/after/pruned counts to stderr. |
 | `FOREMAN_PRIMARY_MODEL` / `FOREMAN_FALLBACK_MODEL` | `claude-sonnet-4-5` / `gpt-4o-mini` | `foreman/hybrid` model ids. See "Model fallback". |
 | `FOREMAN_PI_SUBAGENT`, `FOREMAN_PI_ROLE` | set by the spawner | Mark a worker process and its role. Not meant to be set by hand. |

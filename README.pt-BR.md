@@ -152,6 +152,7 @@ strong. Um modelo explícito contorna a camada de fallback do `foreman/hybrid`.
 | `FOREMAN_KEEP_MODE_TIMEOUT_MS` | 30000 | Quanto o aviso de retomada/fork "manter o modo orquestrador?" espera. |
 | `FOREMAN_CONTEXT_PRUNE` | true | `false` desativa a poda de notificações. |
 | `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | Resultados concluídos mantidos por papel. |
+| `FOREMAN_CONTEXT_PRUNE_HANDOFFS` | true | `false` mantém o texto de handoffs antigos de `foreman_delegate` no contexto (por padrão é trocado por um ponteiro para o json da execução; o turno mais recente é sempre mantido por inteiro). |
 | `FOREMAN_CONTEXT_DEBUG` | desligada | `1` registra no stderr as contagens antes/depois/podadas. |
 | `FOREMAN_PRIMARY_MODEL` / `FOREMAN_FALLBACK_MODEL` | `claude-sonnet-4-5` / `gpt-4o-mini` | Ids de modelo do `foreman/hybrid`. Veja "Fallback de modelo". |
 | `FOREMAN_PI_SUBAGENT`, `FOREMAN_PI_ROLE` | definidas pelo spawner | Marcam um processo de worker e seu papel. Não devem ser definidas à mão. |

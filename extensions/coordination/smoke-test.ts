@@ -18,7 +18,7 @@ import { t } from "../../lib/i18n.ts";
 import { MODE_EVENT } from "../../lib/mode.ts";
 import { ROLES as SHARED_ROLES } from "../../lib/roles.ts";
 import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, createHealthWatcher, renderReport, renderStuckNotice, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
-import extension, { buildDetails, callText, registerCoordination } from "./index.ts";
+import extension, { buildDetails, callText, delegateResultText, registerCoordination } from "./index.ts";
 import {
 	createCoordinator,
 	finalReport,
@@ -433,6 +433,8 @@ async function main() {
 		check("renderCall hides plan_slug collapsed, shows expanded", !/my-plan/.test(callText(a, false, th)) && /my-plan/.test(callText(a, true, th)));
 		const det: any = buildDetails({ task_id: "t1-qa", state: "running", ack: "x", run_id: "r" } as any, a);
 		check("result details include role, plan_step, plan_slug", det.role === "qa" && det.plan_step === 7 && det.plan_slug === "my-plan" && det.task_id === "t1-qa");
+		const resTxt = JSON.parse(delegateResultText({ task_id: "t1-qa", state: "running", ack: "x", run_id: "r9" } as any));
+		check("delegate result text includes run_id", resTxt.run_id === "r9" && resTxt.task_id === "t1-qa" && resTxt.state === "running");
 		check("renderCall via tool def works", /step 7/.test(orch.tools[0].renderCall(a, th, { expanded: false }).render(200).join("\n")));
 		check("mode on (event) + unknown role -> execute throws Unknown role", /Unknown role/.test(err));
 		for (const h of orch.handlers.agent_settled ?? []) await h({ type: "agent_settled", aborted: false }, ctx);

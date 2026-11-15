@@ -79,6 +79,11 @@ export function buildDetails(
 	return { ...ack, role: params.role as string, plan_step: params.plan_step, plan_slug: params.plan_slug };
 }
 
+/** Tool result text for a delegate ack; carries run_id so context pruning never depends on `details`. */
+export function delegateResultText(ack: DelegateAck): string {
+	return JSON.stringify({ task_id: ack.task_id, run_id: ack.run_id, state: ack.state, ack: ack.ack });
+}
+
 /** Plain-text-with-theme rendering of a call; exported for the smoke test. */
 export function callText(
 	args: { role?: unknown; plan_step?: unknown; plan_slug?: unknown; handoff_prompt?: unknown },
@@ -220,7 +225,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 			};
 			const ack = get(ctx.cwd).delegate({ ...params, role: params.role as string }, defaults);
 			const details = buildDetails(ack, params);
-			return { content: [{ type: "text", text: JSON.stringify({ task_id: ack.task_id, state: ack.state, ack: ack.ack }) }], details };
+			return { content: [{ type: "text", text: delegateResultText(ack) }], details };
 		},
 
 		renderCall(args, theme, context) {
