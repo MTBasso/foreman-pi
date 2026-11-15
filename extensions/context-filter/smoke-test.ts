@@ -3,6 +3,7 @@
  * handler against a fake ExtensionAPI). Run: npx tsx extensions/context-filter/smoke-test.ts
  */
 import { buildRunState } from "./compaction.ts";
+import { formatBlock } from "../coordination/coordinator.ts";
 import extension, { pruneHandoffs, pruneMessages } from "./index.ts";
 
 let pass = 0;
@@ -61,6 +62,15 @@ const build = (): any[] => [
 const text = (m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));
 const stubOf = (arr: any[]) => arr.find((m) => m.customType === "foreman-context-pruned");
 const allText = (arr: any[]) => arr.map(text).join("\n");
+
+// report size hint: the extra `report: N lines` block line must not change pruning
+{
+	const withReport = (n: N) => ({ ...notif([n]), content: formatBlock({ ...n, status: n.status as any, reportLines: 42 }) });
+	const input: any[] = [system, user, asst, withReport(note("t1-qa", "qa")), withReport(note("t2-qa", "qa")), asst2];
+	check("fixture block carries report: 42 lines", text(input[3]).includes("report: 42 lines"));
+	const out = pruneMessages(input, { keepPerRole: 1 });
+	check("context pruning unaffected by the new line", !!stubOf(out) && text(stubOf(out)).includes(".foreman/runs/r1/t1-qa.md") && !out.some((m) => text(m).includes("summary of t1-qa")) && out.some((m) => text(m).includes("t2-qa") && text(m).includes("report: 42 lines")));
+}
 
 // keep=1
 {

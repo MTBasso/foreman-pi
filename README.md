@@ -77,6 +77,7 @@ status: completed        # completed | failed | blocked
 plan-step: 2             # or -
 summary: <first ~400 chars of the worker's report>
 output: .foreman/runs/<run-id>/t1-planner.md
+report: 42 lines         # size of the output file, so you can decide how much to read
 </task-notification>
 ```
 

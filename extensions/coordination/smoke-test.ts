@@ -1311,6 +1311,50 @@ async function main() {
 		}
 	}
 
+	// Step 8 (A8): report size hint.
+	{
+		const lineCount = (f: string) => { const t = readFileSync(f, "utf8"); return t === "" ? 0 : t.replace(/\n$/, "").split("\n").length; };
+		{
+			const h = harness();
+			const a = h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			h.finish(a.task_id, ok("line one\nline two\nline three"));
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			const outFile = join(h.root, n.output);
+			check("completed notification has report: N lines equal to the output file", n.reportLines === lineCount(outFile) && n.reportLines === 3 && h.sent[0].message.content.includes("report: 3 lines"));
+			check("report line sits right after output:", new RegExp(`output: ${n.output.replace(/[.]/g, "\\.")}\\nreport: 3 lines\\n`).test(h.sent[0].message.content));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			const a = h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			h.finish(a.task_id, { code: 2, signal: null, messages: [assistant("partial work")], stderr: "boom" });
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			check("failed body is counted", n.status === "failed" && n.reportLines === lineCount(join(h.root, n.output)) && n.reportLines > 1);
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			const oldRun = "old-run";
+			const dir = join(h.root, ".foreman/runs", oldRun);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "t1-qa.md"), "Recovered a\nRecovered b\n");
+			writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\nstub\n");
+			const entries = [1, 2, 3].map((i) => ({ runId: oldRun, taskId: `t${i}-qa`, role: "qa", state: "running", planStep: i, output: `.foreman/runs/${oldRun}/t${i}-qa.md` }));
+			h.coord.recover(entries);
+			await h.coord.whenIdle();
+			const ns = h.sent[0].message.details.notifications as any[];
+			check("recovered notification counts an existing report, none for a stub or missing file", ns.find((n) => n.taskId === "t1-qa")?.reportLines === 2 && ns.find((n) => n.taskId === "t3-qa")?.reportLines === undefined && ns.find((n) => n.taskId === "t2-qa")?.reportLines === undefined);
+			h.cleanup();
+		}
+		{
+			const base = { taskId: "t1-qa", role: "qa", status: "completed" as const, summary: "s", output: ".foreman/runs/r/t1-qa.md" };
+			check("formatBlock omits the line when unknown", !formatBlock(base).includes("report:"));
+			check("formatBlock prints report line when known", formatBlock({ ...base, reportLines: 7 }).includes("output: .foreman/runs/r/t1-qa.md\nreport: 7 lines\n"));
+		}
+	}
+
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;
 	if (savedModeEnv !== undefined) process.env.FOREMAN_PI_MODE = savedModeEnv;
 

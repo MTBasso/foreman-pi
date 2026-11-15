@@ -85,6 +85,8 @@ export interface Notification {
 	summary: string;
 	/** Path relative to the project root. */
 	output: string;
+	/** Lines in the output file (report body); absent when unknown. */
+	reportLines?: number;
 	/** From the worker's report block; absent when the contract was not met. */
 	files?: string[];
 	rulings?: string[];
@@ -405,6 +407,11 @@ export function parseFinalBlock(report: string): ParsedReport {
 	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", guardDenied: [], rendered: "", contract };
 }
 
+/** Lines in a report body: a trailing newline does not add one; empty is 0. */
+export function countLines(text: string): number {
+	return text === "" ? 0 : text.replace(/\n$/, "").split("\n").length;
+}
+
 export function formatBlock(n: Notification): string {
 	return [
 		"<task-notification>",
@@ -414,6 +421,7 @@ export function formatBlock(n: Notification): string {
 		`plan-step: ${n.planStep ?? "-"}`,
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
+		...(n.reportLines !== undefined ? [`report: ${n.reportLines} lines`] : []),
 		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${capGuardDenied(n.guardDenied)}`] : []),
 		...(n.partial !== undefined ? [`partial: ${n.partial} changed paths`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
@@ -764,8 +772,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		} else {
 			body = `${report}\n`;
 		}
+		let reportLines: number | undefined;
 		try {
 			writeFileSync(join(deps.root, outputRel(t.taskId)), body);
+			reportLines = countLines(body);
 		} catch {
 			// Output file is best effort; the notification still goes out.
 		}
@@ -805,6 +815,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			planSlug: t.planSlug,
 			summary,
 			output: outputRel(t.taskId),
+			...(reportLines !== undefined ? { reportLines } : {}),
 			...contractInfo,
 		});
 		scheduleFlush();
@@ -1115,6 +1126,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			let status: TaskStatus = "failed";
 			let summary = ORPHAN_SUMMARY;
 			let contractInfo: Partial<Notification> = {};
+			let reportLines: number | undefined;
 			if (existsSync(outputAbs)) {
 				let report = "";
 				try {
@@ -1129,6 +1141,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					// no meta
 				}
 				if (report.trim() && !isStubReport(e.taskId, report)) {
+					reportLines = countLines(report);
 					const isFailed = metaStatus === "failed" || report.startsWith(`# ${e.taskId} FAILED`);
 					const body = report.replace(/^# .* FAILED\n+/, "");
 					const parsed = parseFinalBlock(body);
@@ -1163,6 +1176,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				planSlug: e.planSlug,
 				summary,
 				output: outputRelPath,
+				...(reportLines !== undefined ? { reportLines } : {}),
 				...contractInfo,
 				...(partial !== undefined ? { partial } : {}),
 			});
