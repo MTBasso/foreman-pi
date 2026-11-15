@@ -945,6 +945,41 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		blocked(bash("reviewer", `python3 -c "import os; os.system('ls')"`)) && blocked(bash("reviewer", `python3 -c "__import__('os')"`)));
 }
 
+// --- nested worktrees: the innermost worktree decides ------------------------------------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: repo, stdio: "ignore" });
+	const wa = path.join(repo, ".worktrees", "a");
+	const wb = path.join(repo, ".worktrees", "b");
+	try { g("worktree", "add", "-q", wa, "-b", "nest-a"); g("worktree", "add", "-q", wb, "-b", "nest-b"); } catch { /* checked below */ }
+	check("fixture: nested worktrees exist", fs.existsSync(wa) && fs.existsSync(wb));
+	const fromMain = (role: string, cmd: string) => checkBash(role, repo, cmd, opts);
+	const fromA = (role: string, p: string) => checkWrite(role, wa, p, opts);
+	const fromAB = (role: string, cmd: string) => checkBash(role, wa, cmd, opts);
+
+	check("qa may write <root>/.worktrees/a/.foreman/x from the main root",
+		!blocked(write("qa", `${wa}/.foreman/x`)) && !blocked(write("qa", ".worktrees/a/.foreman/x")) &&
+		!blocked(fromMain("qa", `echo x > ${wa}/.foreman/x.log`)) && !blocked(fromMain("qa", `mkdir -p .worktrees/a/.foreman/qa-logs`)));
+	check("qa may not write <root>/.worktrees/a/src/x",
+		blocked(write("qa", `${wa}/src/x`)) && blocked(write("qa", ".worktrees/a/src/x")) && blocked(write("qa", `${wa}/x.txt`)) && blocked(write("qa", wa)) &&
+		blocked(fromMain("qa", `echo x > ${wa}/src/x`)) && blocked(write("qa", `${wa}/.foreman-x/a`)));
+	check("from root a, qa may write ../b/.foreman/x when b is nested under main (innermost wins)",
+		!blocked(fromA("qa", "../b/.foreman/x")) && !blocked(fromA("qa", `${wb}/.foreman/x`)) && !blocked(fromAB("qa", "echo x > ../b/.foreman/x")) &&
+		blocked(fromA("qa", "../b/src/x")) && blocked(fromA("qa", "../b/x.txt")) && blocked(fromAB("qa", "echo x > ../b/src/x")));
+	check("shipper same as qa",
+		!blocked(write("shipper", `${wa}/.foreman/x`)) && !blocked(fromA("shipper", "../b/.foreman/x")) &&
+		blocked(write("shipper", `${wa}/src/x`)) && blocked(fromA("shipper", "../b/src/x")));
+	check("nested worktree .git and .env still denied for dev roles",
+		DEV.every((r) => blocked(write(r, `${wa}/.git`)) && blocked(write(r, `${wa}/.env`)) && blocked(fromA(r, "../b/.git")) && blocked(fromA(r, "../b/.env")) && blocked(fromA(r, "../b/.env.local")) &&
+			!blocked(fromA(r, "../b/.env.example")) && !blocked(fromA(r, "../b/src/x.ts"))));
+	check(".foreman/../src through a nested worktree denied",
+		blocked(write("qa", `${wa}/.foreman/../src/x`)) && blocked(fromA("qa", "../b/.foreman/../src/x")) && blocked(fromAB("qa", "echo x > ../b/.foreman/../src/x")) &&
+		blocked(fromMain("shipper", `echo x > ${wa}/.foreman/../src/x`)));
+	check("a nested .foreman symlink escaping to src is denied",
+		(() => { fs.mkdirSync(`${wa}/.foreman`, { recursive: true }); fs.mkdirSync(`${wa}/src`, { recursive: true }); fs.symlinkSync(`${wa}/src`, `${wa}/.foreman/tosrc`); return blocked(write("qa", `${wa}/.foreman/tosrc/f`)); })());
+	check("read-only roles may not write a nested worktree .foreman", blocked(write("reviewer", `${wa}/.foreman/x`)) && blocked(write("planner", `${wa}/.foreman/x`)));
+}
+
 fs.rmSync(base, { recursive: true, force: true });
 console.log(failures === 0 ? `All ${total} worker-guard checks passed.` : `${failures} of ${total} worker-guard check(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

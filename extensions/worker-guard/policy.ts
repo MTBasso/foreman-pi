@@ -172,6 +172,13 @@ function siblingWorktrees(root: string): string[] {
 	}
 }
 
+/** The innermost (longest path) other worktree containing `abs`; nested worktrees make several contain it. */
+function owningWorktree(root: string, abs: string): string | undefined {
+	let best: string | undefined;
+	for (const w of siblingWorktrees(root)) if (inside(w, abs) && (best === undefined || w.length > best.length)) best = w;
+	return best;
+}
+
 /** Why `abs` may not be written by this role, or undefined when it may. */
 function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: boolean): string | undefined {
 	if (abs === null) return `the path "${shown}" could not be resolved (dangling symlink, unreadable, or the working directory is unknown after a "cd" that cannot be resolved)`;
@@ -190,9 +197,10 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 			if (segs[0] === ".foreman") return undefined;
 			// The .foreman directory of a linked worktree of this repo (plan worktree) is scratch space too.
 			// `abs` is already resolved (`..` popped, symlinks followed), so `.foreman/../src` cannot match here.
-			if (rel === null) {
-				const wt = siblingWorktrees(ctx.root).find((w) => inside(w, abs));
-				if (wt && path.relative(wt, abs).split(path.sep)[0] === ".foreman") return undefined;
+			// A worktree nested inside the root (rel !== null) counts only when it lies strictly below the root.
+			{
+				const wt = owningWorktree(ctx.root, abs);
+				if (wt && (rel === null || inside(ctx.root, wt, true)) && path.relative(wt, abs).split(path.sep)[0] === ".foreman") return undefined;
 			}
 			if (ctx.kind === "scoped" && rel === "FOREMAN_AUDIT.md") return undefined;
 			const allowed = ctx.kind === "scoped" ? ".foreman/ and FOREMAN_AUDIT.md" : ".foreman/";
@@ -202,7 +210,7 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 			if (rel === null) {
 				if (allowTmp && inside(ctx.tmp, abs, true)) return undefined;
 				// A linked worktree of this same repo is part of the project (plan-step-builder creates one in step 0).
-				const wt = siblingWorktrees(ctx.root).find((w) => inside(w, abs));
+				const wt = owningWorktree(ctx.root, abs);
 				if (wt) {
 					const wsegs = path.relative(wt, abs).split(path.sep);
 					if (wsegs.includes(".git")) return `writing into .git is not allowed ("${shown}")`;
