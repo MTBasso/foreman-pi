@@ -237,6 +237,36 @@ async function main() {
 		}
 	}
 
+	// D4: the reminder is injected once per session.
+	{
+		const reminderEntry = { type: "custom_message", customType: "foreman-session-reminder", content: "x", display: false };
+		const otherEntry = { type: "custom_message", customType: "something-else", content: "x", display: false };
+		const run = async (reason: string, branch: any[], tools: { name: string }[]) => {
+			const s = setup(tools);
+			await extension(s.api);
+			await s.handlers.session_start({ reason }, ctxFor({ branch, cwd: "/tmp" }).ctx);
+			return (await remind(s.handlers, {})) as string | undefined;
+		};
+		const withTool = [{ name: "foreman_delegate" }];
+		const got = await run("resume", [reminderEntry], withTool);
+		check("resume into a session that has the reminder injects nothing", got === undefined, String(got));
+		const warned = (await run("resume", [reminderEntry], [{ name: "read" }])) ?? "";
+		check("resume into a session that has the reminder injects only the delegate warning", /foreman_delegate tool is not loaded/.test(warned) && !warned.includes("This project has the foreman plugin"), warned);
+		const old = (await run("resume", [otherEntry], withTool)) ?? "";
+		check("resume of an old session without a reminder gets BASE_REMINDER and no git block", old.includes("This project has the foreman plugin") && !/PRE-GATHERED ORIENTATION/.test(old), old);
+		for (const reason of ["fork", "reload"]) {
+			check(`${reason} with the reminder present injects nothing`, (await run(reason, [reminderEntry], withTool)) === undefined);
+			const r = (await run(reason, [], withTool)) ?? "";
+			check(`${reason} without a reminder gets BASE_REMINDER and no git block`, r.includes("This project has the foreman plugin") && !/PRE-GATHERED ORIENTATION/.test(r));
+		}
+		for (const reason of ["startup", "new"]) {
+			const r = (await run(reason, [reminderEntry], withTool)) ?? "";
+			check(`${reason} still gets the full orientation`, /PRE-GATHERED ORIENTATION/.test(r) && r.includes("This project has the foreman plugin"));
+		}
+		const base = (await run("startup", [], withTool)) ?? "";
+		check("BASE_REMINDER names /foreman resume", base.includes("/foreman resume"));
+	}
+
 	for (const k of ENV_KEYS) if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k]; else delete process.env[k];
 	if (failures) process.exit(1);
 	console.log("\nall checks passed");
