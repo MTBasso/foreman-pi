@@ -10,6 +10,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAgents } from "./agents.ts";
+import { parseStatusSection, parseStepChecks, parseTouches, parseStepTitle } from "./plan-steps.ts";
 
 const EXPECTED = [
 	"backend-dev",
@@ -57,6 +58,34 @@ check(
 	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");
 	const tools = /^tools:\s*(.*)$/m.exec(planner)?.[1]?.split(",").map((t) => t.trim()).join(",");
 	check("planner tools include edit and still exclude nothing else changed", tools === "read,grep,find,bash,write,edit", String(tools));
+}
+
+{
+	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");
+	const fmt = /```markdown\n([\s\S]*?)\n```/.exec(planner)?.[1] ?? "";
+	check("planner.md has Seams, Out of scope and Status in its format", /Seams:/.test(fmt) && /^## Out of scope/m.test(fmt) && /^## Status/m.test(fmt) && /- Step N: not started/.test(fmt));
+	check("planner step line uses Touches and Checks", /\(Touches:/.test(fmt) && !/\(File:/.test(fmt) && /^\s*- Checks:/m.test(fmt) && /^\s*- Renders:/m.test(fmt));
+	const fixture = fmt
+		.replace(/<step name>/, "Do thing")
+		.replace(/\(Touches:[^)]*\)/, "(Touches: `a.ts`, `b.ts`)")
+		.replace(/^(\s*- Checks:).*$/m, "$1 `npm run test:a`, `npm test`")
+		.replace(/^(\s*- Renders:).*$/m, "$1 no")
+		.replace(/- Step N: not started/, "- Step 1: not started");
+	const st = parseStatusSection(fixture);
+	const ck = parseStepChecks(fixture, 1);
+	check(
+		"a plan following the template parses: title, touches, status, checks",
+		parseStepTitle(fixture, 1) === "Do thing" &&
+			JSON.stringify(parseTouches(fixture, 1)) === JSON.stringify(["a.ts", "b.ts"]) &&
+			st?.get(1)?.state === "not started" &&
+			JSON.stringify(ck?.npmScripts) === JSON.stringify(["test:a", "test"]),
+		`${parseStepTitle(fixture, 1)} ${JSON.stringify(parseTouches(fixture, 1))} ${JSON.stringify([...(st ?? [])])} ${JSON.stringify(ck)}`,
+	);
+	const fm = /^---\n([\s\S]*?)\n---/.exec(planner)?.[1] ?? "";
+	check(
+		"planner frontmatter unchanged",
+		fm === "name: planner\ndescription: Dispatched via `foreman_delegate`. Receives grilled requirements and project context from the foreman session and produces an implementation plan only. Never writes or edits code.\ntools: read, grep, find, bash, write, edit\ntier: strong\nthinking: high",
+	);
 }
 
 try {

@@ -37,23 +37,35 @@ never have to guess, vague enough that you're not writing the code yourself:
 - <change: file path + what and why>
 
 ## Steps
-1. **<step name>** (File: `path/to/file`)
+1. **<step name>** (Touches: `path/to/file`, `other/file`)
    - Action: <specific action>
    - Why: <reason>
    - Dependencies: none / requires step N
    - Risk: low / medium / high
+   - Checks: `npm run <script>`, named tests the step adds
    - Renders: yes / no (yes = the step changes something a user sees; the
      builder must capture a screenshot or report `unrendered`)
 
 ## Testing strategy
 - <what frontend-dev/backend-dev should verify, and how, before reporting done>
+- Seams: prefer existing seams, the highest possible, ideally one.
 
 ## Risks & open questions
 - **<risk>** — <mitigation, or why it's being flagged instead of guessed>
 
 ## Success criteria
 - [ ] <checkable outcome>
+
+## Status
+- Step N: not started
+
+## Out of scope
+- <what this plan deliberately does not do>
 ```
+
+The step line is `N. **Title** (Touches: ...)`, with `- Checks:` and
+`- Renders:` bullets: tooling reads exactly that shape. Add one `Step N: not
+started` line under `## Status` for every step.
 
 ## Sizing large features
 
@@ -84,3 +96,7 @@ A plan that has any of these isn't done yet:
 - If you can't find enough in the repo to plan a part of the brief after two
   real attempts (different search terms, different files), say what's missing
   and report `Status: blocked` rather than inventing structure to fill the gap.
+- Pre-flight: for each `Renders: yes` step, name the capture tool and confirm
+  it exists (`command -v <tool>`, `ls node_modules/.bin`). For each `Checks`
+  entry, confirm its runner exists (the npm script in `package.json`, the
+  test file on disk). List every gap under Risks.

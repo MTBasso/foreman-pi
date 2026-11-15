@@ -167,4 +167,7 @@ check("plan-runner still has Build instructions and Language", /Build instructio
 const builderAgent = readFileSync(new URL("agents/plan-step-builder.md", root), "utf8");
 check("builder agent mentions Status merged and baseline unavailable", /## Status/.test(builderAgent) && /`merged`/.test(builderAgent) && /baseline unavailable/.test(builderAgent));
 check("never lists unchanged (plan-runner)", /Never build or edit a step yourself/.test(pr) && /Never dispatch `shipper` without a `reviewer` pass/.test(pr) && /Never dispatch a step without `plan_slug` and `plan_step`/.test(pr));
+// --- Phase C step 16: planner pre-flight ------------------------------------
+const plannerMd = readFileSync(new URL("agents/planner.md", root), "utf8");
+check("planner: pre-flight names capture tool and runner existence, gaps under Risks", /Renders: yes/.test(plannerMd) && /capture tool/.test(plannerMd) && /command -v/.test(plannerMd) && /node_modules\/\.bin/.test(plannerMd) && /Risks/.test(plannerMd) && /Seams: prefer existing seams/.test(plannerMd));
 if (failures) process.exit(1);
