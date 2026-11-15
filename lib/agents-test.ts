@@ -5,6 +5,7 @@
  * Spawns no `pi` process. Uses temp dirs for PI_CODING_AGENT_DIR and cwd so the
  * real user config and any enclosing project's .pi/agents never leak in.
  */
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -40,6 +41,17 @@ check(
 	"worker-common.md documents Guard-denied",
 	/Guard-denied:/.test(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "references", "worker-common.md"), "utf8")),
 );
+
+{
+	const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+	for (const n of ["qa", "qa-bugfix", "plan-step-builder"]) {
+		const t = fs.readFileSync(path.join(dir, "agents", `${n}.md`), "utf8");
+		check(`${n} references run-suites`, /run-suites\.mjs/.test(t));
+	}
+	const now = fs.readFileSync(path.join(dir, "references", "worker-common.md"), "utf8").split("\n").length;
+	const before = execFileSync("git", ["show", "4f44754:references/worker-common.md"], { cwd: dir, encoding: "utf8" }).split("\n").length;
+	check("worker-common.md grew by at most 6 lines", now - before <= 6, `${before} -> ${now}`);
+}
 
 {
 	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");

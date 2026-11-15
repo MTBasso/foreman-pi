@@ -67,6 +67,7 @@ for (const f of allProse.filter((x) => !x.startsWith("agents/"))) {
 }
 const common = readFileSync(new URL("references/worker-common.md", root), "utf8");
 check("worker-common: contract markers", /--- foreman-report ---/.test(common) && /--- end foreman-report ---/.test(common));
+check("worker-common names run-suites with a literal command", /node \{\{PACKAGE_ROOT\}\}\/scripts\/run-suites\.mjs .*(npm|node|py):/.test(common) && /--pyright/.test(common) && /qa-logs/.test(common));
 check("worker-common: package root + language rule + no delegation", /Package root: \{\{PACKAGE_ROOT\}\}/.test(common) && /User language:/.test(common) && /cannot delegate/.test(common));
 check("handoff template has Build instructions and names the coordinator footer", (() => { const t = readFileSync(new URL("templates/handoff-prompt.md", root), "utf8"); return /Build instructions:/.test(t) && /footer/.test(t) && !/^## User language/m.test(t); })());
 check("plan-runner §2 names Build instructions and the footer", /Build instructions:/.test(pr) && /footer/.test(pr));

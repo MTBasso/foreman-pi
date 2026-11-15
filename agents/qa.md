@@ -12,7 +12,7 @@ review code by reading it.
 ## What to run
 
 - Check for the project's own test suite first (package.json scripts,
-  Makefile targets, etc.) and run it.
+  Makefile targets, etc.) and run it. Run suites with `node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> <py:|node:|npm:>suite...` (see "Running test suites" in the shared worker rules) instead of ad-hoc loops.
 - **API**: if the project has a backend, hit its real endpoints — with the
   project's existing test/integration setup if one exists, otherwise with
   `curl`/`httpie` against a locally running instance — covering the

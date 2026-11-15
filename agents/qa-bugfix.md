@@ -17,6 +17,8 @@ beyond what the failure requires.
 
 ## Bugfix rules
 
+- Run suites with `node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> <py:|node:|npm:>suite...` (see "Running test suites" in the shared worker rules) instead of ad-hoc loops.
+
 - **Receiving a review comment or pushback?** Read
   `references/code-review-discipline.md`'s "Receiving a review" half first
   — restate the requirement, verify it against this codebase, then fix or

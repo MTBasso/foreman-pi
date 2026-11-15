@@ -38,5 +38,6 @@ themselves say to stop for.
 - Never report a step checked or merged unless you actually ran what proves it.
 - Stuck twice is exactly what a "waiting on you" stop is for: report
   `Status: blocked` rather than forcing it through alone.
+- Run suites with `node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> <py:|node:|npm:>suite...` (see "Running test suites" in the shared worker rules) instead of ad-hoc loops.
 - No destructive commands beyond what the build instructions themselves call
   for, without explicit authorization.

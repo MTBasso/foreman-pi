@@ -60,6 +60,12 @@ Compare failing test *names*, not counts. If the plan has a baseline file
 `node {{PACKAGE_ROOT}}/scripts/baseline-diff.mjs .foreman/baseline.txt < failing-names.txt`
 and report its `NEW:` and `FIXED:` lines verbatim. Never say "matches baseline" from a count.
 
+### Running test suites
+
+One literal command, no loops: `node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> py:a.py npm:test`
+(`py:`/`node:`/`npm:`; `--pyright <abs> --baseline FILE` for pyright). Read
+`.foreman/qa-logs/<suite>.log` only for a failing suite.
+
 ### You cannot delegate
 
 You are a worker running in your own process. You cannot dispatch other
