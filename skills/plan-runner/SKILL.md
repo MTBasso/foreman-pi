@@ -52,6 +52,14 @@ same mode and guardrail `foreman` uses, and only the user ends it, with
 the user to run `/foreman`, and never try `bash` or file edits to work around
 it.
 
+The `/plan-runner` command may append a preflight block gathered by the
+extension (do not re-run its probes). Read it once
+and tell the user in one short message what it found: `Renders: yes` steps
+that have no render tool (screenshots cannot be taken), npm scripts named in
+a step's Checks that do not exist, a missing `## Status`. Then continue; do
+not stop for it. Keep the affected steps in mind and pass them to the reviewer
+handoff as known gaps.
+
 ## 0.5. This plan's ledger (written by the extension, not by you)
 
 Conversation memory does not survive compaction. A session that loses its
@@ -87,6 +95,12 @@ section, step by step. Cross-check it against the ledger from §0.5 — the
 ledger is per-run bookkeeping, the plan's own Status section is the
 authoritative merged/not-started state; if they disagree, trust the plan
 file and note the mismatch in the ledger.
+
+The plan's `## Status` section is the source of truth. When the preflight says
+it is missing, dispatch one `plan-step-builder` with `plan_step: 0` and a
+three-line handoff: add a `## Status` section to the plan (`- Step N: not
+started` per step) and commit only the plan file. If that is rejected or
+blocks, ask the user to add the section.
 
 ## 2. Run steps, respecting dependency/wave order
 
@@ -151,6 +165,21 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
 - Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`, plus `workdir`. It is the only dispatch path (`subagent` is unavailable).
+
+Loop rules for each notification:
+
+- Read `output` only when the status is not `completed` or the summary leaves
+  a question; use `limit`, and let `report: N lines` decide how much.
+- An ack that says `Attempt N` is a stop sign: rule on it (skip, degrade,
+  change approach) per §2.5 or ask the user; never reword the handoff and
+  re-dispatch.
+- `verified: yes` on a completed step is the independent re-run of the step's
+  declared Checks. `verified: no` is not green; `verified: n/a` means nobody
+  re-ran them.
+- A step whose job is recording the test baseline gets one attempt. On
+  `blocked` or `failed`, record a ruling "baseline unavailable", mark the step
+  `decided` in Status, tell the user, and continue; later steps report failing
+  names without a baseline file.
 
 ### 2.5. Rulings, not stalls
 

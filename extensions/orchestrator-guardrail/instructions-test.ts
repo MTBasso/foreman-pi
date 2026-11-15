@@ -161,4 +161,10 @@ check("grilling-fallback.md exists and has the interview prompts", /edge cases/.
 check("skill loop mentions report:, Attempt and verified:", /report: N lines/.test(skill) && /Attempt N/.test(skill) && /verified: yes/.test(skill) && /verified: no/.test(skill));
 check("delegation spot-check rule counts verified: yes", /verified: yes/.test(delegationRef));
 check("optional-dependencies lists grilling", /`grilling`/.test(optDeps) && /`grill-me`/.test(optDeps));
+// --- Phase C step 15: plan-runner Status, preflight, baseline, Attempt ------
+check("plan-runner names ## Status, preflight, baseline unavailable, Attempt, report:, verified:", /## Status/.test(pr) && /preflight/.test(pr) && /baseline unavailable/.test(pr) && /Attempt N/.test(pr) && /report: N lines/.test(pr) && /verified: yes/.test(pr) && /verified: no/.test(pr) && /plan_step: 0/.test(pr));
+check("plan-runner still has Build instructions and Language", /Build instructions:/.test(pr) && /^## Language/m.test(pr));
+const builderAgent = readFileSync(new URL("agents/plan-step-builder.md", root), "utf8");
+check("builder agent mentions Status merged and baseline unavailable", /## Status/.test(builderAgent) && /`merged`/.test(builderAgent) && /baseline unavailable/.test(builderAgent));
+check("never lists unchanged (plan-runner)", /Never build or edit a step yourself/.test(pr) && /Never dispatch `shipper` without a `reviewer` pass/.test(pr) && /Never dispatch a step without `plan_slug` and `plan_step`/.test(pr));
 if (failures) process.exit(1);
