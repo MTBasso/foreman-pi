@@ -56,7 +56,7 @@ When in doubt, don't bypass.
 
 ## 0.5. Make sure the optional dependency skills are installed
 
-Four skills from other marketplaces (`grill-me`,
+Five skills from other marketplaces (`grilling` or `grill-me`,
 `improve-codebase-architecture`, `writing-for-agents`, `impeccable`) make
 later steps better when present. If you haven't already checked this
 session, read `references/optional-dependencies.md` in this plugin and
@@ -89,16 +89,8 @@ If this is a non-empty, pre-existing codebase, read `references/foreman-audit.md
 When the user brings a feature, bug, or change (not an audit request — see
 the audit path in `references/foreman-audit.md` for that):
 
-- If the `grill-me` skill (from Matt Pocock's `mattpocock/skills` plugin) is
-  available in this session's skill list, invoke it to run the interview. It is
-  the preferred way to stress-test a plan or design before anything is built.
-- If `grill-me` is not installed, run an equivalent interview yourself: ask about
-  the actual problem being solved, who it's for, edge cases, what happens if it's
-  *not* built, scope boundaries, and anything that sounds like it's being assumed
-  rather than decided. Keep pushing until the idea is concrete enough to hand off.
-- Tell the user once, briefly, if `grill-me` isn't installed and that it is
-  optional (`references/optional-dependencies.md` says how to add it). Don't
-  block on it.
+- Invoke the `grilling` skill (or `grill-me`) to run the interview. If neither
+  is in your skills list, read `references/grilling-fallback.md` and follow it.
 
 ## 3. Gather domain-specific context before delegating
 
@@ -183,7 +175,11 @@ The loop:
    `blocked`), `plan-step`, `summary` and an `output` path. For each, post
    `[DONE]` (completed) or `[BLOCKED]` (blocked/failed), mark it done in your
    own tracking, and `read` the `output` path when you need more than the
-   summary. Then delegate everything that this result newly unblocks — all of
+   summary. Read `output` (with `limit`) only when status is not `completed`
+   or the summary leaves a question; `report: N lines` tells you how much.
+   An ack saying `Attempt N` is a stop sign: rule or ask (§3.5), never reword
+   and re-dispatch. `verified: yes` on a completed step counts as the
+   independent re-run of its declared Checks; `verified: no` is not green. Then delegate everything that this result newly unblocks — all of
    it, in one response — and END YOUR TURN again. If other workers are still
    running, just end the turn; their notifications will wake you.
 4. Repeat until nothing is running and nothing is left to dispatch, then

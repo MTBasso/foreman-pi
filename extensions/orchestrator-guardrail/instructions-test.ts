@@ -153,4 +153,12 @@ check("no stray Portuguese in the new references", delegationRef !== "" && audit
 check("plan-runner flow: reviewer pass then shipper offer", /`reviewer`/.test(pr) && /review-handoff-prompt\.md/.test(pr) && /`shipper`/.test(pr));
 check("never lists forbid shipper without an approved review", /Never dispatch `shipper` without a `reviewer` pass/.test(skill) && /Never dispatch `shipper` without a `reviewer` pass/.test(pr));
 check("code-review-discipline names reviewer role and verdict", (() => { const t = readFileSync(new URL("references/code-review-discipline.md", root), "utf8"); return /`reviewer` role/.test(t) && /Verdict: changes-requested/.test(t) && /before `shipper`/.test(t); })());
+// --- Phase C step 14: grilling reuse and loop rules -------------------------
+const fallbackRef = readRef("grilling-fallback");
+const optDeps = readRef("optional-dependencies");
+check("skill §2 names grilling and the fallback reference", /`grilling`/.test(skill) && /grill-me/.test(skill) && /references\/grilling-fallback\.md/.test(skill));
+check("grilling-fallback.md exists and has the interview prompts", /edge cases/.test(fallbackRef) && /scope boundaries/.test(fallbackRef) && /actual problem/.test(fallbackRef));
+check("skill loop mentions report:, Attempt and verified:", /report: N lines/.test(skill) && /Attempt N/.test(skill) && /verified: yes/.test(skill) && /verified: no/.test(skill));
+check("delegation spot-check rule counts verified: yes", /verified: yes/.test(delegationRef));
+check("optional-dependencies lists grilling", /`grilling`/.test(optDeps) && /`grill-me`/.test(optDeps));
 if (failures) process.exit(1);

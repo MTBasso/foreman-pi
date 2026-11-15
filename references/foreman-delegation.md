@@ -52,6 +52,7 @@ have no `bash`, `write` or `edit` tool (the guardrail strips and blocks them, se
 `extensions/orchestrator-guardrail/`); inspect with `read`/`grep`/`find`/`ls` and
 delegate every command via `foreman_delegate` (e.g. role `qa`), then read its
 notification when it wakes you.
+A completed plan-step notification with `verified: yes` already is that independent re-run of the step's declared Checks; `verified: no` is not green, and `n/a` or no line means spot-check as above.
 The spot-check is itself a delegation: dispatch it, end your turn, and relay
 the delegate's `[DONE]` only after the check's own notification comes back green. This is a spot-check, not a full
 re-audit, but a self-reported
