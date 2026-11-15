@@ -170,4 +170,9 @@ check("never lists unchanged (plan-runner)", /Never build or edit a step yoursel
 // --- Phase C step 16: planner pre-flight ------------------------------------
 const plannerMd = readFileSync(new URL("agents/planner.md", root), "utf8");
 check("planner: pre-flight names capture tool and runner existence, gaps under Risks", /Renders: yes/.test(plannerMd) && /capture tool/.test(plannerMd) && /command -v/.test(plannerMd) && /node_modules\/\.bin/.test(plannerMd) && /Risks/.test(plannerMd) && /Seams: prefer existing seams/.test(plannerMd));
+// --- Phase C step 17: reviewer QA coverage ----------------------------------
+check("review template has QA covered up to", /QA covered up to: <sha or none>/.test(reviewTpl));
+check("reviewer.md names qa-needed and the diff --stat rule", /qa-needed: <QA_SHA>\.\.<HEAD_SHA>/.test(reviewer) && /git diff --stat <QA_SHA>\.\.HEAD/.test(reviewer) && /QA covered up to/.test(reviewer));
+check("skills and delegation reference route qa-needed to qa", [pr, delegationRef].every((t) => /qa-needed/.test(t) && /`qa`/.test(t)));
+check("reviewer stays read-only (tools line unchanged)", /^tools: read, grep, find, bash$/m.test(reviewer) && /writes? no files/.test(reviewer));
 if (failures) process.exit(1);

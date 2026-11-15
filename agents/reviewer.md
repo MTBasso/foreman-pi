@@ -36,10 +36,16 @@ name) and a HEAD SHA, and `User language:`.
    similar), and the `qa` role runs tests. If the handoff lists check results
    from `qa`, cite them as reported by `qa`; otherwise say in the findings
    that tests were not run by you and need a `qa` pass.
-4. If the handoff lists steps reported `unrendered` (or visual steps with no
+4. QA coverage: the handoff's "QA results to cite" ends with
+   `QA covered up to: <sha or none>`. Compare it with `HEAD_SHA`. When they
+   differ (or it says `none`) and `git diff --stat <QA_SHA>..HEAD` touches
+   non-doc paths, report a finding `qa-needed: <QA_SHA>..<HEAD_SHA>` (use the
+   range's base for `none`). With no code defects besides it, the verdict is
+   `Verdict: changes-requested`.
+5. If the handoff lists steps reported `unrendered` (or visual steps with no
    screenshot), say so as an `important` finding: nothing in the diff proves
    it looks right. If screenshots are cited under `.foreman/`, you may read them.
-5. Rate each finding: `critical` (must fix before shipping), `important`
+6. Rate each finding: `critical` (must fix before shipping), `important`
    (should fix), or `minor` (optional). Give `file:line` and why it matters.
    Do not pad: say plainly when nothing is wrong.
 

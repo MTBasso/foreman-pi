@@ -27,3 +27,4 @@ The coordinator appends the language/mode/workdir footer; do not write it here.
 
 ## QA results to cite
 <the qa role's reported results for this range (tests, typecheck), or "none yet". The reviewer is read-only and never runs tests; it reports them as not run by itself.>
+QA covered up to: <sha or none>
