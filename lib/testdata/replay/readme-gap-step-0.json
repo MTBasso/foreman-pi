@@ -1,0 +1,26 @@
+{
+  "source": {
+    "run_id": "20261112-115613-08kici",
+    "task_id": "t3-plan-step-builder",
+    "usageSource": "events"
+  },
+  "role": "plan-step-builder",
+  "plan_step": 0,
+  "handoff_prompt": "# Handoff: Plan readme-gap, step 0 (worktree + baseline)\n\n## Role\nYou are the plan-step-builder agent. Do only this step. No feature code.\n\n## User language\nUser language: en.\n\n## Build instructions\nBuild instructions: none (follow the step's Touches and Checks in docs/plans/readme-gap.md, step 0).\n\n## Grilled requirement\n1. The user approved an isolated worktree. From /home/null/Code/directAds run: `git worktree add ../directAds-readme-gap -b feat/readme-gap` (from master). Do not touch the untracked files in the main checkout.\n2. Inside the new worktree, follow docs/plans/readme-gap.md \"Phase 0: baseline\": run pyright and every existing suite (`.venv/bin/python -m app.services.test_<name>_mock`; the .venv lives in the main checkout at /home/null/Code/directAds/.venv, so use that interpreter by absolute path, with cwd in the worktree). Make sure docs/plans/readme-gap.md is present in the worktree (copy it from the main checkout if untracked, and commit it with message \"docs(plan): readme-gap plan\"). Write failing test names, one per line, to .foreman/baseline.txt in the worktree (gitignore-safe; do not commit it).\n\n## Decided context (do not re-ask these)\nPython/FastAPI, SQLite, fish shell, i18n en+pt-BR. Never write secrets to disk. Do not copy .env into the worktree's tracked files.\n\n## Deliverable\nReport the absolute worktree path, branch name, HEAD sha, and the baseline results (which suites/pyright fail, if any). Status: completed when the worktree exists and baseline.txt is written.\n\n## Constraints\nNo changes to master. No push.\n\n## About orchestrator mode\nOrchestrator mode does not apply to you; proceed normally with your own write/bash access.",
+  "baseline": {
+    "handoffTokens": 420,
+    "turns": 4,
+    "toolCalls": 3,
+    "input": 10,
+    "output": 1105,
+    "cacheRead": 58079,
+    "cacheWrite": 20506,
+    "cost": 0.0681429,
+    "guardDenials": {
+      "total": 1,
+      "byReason": {
+        "\"cp\": \"../directAds-readme-gap/docs/plans/\" resolves outside the repository (/home/null/Code/directAds-readme-gap/docs/p": 1
+      }
+    }
+  }
+}
