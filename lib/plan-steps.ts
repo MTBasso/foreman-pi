@@ -93,3 +93,89 @@ export function readOverlapsFor(root: string, slug: string | undefined, step: nu
 		return [];
 	}
 }
+
+/** docs/plans/<slug>.md text, same slug validation as readStepTitle. undefined on any failure. */
+export function readPlanText(root: string, slug: string | undefined): string | undefined {
+	if (!slug || /[\\/]|\.\./.test(slug)) return undefined;
+	try {
+		return fs.readFileSync(path.join(root, "docs", "plans", slug.endsWith(".md") ? slug : `${slug}.md`), "utf8");
+	} catch {
+		return undefined;
+	}
+}
+
+export interface StepStatus {
+	state: string;
+	note?: string;
+}
+
+/** Lines `- Step N: <state> (note)` under `## Status`. undefined when the heading is missing. */
+export function parseStatusSection(markdown: string): Map<number, StepStatus> | undefined {
+	const out = new Map<number, StepStatus>();
+	let found = false;
+	let inStatus = false;
+	for (const line of markdown.split("\n")) {
+		if (/^##\s/.test(line)) {
+			inStatus = /^##\s+Status\s*$/i.test(line);
+			if (inStatus) found = true;
+			continue;
+		}
+		if (!inStatus) continue;
+		const m = /^\s*-\s+Step\s+(\d+)\s*:\s*([^(]*?)\s*(?:\((.*)\))?\s*$/i.exec(line);
+		if (!m || !m[2]) continue;
+		const entry: StepStatus = { state: m[2].toLowerCase() };
+		if (m[3]?.trim()) entry.note = m[3].trim();
+		out.set(Number(m[1]), entry);
+	}
+	return found ? out : undefined;
+}
+
+/** Text of step `step`: from its `N. **` line up to the next numbered bold line or `## ` heading. */
+function stepBlock(markdown: string, step: number): string | undefined {
+	const lines = markdown.split("\n");
+	const head = new RegExp(`^\\s*${step}\\.\\s+\\*\\*`);
+	const start = lines.findIndex((l) => head.test(l));
+	if (start < 0) return undefined;
+	let end = lines.length;
+	for (let i = start + 1; i < lines.length; i++) {
+		if (/^\s*\d+\.\s+\*\*/.test(lines[i]) || /^##\s/.test(lines[i])) {
+			end = i;
+			break;
+		}
+	}
+	return lines.slice(start, end).join("\n");
+}
+
+export interface StepChecks {
+	npmScripts: string[];
+	other: string[];
+}
+
+/** Backticked spans of the step's `- Checks:` bullet: `npm run X` gives X, `npm test` gives `test`, the rest is `other`. */
+export function parseStepChecks(markdown: string, step: number): StepChecks | undefined {
+	const block = stepBlock(markdown, step);
+	if (block === undefined) return undefined;
+	const line = block.split("\n").find((l) => /^\s*-\s+Checks:/.test(l));
+	const out: StepChecks = { npmScripts: [], other: [] };
+	if (!line) return out;
+	for (const m of line.matchAll(/`([^`]+)`/g)) {
+		const span = m[1].trim();
+		const run = /^npm\s+run\s+([\w:.-]+)$/.exec(span);
+		if (run) out.npmScripts.push(run[1]);
+		else if (/^npm\s+test$/.test(span)) out.npmScripts.push("test");
+		else out.other.push(span);
+	}
+	return out;
+}
+
+/** Steps whose block carries `Renders: yes`. */
+export function parseRendersYes(markdown: string): number[] {
+	const out: number[] = [];
+	for (const m of markdown.matchAll(/^\s*(\d+)\.\s+\*\*/gm)) {
+		const n = Number(m[1]);
+		if (out.includes(n)) continue;
+		const block = stepBlock(markdown, n);
+		if (block && /^\s*-\s+Renders:\s*yes\b/im.test(block)) out.push(n);
+	}
+	return out;
+}

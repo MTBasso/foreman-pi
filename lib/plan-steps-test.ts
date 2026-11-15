@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { findParallelOverlaps, parseStepTitle, parseTouches, readOverlapsFor, readStepTitle, TITLE_MAX } from "./plan-steps.ts";
+import { findParallelOverlaps, parseRendersYes, parseStatusSection, parseStepChecks, parseStepTitle, parseTouches, readOverlapsFor, readPlanText, readStepTitle, TITLE_MAX } from "./plan-steps.ts";
 let failures = 0;
 const check = (n: string, ok: boolean) => { if (!ok) { failures++; console.log(`FAIL - ${n}`); } };
 const md = [
@@ -51,6 +51,43 @@ check("no Parallel section -> no overlaps", findParallelOverlaps(md).length === 
 fs.mkdirSync(path.join(root, "docs", "plans"), { recursive: true });
 fs.writeFileSync(path.join(root, "docs", "plans", "wave.md"), wave2);
 check("readOverlapsFor finds the other step, absent plan is empty", same(readOverlapsFor(root, "wave", 4).map((o) => o.other), [3]) && readOverlapsFor(root, "nope", 4).length === 0 && readOverlapsFor(root, "wave", 1).length === 0);
+
+// Step 6: Status, Checks, Renders parsers.
+const full = [
+	"## Steps",
+	"1. **One** (Touches: `a.ts`)",
+	"   - Checks: `npm run test:a`, `npm test`, named tests: `foo bar`, and `node x.mjs`",
+	"   - Renders: no",
+	"2. **Two** (Touches: `b.ts`)",
+	"   - Checks: `npm run test:b`",
+	"   - Renders: yes",
+	"3. **Three**",
+	"   - Renders: yes",
+	"## Status",
+	"",
+	"Intro prose.",
+	"",
+	"- Step 1: merged",
+	"- Step 2: skipped (moved to Phase C)",
+	"- Step 3: not started",
+	"- not a step line",
+	"## Out of scope",
+	"- Step 9: merged",
+].join("\n");
+const st = parseStatusSection(full);
+check("status section parsed with states and notes", !!st && st.get(1)?.state === "merged" && st.get(1)?.note === undefined && st.get(2)?.state === "skipped" && st.get(2)?.note === "moved to Phase C" && st.get(3)?.state === "not started" && st.size === 3);
+check("missing Status heading returns undefined", parseStatusSection(md) === undefined && parseStatusSection("") === undefined);
+const c1 = parseStepChecks(full, 1);
+check("checks bullet yields npm scripts and others", !!c1 && same(c1.npmScripts, ["test:a", "test"]) && same(c1.other, ["foo bar", "node x.mjs"]));
+const c2 = parseStepChecks(full, 2);
+check("Checks of one step do not leak into the next", !!c2 && same(c2.npmScripts, ["test:b"]) && c2.other.length === 0 && parseStepChecks(full, 3)?.npmScripts.length === 0 && parseStepChecks(full, 99) === undefined);
+check("Renders: yes steps listed", same(parseRendersYes(full), [2, 3]) && parseRendersYes("").length === 0);
+fs.writeFileSync(path.join(root, "docs", "plans", "full.md"), full);
+check("readPlanText reads the plan", readPlanText(root, "full") === full && readPlanText(root, "full.md") === full && readPlanText(root, "nope") === undefined);
+check("unsafe slug returns undefined", readPlanText(root, "../full") === undefined && readPlanText(root, "a/b") === undefined && readPlanText(root, undefined) === undefined);
+const repoPlan = fs.readFileSync(path.join(import.meta.dirname, "..", "docs", "plans", "reliability-phase-b.md"), "utf8");
+const bst = parseStatusSection(repoPlan);
+check("parsers run on docs/plans/reliability-phase-b.md and find its 12 steps and Status lines", !!bst && bst.size === 12 && bst.get(12)?.state === "skipped" && Array.from({ length: 12 }, (_, i) => i + 1).every((n) => parseStepTitle(repoPlan, n) && parseStepChecks(repoPlan, n)?.npmScripts.length) && parseRendersYes(repoPlan).length === 0);
 fs.rmSync(root, { recursive: true, force: true });
 if (failures) { console.log(`${failures} failure(s)`); process.exit(1); }
 console.log("plan-steps: ok");
