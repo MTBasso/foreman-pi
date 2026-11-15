@@ -140,6 +140,7 @@ An explicit model bypasses the `foreman/hybrid` fallback layer.
 | `FOREMAN_THINKING_<ROLE>` | unset | Thinking-level override per role. |
 | `FOREMAN_MAX_WORKERS` | 4 | Concurrent workers; extra delegations queue. |
 | `FOREMAN_MAX_WRITERS` | 2 | Concurrent writer workers (builders, devs, bugfixers); extra writers queue while readers still start. Counts toward `FOREMAN_MAX_WORKERS`. |
+| `FOREMAN_BACKOFF_DECAY_S` | 300 | Seconds after the last provider rate limit before one slot of the halved worker pool comes back (repeats until the pool is whole again; clean finishes still restore a slot at once). A burst of 429s halves the pool once. `0` disables restoration by time. |
 | `FOREMAN_MAX_RESUMES` | 2 | Times a worker that already produced output is resumed after a transient provider error (the retry then continues from git state). Counted separately from the no-output retries; invalid values fall back to 2. |
 | `FOREMAN_STUCK_AFTER_S` | 90 | Seconds of silence (no events, no tool running) before a worker is flagged as stuck with a one-time warning in the UI and herdr; `0` disables stuck detection. Nothing is killed; repeating-command and guard-denial warnings are unaffected. |
 | `FOREMAN_WORKER_SKILLS` | unset | Set to `1` to let workers load your global skills. By default workers start with `--no-skills` (the optional `impeccable` skill is still passed to qa, frontend-dev and codebase-auditor when installed). |

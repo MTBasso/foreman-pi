@@ -28,6 +28,15 @@ export interface BackoffGateOptions {
 	now?: () => number;
 	rng?: () => number;
 	maxPauseMs?: number;
+	/** Time for one degraded slot to come back after the last rate limit; 0 disables. Default 300 s. */
+	decayMs?: number;
+}
+
+/** `FOREMAN_BACKOFF_DECAY_S` in ms (default 300 s; 0 disables; invalid falls back to the default). */
+export function decayMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.FOREMAN_BACKOFF_DECAY_S;
+	const s = raw === undefined || raw.trim() === "" ? NaN : Number(raw);
+	return (Number.isFinite(s) && s >= 0 ? s : 300) * 1000;
 }
 
 export function createBackoffGate(opts: BackoffGateOptions = {}) {
@@ -38,6 +47,9 @@ export function createBackoffGate(opts: BackoffGateOptions = {}) {
 	/** Rate-limit-imposed cap on concurrency; undefined = not degraded. Independent of any one caller's max. */
 	let degraded: number | undefined;
 	let ceiling = Infinity;
+	const decayMs = opts.decayMs ?? 300_000;
+	/** Time from which the next decay slot is counted. */
+	let decayFrom = 0;
 
 	return {
 		/** Pause the pool and halve concurrency. Returns the pause applied (ms, jittered, capped). */
@@ -45,8 +57,11 @@ export function createBackoffGate(opts: BackoffGateOptions = {}) {
 			const base = parseRetryAfterMs(text) ?? backoffMs;
 			const jittered = base * (1 + (rng() * 2 - 1) * JITTER);
 			const ms = Math.min(maxPause, Math.max(0, Math.round(jittered)));
-			pausedUntil = Math.max(pausedUntil, now() + ms);
-			degraded = Math.max(1, Math.floor(Math.min(degraded ?? ceiling, ceiling) / 2));
+			const t = now();
+			const sameBurst = t < pausedUntil;
+			pausedUntil = Math.max(pausedUntil, t + ms);
+			if (!sameBurst) degraded = Math.max(1, Math.floor(Math.min(degraded ?? ceiling, ceiling) / 2));
+			decayFrom = t;
 			return ms;
 		},
 		remainingMs(): number {
@@ -55,6 +70,14 @@ export function createBackoffGate(opts: BackoffGateOptions = {}) {
 		/** Effective concurrency for a configured maximum: never below 1, never above `max`. */
 		limit(max: number): number {
 			ceiling = Math.max(1, max);
+			if (degraded !== undefined && decayMs > 0) {
+				const steps = Math.floor((now() - decayFrom) / decayMs);
+				if (steps > 0) {
+					degraded += steps;
+					decayFrom += steps * decayMs;
+					if (degraded >= ceiling) degraded = undefined;
+				}
+			}
 			return degraded === undefined ? ceiling : Math.max(1, Math.min(ceiling, degraded));
 		},
 		/** A worker finished cleanly: restore one slot, never above the configured maximum. */
@@ -69,4 +92,4 @@ export function createBackoffGate(opts: BackoffGateOptions = {}) {
 export type BackoffGate = ReturnType<typeof createBackoffGate>;
 
 /** Process-wide gate: `spawnWorker` is injected as a plain function, so the pool state lives here. */
-export const sharedGate: BackoffGate = createBackoffGate();
+export const sharedGate: BackoffGate = createBackoffGate({ decayMs: decayMsFromEnv() });

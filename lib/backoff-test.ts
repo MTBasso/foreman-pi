@@ -18,18 +18,39 @@ const check = (n: string, ok: boolean) => { console.log(`${ok ? "ok  " : "FAIL"}
 	check("rate-limit class", isRateLimit("529 overloaded") && isRateLimit("rate_limit_error") && !isRateLimit("503 unavailable"));
 }
 {
-	const g = createBackoffGate({ now: () => 0, rng: () => 0.5 });
+	let t = 0;
+	const g = createBackoffGate({ now: () => t, rng: () => 0.5, decayMs: 0 });
 	check("limit starts at max", g.limit(8) === 8);
 	g.noteRateLimit("429", 10);
 	check("limit halves on rate-limit", g.limit(8) === 4);
 	g.noteRateLimit("429", 10);
-	check("halves again", g.limit(8) === 2);
+	check("second 429 inside the pause does not halve again", g.limit(8) === 4);
+	t += 50; // pause (10ms) expired
+	g.noteRateLimit("429", 10);
+	check("429 after the pause expired halves again", g.limit(8) === 2);
 	g.noteCleanFinish();
-	check("restores one slot per clean finish", g.limit(8) === 3);
+	check("clean finish still restores one slot", g.limit(8) === 3);
 	g.noteCleanFinish(); g.noteCleanFinish(); g.noteCleanFinish(); g.noteCleanFinish(); g.noteCleanFinish();
 	check("limit never above max", g.limit(8) === 8);
-	for (let i = 0; i < 6; i++) g.noteRateLimit("429", 10);
+	for (let i = 0; i < 6; i++) { t += 50; g.noteRateLimit("429", 10); }
 	check("limit never below 1", g.limit(8) === 1 && g.limit(1) === 1);
+}
+{
+	let t = 0;
+	const g = createBackoffGate({ now: () => t, rng: () => 0.5, decayMs: 1000 });
+	g.limit(8);
+	g.noteRateLimit("429", 10);
+	check("limit restores one slot per decay interval (fake clock)", g.limit(8) === 4 && (t = 999, g.limit(8)) === 4 && (t = 1000, g.limit(8)) === 5 && (t = 2500, g.limit(8)) === 6);
+	t = 10000;
+	check("decay reaches the ceiling and clears degraded", g.limit(8) === 8 && g.limit(8) === 8);
+}
+{
+	let t = 0;
+	const g = createBackoffGate({ now: () => t, rng: () => 0.5, decayMs: 0 });
+	g.limit(8);
+	g.noteRateLimit("429", 10);
+	t = 10_000_000;
+	check("decay 0 disables restoration by time", g.limit(8) === 4);
 }
 {
 	const g = createBackoffGate({ now: () => 0, rng: () => 0.5 });
@@ -41,6 +62,15 @@ const check = (n: string, ok: boolean) => { console.log(`${ok ? "ok  " : "FAIL"}
 	g.noteRateLimit("429", 1000);
 	g.noteRateLimit("429", 400);
 	check("two workers hitting 429 share one pause", g.remainingMs() === 1000);
+	g.noteRateLimit("retry-after: 5", 10);
+	check("pause still extends to the longest retry-after", g.remainingMs() === 5000);
+}
+
+{
+	const fs = await import("node:fs");
+	const en = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
+	const pt = fs.readFileSync(new URL("../README.pt-BR.md", import.meta.url), "utf8");
+	check("README documents FOREMAN_BACKOFF_DECAY_S in both languages", en.includes("`FOREMAN_BACKOFF_DECAY_S`") && pt.includes("`FOREMAN_BACKOFF_DECAY_S`"));
 }
 
 if (failures > 0) { console.error(`${failures} failed`); process.exit(1); }
