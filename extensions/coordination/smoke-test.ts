@@ -838,6 +838,12 @@ async function main() {
 		check("compose: {{PACKAGE_ROOT}} also substituted in the agent body", composeWorkerPrompt({ systemPrompt: "see {{PACKAGE_ROOT}}/x" }).includes(`see ${PACKAGE_ROOT}/x`));
 	}
 
+	// A2. spawn-worker appends the coordinator footer via composeTaskArg with the final cwd.
+	{
+		const src = readFileSync(join(process.cwd(), "extensions", "coordination", "spawn-worker.ts"), "utf-8");
+		check("spawn-worker composes the Task arg with the footer and final cwd", /workerFooter\(\{ locale: detectLocale\(\), cwd \}\)/.test(src) && /composeTaskArg\(\{ handoff: promptText/.test(src));
+	}
+
 	// Step 5. workdir: remembered per run, used as the worker cwd.
 	{
 		const wtBase = mkdtempSync(join(tmpdir(), "foreman-wt-"));

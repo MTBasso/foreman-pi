@@ -18,6 +18,8 @@ import { resolveModel } from "../../lib/model-policy.ts";
 import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerBaseArgs, workerEnv } from "../../lib/spawn.ts";
 import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
 import { isRateLimit, sharedGate } from "../../lib/backoff.ts";
+import { composeTaskArg, workerFooter } from "../../lib/handoff-footer.ts";
+import { detectLocale } from "../../lib/i18n.ts";
 import { resumePreamble, runWithRetry, type ResumeInfo } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
@@ -90,7 +92,8 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
 	}
 	// A resume attempt prepends the preamble; the child is --no-session, so git state is the memory.
-	const buildArgs = (resume?: ResumeInfo): string[] => [...args, `Task: ${resume ? `${resumePreamble(resume.n)}\n\n` : ""}${promptText}`];
+	const footer = workerFooter({ locale: detectLocale(), cwd });
+	const buildArgs = (resume?: ResumeInfo): string[] => [...args, composeTaskArg({ handoff: promptText, resume: resume ? resumePreamble(resume.n) : undefined, footer })];
 	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
 	const handle = runWithRetry(
 		(attempt, resume) => {
