@@ -2,6 +2,7 @@
  * Smoke test for the context filter (pure pruneMessages + the real `context`
  * handler against a fake ExtensionAPI). Run: npx tsx extensions/context-filter/smoke-test.ts
  */
+import { buildRunState } from "./compaction.ts";
 import extension, { pruneHandoffs, pruneMessages } from "./index.ts";
 
 let pass = 0;
@@ -243,6 +244,66 @@ const allText = (arr: any[]) => arr.map(text).join("\n");
 		check("notification pruning still behaves as before", out.length === build().length - 6 + 1 && !!stubOf(out));
 	}
 }
+
+// ---- A3: buildRunState ----
+{
+	const te = (data: any) => ({ type: "custom", customType: "foreman-task", id: "x", data });
+	const um = (t: string) => ({ type: "message", id: "u", message: { role: "user", content: t } });
+	const nm = (ns: any[]) => ({ type: "custom_message", customType: "foreman-task-notification", content: "", display: true, details: { notifications: ns } });
+	const files: Record<string, string> = {};
+	const mk = (entries: any[], extra: Partial<Parameters<typeof buildRunState>[0]> = {}) =>
+		buildRunState({
+			branchEntries: entries,
+			cwd: "/proj",
+			readFile: (p) => files[p],
+			gitBranch: () => "feat/x",
+			now: Date.UTC(2026, 0, 1),
+			...extra,
+		});
+	const base = [
+		te({ runId: "r1", taskId: "t1-b", role: "plan-step-builder", planStep: 1, planSlug: "demo", state: "running", output: ".foreman/runs/r1/t1-b.md" }),
+		te({ runId: "r1", taskId: "t1-b", role: "plan-step-builder", planStep: 1, planSlug: "demo", state: "completed", output: ".foreman/runs/r1/t1-b.md" }),
+		te({ runId: "r1", taskId: "t2-b", role: "plan-step-builder", planStep: 2, planSlug: "demo", state: "blocked", output: ".foreman/runs/r1/t2-b.md" }),
+		te({ runId: "r1", taskId: "t3-b", role: "qa", planStep: 3, planSlug: "demo", state: "running", output: ".foreman/runs/r1/t3-b.md" }),
+	];
+	files["/proj/.foreman/runs/r1/t3-b.json"] = JSON.stringify({ workdir: "/wt" });
+	files["/wt/docs/plans/demo.md"] = "# P\n\n## Status\n\n- Step 1: merged\n- Step 2: blocked\n- Step 3: not started\n\n## Out\n";
+	const s1 = mk([...base, nm([{ taskId: "t2-b", status: "blocked", summary: "needs the db", blockedOn: "db creds", rulings: ["use sqlite", "use sqlite", "r2"] }])]);
+	check("summary names plan, workdir, branch and step table", s1.includes("demo") && s1.includes("workdir: /wt") && s1.includes("branch: feat/x") && s1.includes("Step 1: merged") && s1.includes("Step 3: not started"));
+	check("plan Status wins over entries; entries used when no Status", s1.includes("plan ## Status") && !s1.includes("newest task entry") && (() => { delete files["/wt/docs/plans/demo.md"]; const s = mk(base); files["/wt/docs/plans/demo.md"] = "x"; return s.includes("newest task entry per step") && s.includes("Step 2: blocked"); })());
+	check("blocked task listed with output path", s1.includes("t2-b [blocked]") && s1.includes(".foreman/runs/r1/t2-b.md") && s1.includes("needs the db"));
+	check("in-flight task listed, finished one not", s1.includes("- t3-b [running]") && !s1.includes("- t1-b ["));
+	check("rulings deduplicated and capped", (s1.match(/- use sqlite/g) ?? []).length === 1 && s1.includes("- r2") && s1.includes("blocked on db creds") && (() => { const many = [nm(Array.from({ length: 30 }, (_, i) => ({ taskId: "t", status: "completed", summary: "", rulings: [`ruling-${i}`] })))]; const s = mk([...base, ...many]); return !s.includes("ruling-9\n") && s.includes("ruling-29") && (s.match(/- ruling-/g) ?? []).length === 20; })());
+	{
+		const users = Array.from({ length: 12 }, (_, i) => um(`user message ${i}`));
+		const s = mk([...users, ...base]);
+		check("user messages survive a second compaction (taken from branchEntries)", s.includes("user message 11") && s.includes("user message 4") && !s.includes("user message 3\n") && !s.includes("user message 3 "));
+	}
+	{
+		const big: any[] = [];
+		for (let i = 0; i < 500; i++) big.push(i % 2 ? te({ runId: "r1", taskId: `t${i}`, role: "qa", planStep: i, planSlug: "demo", state: i % 4 === 1 ? "blocked" : "running", output: `.foreman/runs/r1/t${i}.md` }) : um("u".repeat(2000)));
+		files["/wt/docs/plans/demo.md"] = "## Status\n" + Array.from({ length: 300 }, (_, i) => `- Step ${i}: merged`).join("\n");
+		files["/wt/FOREMAN_MEMORY.md"] = "## Decisions log\n" + "d".repeat(9000);
+		const s = mk(big);
+		check("output length <= 12000 chars on a 500-entry fixture", s.length <= 12000 && s.includes("Do not re-dispatch merged steps"));
+		delete files["/wt/FOREMAN_MEMORY.md"];
+	}
+	{
+		files["/wt/docs/plans/demo.md"] = "## Status\n- Step 1: merged\n";
+		files["/wt/FOREMAN_MEMORY.md"] = "# M\n## Decisions log\n- chose A\n## Other\nzzz";
+		const full = mk(base);
+		delete files["/wt/docs/plans/demo.md"];
+		const noPlan = mk(base);
+		files["/wt/docs/plans/demo.md"] = "## Status\n- Step 1: merged\n";
+		delete files["/wt/FOREMAN_MEMORY.md"];
+		const noMem = mk(base);
+		check("missing plan or memory file drops only that section", full.includes("- chose A") && !full.includes("zzz") && !noPlan.includes("Steps (plan ## Status)") && noPlan.includes("- chose A") && noPlan.includes("## Run") && !noMem.includes("Decisions log") && noMem.includes("Step 1: merged"));
+		const thrower = buildRunState({ branchEntries: base, cwd: "/proj", readFile: () => { throw new Error("x"); }, gitBranch: () => { throw new Error("y"); }, now: 0 });
+		check("throwing readers never throw", thrower.includes("## Run") && thrower.includes("workdir: /proj"));
+		check("same input yields identical output", mk(base) === mk(base));
+	}
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
