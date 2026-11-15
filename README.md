@@ -320,7 +320,7 @@ agents/                  the 9 worker definitions
 skills/                  foreman, plan-runner, project-memory, design-preview
 references/              supporting docs the skills point to
 templates/               handoff prompt template
-scripts/                 check-package.ts
+scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ and verification-log.md
 ```
 

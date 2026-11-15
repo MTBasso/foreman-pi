@@ -307,7 +307,7 @@ agents/                  as 9 definições de worker
 skills/                  foreman, plan-runner, project-memory, design-preview
 references/              documentos de apoio para os quais as skills apontam
 templates/               template do prompt de handoff
-scripts/                 check-package.ts
+scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ e verification-log.md
 ```
 

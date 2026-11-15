@@ -23,6 +23,21 @@ Reliability Phase A.
 
 - Transient `credential validation` errors are now retried (C2).
 
+Reliability Phase B (token cuts).
+
+### Added
+
+- `scripts/trace-report.mjs <run-dir>`: per-worker audit table (handoff tokens, turns, tool calls, token usage, cost, guard denials), with `--baseline` deltas and `--json`; replay fixtures and recorded baselines in `docs/replay-baselines.md` (B4).
+- Per-worker `usage` (tokens, turns, tool calls, attempts, guard denials by reason) in the run json `<task>.json` (B4).
+- `scripts/run-suites.mjs`: runs named test suites serially, one PASS/FAIL line each, failing names plus the last 30 lines, full logs under `.foreman/qa-logs/`, optional pyright baseline diff; qa, qa-bugfix and plan-step-builder point at it (A5).
+- Run-state compaction: in orchestrator mode `session_before_compact` builds a summary from plan status, tasks, rulings, memory and recent user messages instead of an LLM pass; any error falls back to pi's default (A3).
+- `FOREMAN_CONTEXT_PRUNE_HANDOFFS` (default on; `false` disables) for the handoff pruning below (A1).
+
+### Changed
+
+- The coordinator appends a short worker footer (language, orchestrator-mode note, working directory) to every handoff; handoff templates and skills are slimmer and the orchestrator writes only the deltas (A2).
+- Stale `foreman_delegate` handoffs from earlier turns are pruned from context to a stub pointing at the run json; the delegate result text now includes `run_id` (A1).
+
 ## [0.3.4]
 
 ### Changed

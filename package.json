@@ -28,6 +28,8 @@
     "references",
     "scripts/baseline-diff.mjs",
     "scripts/herdr-tail.mjs",
+    "scripts/run-suites.mjs",
+    "scripts/trace-report.mjs",
     "templates",
     "README.md",
     "README.pt-BR.md",
