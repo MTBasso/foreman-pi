@@ -125,6 +125,7 @@ async function main() {
 		check("/foreman with hasUI false: mode on, entry appended, event broadcast", a.entries.at(-1)?.type === MODE_ENTRY_TYPE && a.entries.at(-1)?.data.active === true && a.modeEvents.join() === "true");
 		check("/foreman sends one user message on pi (idle: no deliverAs)", a.sent.length === 1 && a.sent[0].options === undefined);
 		const msg = a.sent[0].content;
+		check("foreman prompt does not embed either reference", !msg.includes(readReference("foreman-audit").slice(0, 80)) && !msg.includes(readReference("foreman-delegation").slice(0, 80)));
 		check("prompt embeds the skill body and the absolute package root", msg.includes(foremanBody.slice(0, 80)) && msg.includes(`Package root: ${PACKAGE_ROOT}`) && PACKAGE_ROOT.startsWith("/"));
 		check("prompt has no frontmatter and does not start with a /skill: expansion", !/^name: foreman$/m.test(msg) && !/^description: Turns the current session/m.test(msg) && !msg.trimStart().startsWith("/skill:"));
 		check("user request passed verbatim in the user's language", msg.endsWith("build a login page, por favor"));
@@ -265,7 +266,12 @@ async function main() {
 		const eAudit = stderrCapture();
 		await a.commands["foreman-audit"].handler("the payments module", makeCtx({ hasUI: false }).ctx);
 		eAudit.restore();
-		check("/foreman-audit enables the mode and embeds the skill with the §1.5 instruction", a.modeEvents.join() === "true" && a.sent[0].content.includes("§1.5") && a.sent[0].content.includes(foremanBody.slice(0, 80)) && a.sent[0].content.endsWith("the payments module"));
+		check("/foreman-audit enables the mode and embeds the skill with the audit instruction", a.modeEvents.join() === "true" && !a.sent[0].content.includes("§1.5") && a.sent[0].content.includes(foremanBody.slice(0, 80)) && a.sent[0].content.endsWith("the payments module"));
+
+		const auditRefBody = readReference("foreman-audit");
+		const delegationRefBody = readReference("foreman-delegation");
+		check("audit prompt embeds the audit reference and the scope", a.sent[0].content.includes(auditRefBody.slice(0, 80)) && a.sent[0].content.includes(auditRefBody.slice(-80)) && a.sent[0].content.includes("the payments module"));
+		check("audit prompt does not embed the delegation reference", !a.sent[0].content.includes(delegationRefBody.slice(0, 80)));
 
 		const d = makeApi();
 		await extension(d.api);

@@ -109,3 +109,13 @@ in the context, user → session-reminder, predates the filter and the provider 
 it). Not yet exercised: a provider that rejects adjacency (plan fallback: replace with
 stubs instead of removing). An assistant message that echoed the old result's content
 is deliberately left alone.
+
+## Session 01a1c625: why the foreman skill says to use the session reminder (moved from `skills/foreman/SKILL.md` §0, phase C step 13)
+
+A live run (session 01a1c625) showed the model burning 7+ sequential turns just
+re-checking basic project state (`ls`, `cat FOREMAN_MEMORY.md`, `git log`)
+before `pi-claude-cli`'s `--resume` gave up mid-run with no answer at all: a
+provider-level instability around long tool-call round trips that no amount of
+rephrasing fixes. The only real mitigation is needing fewer round trips, which
+is why the `session-reminder` extension pre-gathers that state with zero tool
+calls and the skill tells the model to use it instead of re-running the checks.

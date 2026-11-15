@@ -77,12 +77,15 @@ export function buildForemanPrompt(request: string, root: string = PACKAGE_ROOT)
 export function buildAuditPrompt(scope: string, root: string = PACKAGE_ROOT): string {
 	const s = scope.trim();
 	return [
-		"You are now the foreman orchestrator, running an audit request. Follow the foreman skill below, but go straight to §1.5 (audit request): skip the grilling and planning steps.",
+		"You are now the foreman orchestrator, running an audit request. Follow the foreman skill below, but go straight to the audit path (the audit reference below): skip the grilling and planning steps.",
 		MODE_NOTE,
 		preface(root),
 		"--- foreman skill ---",
 		readSkillBody("foreman", root),
 		"--- end foreman skill ---",
+		"--- foreman audit reference ---",
+		readReference("foreman-audit", root),
+		"--- end reference ---",
 		s ? `Audit scope (verbatim):\n${s}` : "No scope was given: audit the whole project, or ask the user one question to narrow it if that is clearly too broad.",
 	].join("\n\n");
 }
