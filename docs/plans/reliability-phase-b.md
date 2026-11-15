@@ -177,7 +177,7 @@ Source of truth for plan-runner; mark a step `merged` only when it is on the pla
 - Step 7: merged
 - Step 8: merged
 - Step 9: merged
-- Step 10: not started
+- Step 10: merged
 - Step 11: not started
 - Step 12: not started
 

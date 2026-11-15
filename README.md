@@ -263,6 +263,25 @@ the last notification; `failed` and `blocked` blocks are never pruned; pruned
 blocks collapse into one line per role
 (`[pruned: K older <role> results — recover: <output paths>]`).
 
+### Compaction
+
+In orchestrator mode (never in a worker), `session_before_compact` replaces pi's
+LLM summary with a summary the extension builds from data it owns: the run and
+plan, workdir and branch, the plan `## Status` step table (or the newest task
+per step), in-flight and blocked tasks with their output paths, rulings and
+unresolved items, the `FOREMAN_MEMORY.md` Decisions log, and your last 8
+messages, ending with a recovery line (read the plan Status and the run
+`ledger.log`; do not re-dispatch merged steps). Outside orchestrator mode, with
+no `foreman-task` entry on the branch, with `FOREMAN_CONTEXT_PRUNE=false`, or on
+any error, pi's default compaction runs unchanged.
+
+Compaction starts when `contextTokens > contextWindow - reserveTokens` (pi
+default `reserveTokens` 16384). To compact near 100k tokens, set
+`compaction.reserveTokens` to `contextWindow - 100000` in your pi
+`settings.json`, or per model with
+`compaction.modelOverrides["<provider>/<model>"].reserveTokens`. This package
+does not write your `settings.json`.
+
 ## Tests and CI
 
 ```bash

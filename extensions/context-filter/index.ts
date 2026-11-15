@@ -16,6 +16,7 @@
  *  - input is never mutated
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerCompaction } from "./compaction.ts";
 
 export const NOTIFICATION_CUSTOM_TYPE = "foreman-task-notification";
 export const PRUNED_CUSTOM_TYPE = "foreman-context-pruned";
@@ -220,6 +221,7 @@ function envKeep(): number {
 }
 
 export default function (pi: ExtensionAPI) {
+	registerCompaction(pi);
 	pi.on("context", (event) => {
 		if (process.env.FOREMAN_CONTEXT_PRUNE === "false") return undefined;
 		const before = event.messages;

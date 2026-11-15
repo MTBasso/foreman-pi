@@ -4,6 +4,10 @@
  * on missing or unreadable sources (the section is dropped instead).
  */
 
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { createModeTracker } from "../../lib/mode.ts";
+
 export const TOTAL_CAP = 12000;
 const TERMINAL = new Set(["completed", "failed", "blocked", "aborted"]);
 
@@ -198,4 +202,56 @@ export function buildRunState(input: RunStateInput): string {
 	const room = TOTAL_CAP - recovery.length - 2;
 	if (body.length > room) body = `${body.slice(0, room - 1)}…`;
 	return `${body}\n\n${recovery}`;
+}
+
+/**
+ * Register `session_before_compact`: in orchestrator mode (not a subagent) with
+ * foreman-task entries on the branch, replace pi's LLM summary with the
+ * foreman-built run state. Anything else, or any error, returns undefined so
+ * pi's default compaction runs.
+ */
+export function registerCompaction(pi: any, build: (i: RunStateInput) => string = buildRunState): void {
+	if (!pi?.events) return;
+	const tracker = createModeTracker(pi);
+	pi.on("session_start", (event: any, ctx: any) => {
+		try {
+			tracker.restore(ctx, event?.reason);
+		} catch {
+			/* mode stays as is */
+		}
+		return undefined;
+	});
+	pi.on("session_before_compact", (event: any, ctx: any) => {
+		try {
+			if (process.env.FOREMAN_CONTEXT_PRUNE === "false") return undefined;
+			if (!tracker.isActive()) return undefined;
+			const branch: unknown[] = event.branchEntries;
+			if (!Array.isArray(branch) || !branch.some((e: any) => e?.type === "custom" && e.customType === "foreman-task")) return undefined;
+			const prep = event.preparation;
+			if (!prep || typeof prep.firstKeptEntryId !== "string" || typeof prep.tokensBefore !== "number") return undefined;
+			const summary = build({
+				branchEntries: branch,
+				cwd: String(ctx?.cwd ?? process.cwd()),
+				readFile: (p) => {
+					try {
+						return readFileSync(p, "utf8");
+					} catch {
+						return undefined;
+					}
+				},
+				gitBranch: (dir) => {
+					try {
+						return execFileSync("git", ["-C", dir, "branch", "--show-current"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+					} catch {
+						return undefined;
+					}
+				},
+				now: Date.now(),
+			});
+			return { compaction: { summary, firstKeptEntryId: prep.firstKeptEntryId, tokensBefore: prep.tokensBefore, details: { foremanRunState: true } } };
+		} catch (err) {
+			if (process.env.FOREMAN_CONTEXT_DEBUG === "1") console.error(`[foreman-context-filter] compaction fell back to pi default: ${String((err as Error)?.message ?? err)}`);
+			return undefined;
+		}
+	});
 }

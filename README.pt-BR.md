@@ -247,6 +247,26 @@ por papel, mais todos os blocos da última notificação; blocos `failed` e
 `blocked` nunca são podados; os blocos podados se reduzem a uma linha por papel
 (`[pruned: K older <role> results — recover: <output paths>]`).
 
+### Compactação
+
+No modo orquestrador (nunca em um worker), `session_before_compact` troca o
+resumo por LLM do pi por um resumo montado pela extensão a partir de dados que
+ela possui: execução e plano, diretório de trabalho e branch, a tabela de
+passos do `## Status` do plano (ou a tarefa mais recente por passo), tarefas em
+andamento e bloqueadas com seus caminhos de saída, decisões e pendências, o
+Decisions log do `FOREMAN_MEMORY.md` e suas últimas 8 mensagens, terminando com
+uma linha de recuperação (ler o Status do plano e o `ledger.log` da execução;
+não reenviar passos já `merged`). Fora do modo orquestrador, sem entrada
+`foreman-task` na branch, com `FOREMAN_CONTEXT_PRUNE=false` ou em qualquer
+erro, a compactação padrão do pi roda sem alterações.
+
+A compactação começa quando `contextTokens > contextWindow - reserveTokens`
+(`reserveTokens` padrão do pi: 16384). Para compactar perto de 100k tokens,
+defina `compaction.reserveTokens` como `contextWindow - 100000` no
+`settings.json` do pi, ou por modelo com
+`compaction.modelOverrides["<provider>/<model>"].reserveTokens`. Este pacote
+não escreve o seu `settings.json`.
+
 ## Testes e CI
 
 ```bash

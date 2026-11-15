@@ -305,5 +305,65 @@ const allText = (arr: any[]) => arr.map(text).join("\n");
 }
 
 
+// session_before_compact wiring (A3, step 10)
+{
+	const { readFileSync } = await import("node:fs");
+	const mkPi = () => {
+		const handlers: Record<string, any> = {};
+		const bus: Record<string, any[]> = {};
+		const pi = {
+			on: (ev: string, h: any) => void (handlers[ev] = h),
+			events: { on: (c: string, h: any) => ((bus[c] ??= []).push(h), () => {}), emit: (c: string, d: unknown) => (bus[c] ?? []).forEach((h) => h(d)) },
+		};
+		extension(pi as any);
+		return handlers;
+	};
+	const saved = { m: process.env.FOREMAN_PI_MODE, s: process.env.FOREMAN_PI_SUBAGENT, p: process.env.FOREMAN_CONTEXT_PRUNE };
+	const restore = () => {
+		for (const [k, v] of [["FOREMAN_PI_MODE", saved.m], ["FOREMAN_PI_SUBAGENT", saved.s], ["FOREMAN_CONTEXT_PRUNE", saved.p]] as const) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+	const entries: any[] = [
+		{ type: "custom", customType: "foreman-task", data: { runId: "r1", taskId: "t1", role: "qa", state: "running" } },
+		{ type: "message", message: { role: "user", content: "hello there" } },
+	];
+	const ev = (branchEntries: any[] = entries): any => ({ type: "session_before_compact", branchEntries, preparation: { firstKeptEntryId: "e42", tokensBefore: 9999, messagesToSummarize: [] }, reason: "manual", willRetry: false, signal: new AbortController().signal });
+	const ctx = { cwd: "/nonexistent-foreman-test" };
+	const run = async (h: any, e: any) => h.session_before_compact(e, ctx);
+
+	delete process.env.FOREMAN_PI_SUBAGENT;
+	delete process.env.FOREMAN_CONTEXT_PRUNE;
+	process.env.FOREMAN_PI_MODE = "off";
+	check("handler returns undefined outside orchestrator mode", typeof mkPi().session_before_compact === "function" && (await run(mkPi(), ev())) === undefined);
+
+	process.env.FOREMAN_PI_MODE = "orchestrator";
+	process.env.FOREMAN_PI_SUBAGENT = "1";
+	check("handler returns undefined in a subagent", (await run(mkPi(), ev())) === undefined);
+	delete process.env.FOREMAN_PI_SUBAGENT;
+
+	{
+		const r: any = await run(mkPi(), ev());
+		const c = r?.compaction;
+		check(
+			"handler returns a compaction with firstKeptEntryId and tokensBefore from preparation",
+			!!c && c.firstKeptEntryId === "e42" && c.tokensBefore === 9999 && typeof c.summary === "string" && c.summary.includes("foreman run state") && c.details?.foremanRunState === true,
+		);
+		check("no foreman-task entry -> undefined (default compaction)", (await run(mkPi(), ev([entries[1]]))) === undefined);
+	}
+	{
+		const bad = { ...ev(), get branchEntries(): any { throw new Error("boom"); } };
+		check("builder throwing falls back to undefined", (await run(mkPi(), bad)) === undefined);
+	}
+	process.env.FOREMAN_CONTEXT_PRUNE = "false";
+	check("FOREMAN_CONTEXT_PRUNE=false disables compaction", (await run(mkPi(), ev())) === undefined);
+	restore();
+
+	const en = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+	const pt = readFileSync(new URL("../../README.pt-BR.md", import.meta.url), "utf8");
+	check("README documents reserveTokens in both languages", [en, pt].every((t) => t.includes("compaction.reserveTokens") && t.includes("modelOverrides") && t.includes("session_before_compact")));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
