@@ -20,7 +20,7 @@ import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
 import { isRateLimit, sharedGate } from "../../lib/backoff.ts";
 import { composeTaskArg, workerFooter } from "../../lib/handoff-footer.ts";
 import { detectLocale } from "../../lib/i18n.ts";
-import { resumePreamble, runWithRetry, type ResumeInfo } from "../../lib/retry.ts";
+import { resumePreamble, runWithRetry, type ResumeInfo, type RetryOptions } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 
@@ -39,7 +39,16 @@ function failed(message: string): WorkerHandle {
 	};
 }
 
-export function spawnWorker(req: SpawnRequest): WorkerHandle {
+/** Test seam: every field defaults to the real implementation. */
+export interface SpawnWorkerDeps {
+	runPiJson: typeof runPiJson;
+	gate: Pick<typeof sharedGate, "remainingMs" | "noteRateLimit">;
+	retry: Pick<RetryOptions, "sleep" | "baseMs">;
+}
+
+export function spawnWorker(req: SpawnRequest, deps?: Partial<SpawnWorkerDeps>): WorkerHandle {
+	const run = deps?.runPiJson ?? runPiJson;
+	const gate = deps?.gate ?? sharedGate;
 	const { agents } = discoverAgents(req.cwd, "user");
 	const agent = agents.find((a) => a.name === req.role);
 	if (!agent) {
@@ -93,19 +102,21 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	}
 	// A resume attempt prepends the preamble; the child is --no-session, so git state is the memory.
 	const footer = workerFooter({ locale: detectLocale(), cwd });
-	const buildArgs = (resume?: ResumeInfo): string[] => [...args, composeTaskArg({ handoff: promptText, resume: resume ? resumePreamble(resume.n) : undefined, footer })];
+	const buildArgs = (resume?: ResumeInfo): string[] => [...args, composeTaskArg({ handoff: promptText, resume: resume ? resumePreamble(resume.n, agent.name) : undefined, footer })];
 	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
 	const handle = runWithRetry(
 		(attempt, resume) => {
 			if (attempt > 0) req.onAttempt?.(attempt);
-			return runPiJson(buildArgs(resume), { cwd, logFile, onEvent: req.onEvent, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } });
+			return run(buildArgs(resume), { cwd, logFile, onEvent: req.onEvent, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } });
 		},
 		{
 			...(Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {}),
-			gate: sharedGate,
+			...(deps?.retry?.sleep ? { sleep: deps.retry.sleep } : {}),
+			...(deps?.retry?.baseMs !== undefined ? { baseMs: deps.retry.baseMs } : {}),
+			gate,
 			onTransient: (r, backoffMs) => {
 				const text = `${r.errorMessage ?? ""}\n${r.stderr ?? ""}`;
-				if (isRateLimit(text)) sharedGate.noteRateLimit(text, backoffMs);
+				if (isRateLimit(text)) gate.noteRateLimit(text, backoffMs);
 			},
 		},
 	);

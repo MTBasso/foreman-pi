@@ -65,11 +65,12 @@
     "test:foreman-mode": "tsx extensions/foreman-mode/smoke-test.ts",
     "test:instructions": "tsx extensions/orchestrator-guardrail/instructions-test.ts",
     "test:coordination": "tsx extensions/coordination/smoke-test.ts",
+    "test:spawn-worker": "tsx extensions/coordination/spawn-worker-test.ts",
     "test:live:coordination": "tsx extensions/coordination/live-rpc.ts",
     "test:fallback": "tsx extensions/model-fallback/smoke-test.ts",
     "test:context-filter": "tsx extensions/context-filter/smoke-test.ts",
     "test:live:context-filter": "tsx extensions/context-filter/live-rpc.ts",
-    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:retry && npm run test:backoff && npm run test:activity && npm run test:usage && npm run test:handoff && npm run test:trace-report && npm run test:run-suites && npm run test:replay && npm run test:herdr && npm run test:worktree && npm run test:plan-steps && npm run test:i18n && npm run test:readme && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
+    "test": "npm run typecheck && npm run test:guardrail && npm run test:worker-guard && npm run test:agents && npm run test:spawn && npm run test:model-policy && npm run test:retry && npm run test:backoff && npm run test:activity && npm run test:usage && npm run test:handoff && npm run test:trace-report && npm run test:run-suites && npm run test:replay && npm run test:herdr && npm run test:worktree && npm run test:plan-steps && npm run test:i18n && npm run test:readme && npm run test:mode && npm run test:foreman-mode && npm run test:fallback && npm run test:coordination && npm run test:spawn-worker && npm run test:context-filter && npm run test:reminder && npm run test:instructions",
     "test:reminder": "tsx extensions/session-reminder/smoke-test.ts",
     "test:live:phase3": "tsx extensions/coordination/live-phase3.ts",
     "test:package": "tsx scripts/check-package.ts"
