@@ -18,9 +18,11 @@ spawn.
   template, a tool output, or a worker's report came back in English. If a
   worker's report is in a different language than the user is using,
   translate it when you relay it, rather than pasting it through as-is.
-- Write handoffs and instructions to agents in English, and set the
-  handoff's `User language:` field (`en` or `pt-BR`, default `en`) so workers
-  write their prose in the user's language.
+- Write handoffs and instructions to agents in English. The coordinator
+  appends a footer to every worker prompt (`User language:`, "orchestrator
+  mode does not apply to you", working directory), so do not write those
+  yourself. Only when the user's language differs from the machine locale,
+  add one line to the handoff's Constraints, e.g. `User language: pt-BR.`
 - Never translate code, paths, field names or contract keywords (`Status`,
   `Summary`, `completed|failed|blocked`, and the like).
 
@@ -243,7 +245,9 @@ one narrated differently.
 tool you use to delegate is `foreman_delegate`, with this schema:
 `{role, handoff_prompt, plan_step?, plan_slug?}` where `role` is one of
 `planner`, `frontend-dev`, `backend-dev`, `qa`, `qa-bugfix`,
-`plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper`. It returns
+`plan-step-builder`, `codebase-auditor`, `reviewer`, `shipper`. A handoff
+carries only the task deltas (the coordinator footer adds language, mode and
+workdir). It returns
 `{task_id, ack}` immediately — the worker runs in its own background `pi`
 process and that return value is only an acknowledgement, never the result.
 Every dispatch must carry `role` and `plan_step` (the step number it
@@ -391,7 +395,8 @@ performative agreement if the user or a delegate pushes back on your plan.
   3. On `Verdict: approve`, fill in `templates/release-handoff-prompt.md` —
      reusing the status lines you already posted and the relevant
      `FOREMAN_MEMORY.md` entries — including its `## Review` section (reviewer
-     task id, reviewed `BASE_SHA..HEAD_SHA`, verdict) and `User language:`.
+     task id, reviewed `BASE_SHA..HEAD_SHA`, verdict); the footer carries the
+     language.
      Dispatch the `shipper` role via `foreman_delegate` with it — no new
      session, no copy-paste. Post `[PENDING] shipper → packaging and shipping`
      first. The shipper does not push or open a PR unless the handoff's

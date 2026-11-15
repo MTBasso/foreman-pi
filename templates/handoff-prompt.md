@@ -5,18 +5,13 @@ delegates to, instead of improvising the prompt each time. Keeping one shape
 means the receiving agent never has to re-derive context it was already given,
 and never has to go re-read FOREMAN_MEMORY.md itself for things already
 decided — paste the relevant fields in directly.
+The coordinator appends a footer to the prompt (User language, "orchestrator
+mode does not apply to you", working directory, pointer to the shared worker
+rules): do not write those here. Add a `User language:` line under Constraints
+only when it differs from the machine locale.
 -->
 
 # Handoff: <short task title>
-
-## Role
-You are the <planner | frontend-dev | backend-dev | qa | qa-bugfix | plan-step-builder> agent. <one line
-on what you must and must not do, e.g. "produce a plan only, no code".>
-
-## User language
-User language: <en | pt-BR — taken from the user's messages, default en>.
-Write your prose (Summary, findings, questions) in that language; field names,
-`Status` values and code stay English.
 
 ## Build instructions
 Build instructions: <path to a file with the repo's own build steps for this
@@ -42,12 +37,3 @@ For a revision handoff (planner): apply these decisions to the existing plan wit
 ## Constraints
 <anything time/scope-boxing the work: files not to touch, patterns not to
 introduce, performance/security notes.>
-
-## About orchestrator mode
-Orchestrator mode does not apply to you — you are running as your own `pi`
-process with your own `write`/`edit` access from your `tools:` frontmatter,
-not the orchestrator session. If you notice an old marker file or a
-mention of the mode, ignore it: proceed with your task normally and
-don't ask whether to delete anything or pause to confirm. (A live test caught
-a subagent stalling on exactly this question instead of just doing the edit —
-this line exists so you never have to guess.)

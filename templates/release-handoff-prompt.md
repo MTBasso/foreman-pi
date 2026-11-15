@@ -3,6 +3,7 @@ The foreman skill fills this in once its delegated waves for a feature are
 done (planning + building + any QA/bugfix loop), and spawns the
 shipper agent directly with this as its prompt -- same session, no
 copy-paste into a new one.
+The coordinator appends the language/mode/workdir footer; do not write it here.
 -->
 
 # Release handoff: <feature/change title>
@@ -38,9 +39,6 @@ visually" so the human reviewer knows what to look at first. "none" if all were 
 ## Known loose ends
 <anything flagged as BLOCKED, deferred, or explicitly out of scope — the
 shipper should see these before packaging, not discover them>
-
-## User language
-User language: <en | pt-BR — taken from the user's messages, default en>.
 
 ## Branch / target
 <branch name, base branch, whether a PR already exists>

@@ -15,9 +15,11 @@ delegate you spawn per step.
 - Converse with the user in their language: detect it from their messages
   (`en` or `pt-BR`), default English. Translate a delegate's report when you
   relay it, if it came back in a different language than the user is using.
-- Write handoffs and instructions to agents in English, and set the handoff's
-  `User language:` field (`en` or `pt-BR`, default `en`) so workers write
-  their prose in the user's language.
+- Write handoffs and instructions to agents in English. The coordinator
+  appends a footer to every worker prompt (language, orchestrator-mode note,
+  working directory); do not write those yourself. Only when the user's
+  language differs from the machine locale, add one Constraints line
+  `User language: pt-BR.`
 - Never translate code, paths, field names or contract keywords (`Status`,
   `Summary`, `completed|failed|blocked`, and the like).
 
@@ -111,14 +113,14 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   `plan_slug: "<plan-slug>"` and `plan_step: "<N>"` on **every** call (the
   extension uses them to write the ledger), and a `handoff_prompt` filled
   from `templates/handoff-prompt.md` that names `docs/plans/<plan>.md` step
-  `<N>` and carries two fields:
+  `<N>` and carries only the deltas (the footer is appended for you):
   - `Build instructions:` — the repo's own build instructions file for a plan
     step (for example the repo's `build-plan` skill file, if it has one),
     which the delegate follows exactly, including its Merge section. If the
     repo has none, write `none` and the delegate follows the step's Touches
     and Checks.
-  - `User language:` — `en` or `pt-BR`, taken from the user's messages
-    (default `en`).
+  - A Constraints line `User language: <lang>` only if it differs from the
+    machine locale (see Language).
 
   You're standing in for the human who'd normally say "merge", so the
   delegate should go all the way to merged, not stop at "built", unless the
@@ -182,8 +184,8 @@ opt-in by that skill's own rules — don't run it without asking).
 Then read `references/code-review-discipline.md` and request the review half:
 the step reviews from `build-plan` cover each step in isolation; this is the
 one pass that looks at the whole accumulated diff. Fill in
-`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`,
-`User language:`), dispatch the `reviewer` role via `foreman_delegate`
+`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`;
+the footer carries the language), dispatch the `reviewer` role via `foreman_delegate`
 (`plan_slug`, and the last `plan_step`), and END YOUR TURN. On its
 notification read the `Verdict:` token in the summary: `changes-requested`
 means dispatch `qa-bugfix` with the findings, then the `reviewer` again over

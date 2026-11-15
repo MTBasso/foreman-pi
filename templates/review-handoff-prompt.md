@@ -3,6 +3,7 @@ The foreman skill (or plan-runner) fills this in once the build and QA waves
 for a feature or plan are done, and dispatches the reviewer role with it via
 foreman_delegate. The reviewer is read-only and shares no context with the
 implementers, so paste everything it needs; do not tell it to go find it.
+The coordinator appends the language/mode/workdir footer; do not write it here.
 -->
 
 # Review handoff: <feature/change title>
@@ -26,6 +27,3 @@ implementers, so paste everything it needs; do not tell it to go find it.
 
 ## QA results to cite
 <the qa role's reported results for this range (tests, typecheck), or "none yet". The reviewer is read-only and never runs tests; it reports them as not run by itself.>
-
-## User language
-User language: <en | pt-BR — taken from the user's messages, default en>.

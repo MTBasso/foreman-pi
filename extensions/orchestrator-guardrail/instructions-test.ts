@@ -4,6 +4,7 @@
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { ROLES } from "../../lib/roles.ts";
+import { workerFooter } from "../../lib/handoff-footer.ts";
 
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
@@ -67,9 +68,9 @@ for (const f of allProse.filter((x) => !x.startsWith("agents/"))) {
 const common = readFileSync(new URL("references/worker-common.md", root), "utf8");
 check("worker-common: contract markers", /--- foreman-report ---/.test(common) && /--- end foreman-report ---/.test(common));
 check("worker-common: package root + language rule + no delegation", /Package root: \{\{PACKAGE_ROOT\}\}/.test(common) && /User language:/.test(common) && /cannot delegate/.test(common));
-check("handoff template has Build instructions and User language", (() => { const t = readFileSync(new URL("templates/handoff-prompt.md", root), "utf8"); return /Build instructions:/.test(t) && /User language:/.test(t); })());
-check("plan-runner §2 names Build instructions and User language", /Build instructions:/.test(pr) && /User language:/.test(pr));
-check("foreman skill has a Language section", /^## Language/m.test(skill) && /User language:/.test(skill));
+check("handoff template has Build instructions and names the coordinator footer", (() => { const t = readFileSync(new URL("templates/handoff-prompt.md", root), "utf8"); return /Build instructions:/.test(t) && /footer/.test(t) && !/^## User language/m.test(t); })());
+check("plan-runner §2 names Build instructions and the footer", /Build instructions:/.test(pr) && /footer/.test(pr));
+check("foreman skill has a Language section", /^## Language/m.test(skill) && /User language:/.test(skill) && /footer/.test(skill));
 check("plan-runner has a Language section", /^## Language/m.test(pr));
 // Stray-Portuguese lint: pt-BR diacritics or stopwords outside `[pt-BR]`-tagged lines.
 const PT_DIACRITICS = /[áàâãéêíóôõúç]/i;
@@ -111,7 +112,7 @@ check("orchestrator-mode.md: commands, env var, /foreman off, only the user leav
 check("skills §0 point at orchestrator-mode.md and the commands, with no touch/gitignore step", /orchestrator-mode\.md/.test(skill) && /orchestrator-mode\.md/.test(pr) && /\/foreman`/.test(skill) && /\/plan-runner/.test(pr) && !/touch \./.test(skill + pr) && !/touch \S*orchestrator/.test(skill + pr));
 check("skills tell the model to ask for /foreman on a not-in-mode refusal", /not-in-mode/.test(skill) && /not-in-mode/.test(pr));
 check(".gitignore no longer lists the marker", !readFileSync(new URL(".gitignore", root), "utf8").includes(needleMarker));
-check("templates/handoff-prompt.md says orchestrator mode does not apply to workers", /About orchestrator mode/.test(readFileSync(new URL("templates/handoff-prompt.md", root), "utf8")));
+check("footer helper carries User language and the orchestrator-mode line", (() => { const f = workerFooter({ locale: "en", cwd: "/x" }); return /User language: en/.test(f) && /Orchestrator mode does not apply to you/.test(f); })());
 
 // --- Phase 8: reviewer and shipper roles ------------------------------------
 const readme = readFileSync(new URL("README.md", root), "utf8");
@@ -136,8 +137,8 @@ check("shipper: AgentShield optional, never installed", /optional/.test(shipper)
 check("shipper: no push/PR without explicit instruction", /Do not push and do not open a PR unless the handoff explicitly says to/.test(shipper));
 const reviewTpl = readFileSync(new URL("templates/review-handoff-prompt.md", root), "utf8");
 const releaseTpl = readFileSync(new URL("templates/release-handoff-prompt.md", root), "utf8");
-check("review template: SHAs and User language", /BASE_SHA/.test(reviewTpl) && /HEAD_SHA/.test(reviewTpl) && /User language:/.test(reviewTpl));
-check("release template: Review section and User language", /^## Review/m.test(releaseTpl) && /Reviewer task id/.test(releaseTpl) && /Verdict: approve/.test(releaseTpl) && /User language:/.test(releaseTpl));
+check("review template: SHAs and User language", /BASE_SHA/.test(reviewTpl) && /HEAD_SHA/.test(reviewTpl) && /footer/.test(reviewTpl));
+check("release template: Review section and User language", /^## Review/m.test(releaseTpl) && /Reviewer task id/.test(releaseTpl) && /Verdict: approve/.test(releaseTpl) && /footer/.test(releaseTpl));
 check("foreman skill flow: reviewer -> qa-bugfix + re-review -> shipper", /Review, then ship/.test(skill) && /changes-requested/.test(skill) && /review-handoff-prompt\.md/.test(skill) && /`shipper`/.test(skill));
 check("plan-runner flow: reviewer pass then shipper offer", /`reviewer`/.test(pr) && /review-handoff-prompt\.md/.test(pr) && /`shipper`/.test(pr));
 check("never lists forbid shipper without an approved review", /Never dispatch `shipper` without a `reviewer` pass/.test(skill) && /Never dispatch `shipper` without a `reviewer` pass/.test(pr));
