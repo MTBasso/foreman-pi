@@ -6,8 +6,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { ROLES } from "../../lib/roles.ts";
 import { workerFooter } from "../../lib/handoff-footer.ts";
 
-/** Ceiling for worker-common.md; the plan target is 900 (see docs/verification-log.md for the measured number). */
-const WORKER_COMMON_TOKEN_CEILING = 900;
+/** Ceiling for worker-common.md; the plan target was 900, raised to 920 for the restored guard rules (see docs/verification-log.md for the measured number). */
+const WORKER_COMMON_TOKEN_CEILING = 920;
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
 const pr = readFileSync(new URL("skills/plan-runner/SKILL.md", root), "utf8");
@@ -176,11 +176,13 @@ check("planner: pre-flight names capture tool and runner existence, gaps under R
 check("review template has QA covered up to", /QA covered up to: <sha or none>/.test(reviewTpl));
 check("reviewer.md names qa-needed and the diff --stat rule", /qa-needed: <QA_SHA>\.\.<HEAD_SHA>/.test(reviewer) && /git diff --stat <QA_SHA>\.\.HEAD/.test(reviewer) && /QA covered up to/.test(reviewer));
 check("skills and delegation reference route qa-needed to qa", [pr, delegationRef].every((t) => /qa-needed/.test(t) && /`qa`/.test(t)));
+check("qa-needed rides on Verdict: approve and qa runs BEFORE the shipper", /`Verdict: approve`, with the `qa-needed/.test(reviewer) && [pr, delegationRef].every((t) => /`Verdict: approve` with a separate `qa-needed: <QA_SHA>\.\.<HEAD_SHA>` line/.test(t) && /BEFORE dispatching the shipper/.test(t) && /only if\s+`qa` is green/.test(t)));
+check("worker-common keeps imperative guard rules", /do not retry or work around it/.test(common) && /never run `git stash`, `reset --hard`, `clean` or `checkout -- \.`/.test(common) && /passing unit tests is not evidence/.test(common));
 check("reviewer stays read-only (tools line unchanged)", /^tools: read, grep, find, bash$/m.test(reviewer) && /writes? no files/.test(reviewer));
 // B1 (phase C step 18): worker-common rewrite.
 {
 	const tokens = Math.ceil(common.length / 4);
-	check("worker-common <= 900 tokens", tokens <= WORKER_COMMON_TOKEN_CEILING, `${tokens} tokens`);
+	check("worker-common <= 920 tokens", tokens <= WORKER_COMMON_TOKEN_CEILING, `${tokens} tokens`);
 	const gotchas = /^### Gotchas\n([\s\S]*?)(?=^### )/m.exec(common)?.[1] ?? "";
 	check("worker-common has ## Gotchas with the five listed items", gotchas !== "" && [/literal/i, /one literal command/i, /`\.foreman\/`/, /python3 -c/, /Guard-denied:/].every((r) => r.test(gotchas)) && /nested/i.test(gotchas) && /git show <sha>:<path>/.test(gotchas));
 	const neg = common.split("\n").filter((l) => /^- +\**(Never|Don't|Do not|No|Not)\b/.test(l));

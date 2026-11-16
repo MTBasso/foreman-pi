@@ -355,7 +355,7 @@ async function main() {
 		const err = stderrCapture();
 		await b.commands.foreman.handler("resume", makeCtx({ hasUI: false, cwd: empty }).ctx);
 		err.restore();
-		check("/foreman resume with no state warns and sends nothing", b.sent.length === 0 && err.lines.join("").includes(t("cmd.resume.none")));
+		check("/foreman resume with no state warns and sends nothing", b.sent.length === 0 && b.modeEvents.length === 0 && b.entries.length === 0 && err.lines.join("").includes(t("cmd.resume.none")));
 		const comp = a.commands.foreman.getArgumentCompletions?.("re");
 		check("/foreman completions offer resume", JSON.stringify(comp) === JSON.stringify([{ value: "resume", label: "resume" }]));
 		rmSync(cwd, { recursive: true, force: true });

@@ -67,6 +67,20 @@ const check = (n: string, ok: boolean) => { console.log(`${ok ? "ok  " : "FAIL"}
 }
 
 {
+	let t = 0;
+	const g = createBackoffGate({ now: () => t, rng: () => 0.5, decayMs: 0 });
+	check("setup: limit 4", g.limit(4) === 4);
+	g.noteRateLimit("429", 1000);
+	check("halved to 2", g.limit(4) === 2);
+	g.noteCleanFinish();
+	g.noteCleanFinish();
+	check("fully restored", g.limit(4) === 4);
+	t = 500; // still inside the pause
+	g.noteRateLimit("429", 1000);
+	check("rate limit inside pause after full restore halves again", g.limit(4) === 2);
+}
+
+{
 	const fs = await import("node:fs");
 	const en = fs.readFileSync(new URL("../README.md", import.meta.url), "utf8");
 	const pt = fs.readFileSync(new URL("../README.pt-BR.md", import.meta.url), "utf8");

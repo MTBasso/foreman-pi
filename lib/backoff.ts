@@ -60,7 +60,7 @@ export function createBackoffGate(opts: BackoffGateOptions = {}) {
 			const t = now();
 			const sameBurst = t < pausedUntil;
 			pausedUntil = Math.max(pausedUntil, t + ms);
-			if (!sameBurst) degraded = Math.max(1, Math.floor(Math.min(degraded ?? ceiling, ceiling) / 2));
+			if (!sameBurst || degraded === undefined) degraded = Math.max(1, Math.floor(Math.min(degraded ?? ceiling, ceiling) / 2));
 			decayFrom = t;
 			return ms;
 		},

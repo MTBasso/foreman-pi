@@ -913,6 +913,12 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		blocked(bash("qa", `false &&\nD=.foreman/o\necho x > $D/y`)) &&
 		blocked(bash("qa", `false ||\nD=.foreman/o\necho x > $D/y`)) &&
 		blocked(bash("qa", `echo a |\nD=.foreman/o\necho x > $D/y`)));
+	check("for-loop rebind in any spelling (printf -vs, quoted -v, declare -n quoted) is denied",
+		blocked(bash("qa", `for s in x y; do printf -vs ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -v "s" ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -v 's' ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do declare -n "s"=t; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -vs ../src/q; echo hi > .foreman/$s; done`)));
 	check("for-loop with printf -v on the loop variable is denied or judged on the runtime path",
 		blocked(bash("qa", `for s in x y; do printf -v s '../src/%s' "$s"; echo hi > .foreman/$s; done`)));
 	check("declare, mapfile and getopts on the loop variable denied",

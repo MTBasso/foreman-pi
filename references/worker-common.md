@@ -21,9 +21,9 @@ A fail-closed guard checks bash and write calls; write commands it can verify:
 - One literal command per suite or step. Loops only over a literal word list (`for n in a b c; do ... $n ... done`); else run line by line.
 - `.foreman/` is the scratch area (qa, shipper, dev roles: also the temp dir; planner, reviewer: none). Pipe through `sort`/`uniq`/`comm` into a file there, not `<(...)`, `eval`, `xargs`, `find -exec` or `awk`.
 - `python3 -c` probes: import and print statements only; `pip show|list|freeze|check` is fine.
-- A denied command goes under `Guard-denied:`; skip it and continue. `Status: blocked` only if it blocks the core deliverable; include finished analysis.
+- If a command is denied, do not retry or work around it: continue the remaining work, list it under `Guard-denied:`; `Status: blocked` only if it blocks the core deliverable (include finished analysis).
 - Linked worktrees of this repo (`git worktree list`), nested included, are writable via their `.foreman/` for scoped roles.
-- Compare to baseline with `git diff <sha> -- <path>` or `git show <sha>:<path>`; `git stash`, `reset --hard`, `clean` and `checkout -- .` destroy others' uncommitted edits.
+- Compare to baseline with `git diff <sha> -- <path>` or `git show <sha>:<path>`; never run `git stash`, `reset --hard`, `clean` or `checkout -- .`.
 
 ### Test baselines
 
@@ -62,5 +62,5 @@ Rendered: <screenshot paths under .foreman/, "unrendered", or "n/a">
 --- end foreman-report ---
 ```
 
-- `Rendered:` is required when a step changes anything a user sees. Capture the real result (project script, else headless browser or compositor screenshot) and list its path, or write `unrendered`. "n/a" for a visual change is false.
+- `Rendered:` is required when a step changes anything a user sees. Capture the real result (project script, else headless browser or compositor screenshot) and list its path, or write `unrendered`. "n/a" for a visual change is false; passing unit tests is not evidence it looks right.
 - One `Status` value; English field names; write the block once, last.

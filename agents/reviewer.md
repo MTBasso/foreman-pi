@@ -41,7 +41,8 @@ name) and a HEAD SHA, and `User language:`.
    differ (or it says `none`) and `git diff --stat <QA_SHA>..HEAD` touches
    non-doc paths, report a finding `qa-needed: <QA_SHA>..<HEAD_SHA>` (use the
    range's base for `none`). With no code defects besides it, the verdict is
-   `Verdict: changes-requested`.
+   `Verdict: approve`, with the `qa-needed: <QA_SHA>..<HEAD_SHA>` line kept
+   separate in the findings (the shipper contract needs `approve`).
 5. If the handoff lists steps reported `unrendered` (or visual steps with no
    screenshot), say so as an `important` finding: nothing in the diff proves
    it looks right. If screenshots are cited under `.foreman/`, you may read them.

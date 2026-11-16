@@ -177,12 +177,12 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (/^resume$/i.test(a)) {
-				if (!enter(ctx)) return;
 				const state = gatherResumeState(ctx.cwd ?? process.cwd());
 				if (!state) {
 					say(ctx, t("cmd.resume.none"), "warning");
 					return;
 				}
+				if (!enter(ctx)) return;
 				send(buildResumePrompt(state, { includeSkill: !branchHas(ctx, skillMarker(state)) }), ctx);
 				return;
 			}

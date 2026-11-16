@@ -107,9 +107,9 @@ performative agreement if the user or a delegate pushes back on your plan.
      `Verdict: changes-requested`: delegate the fixes to `qa-bugfix` with the
      findings, then dispatch the `reviewer` again over the new range. Repeat
      until `Verdict: approve` or the user explicitly accepts the open findings.
-     A verdict whose only finding is `qa-needed` means dispatch `qa` over the
-     named range, then ship if it is green (no second review unless `qa`
-     finds problems).
+     `Verdict: approve` with a separate `qa-needed: <QA_SHA>..<HEAD_SHA>` line
+     means run one `qa` over that range BEFORE dispatching the shipper, and
+     ship only if `qa` is green (no second review unless `qa` finds problems).
   3. On `Verdict: approve`, fill in `templates/release-handoff-prompt.md` —
      reusing the status lines you already posted and the relevant
      `FOREMAN_MEMORY.md` entries — including its `## Review` section (reviewer

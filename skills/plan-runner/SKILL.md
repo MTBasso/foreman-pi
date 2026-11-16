@@ -220,8 +220,9 @@ the footer carries the language), dispatch the `reviewer` role via `foreman_dele
 notification read the `Verdict:` token in the summary: `changes-requested`
 means dispatch `qa-bugfix` with the findings, then the `reviewer` again over
 the new range, until `Verdict: approve` (or the user accepts the open findings).
-A verdict whose only finding is `qa-needed` means dispatch `qa` over the named
-range, then ship if it is green (no second review unless `qa` finds problems).
+`Verdict: approve` with a separate `qa-needed: <QA_SHA>..<HEAD_SHA>` line means
+run one `qa` over that range BEFORE dispatching the shipper, and ship only if
+`qa` is green (no second review unless `qa` finds problems).
 
 ## 4. Handoff
 
