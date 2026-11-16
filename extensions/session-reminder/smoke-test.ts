@@ -265,6 +265,7 @@ async function main() {
 		}
 		const base = (await run("startup", [], withTool)) ?? "";
 		check("BASE_REMINDER names /foreman resume", base.includes("/foreman resume"));
+		check("reminder tells the user to run /foreman and /plan-runner", /cannot load these two skills/i.test(base) && base.includes("/plan-runner <plan>") && !/use the foreman skill|use plan-runner/.test(base), base);
 	}
 
 	for (const k of ENV_KEYS) if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k]; else delete process.env[k];

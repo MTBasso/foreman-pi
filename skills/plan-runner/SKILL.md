@@ -1,6 +1,7 @@
 ---
 name: plan-runner
 description: Runs an already-approved plan in docs/plans/ end to end, on repos with their own build-plan/plan-status/verify-change tooling. Never builds or edits code itself. Invoke with /plan-runner <plan>.
+disable-model-invocation: true
 ---
 
 # Plan Runner

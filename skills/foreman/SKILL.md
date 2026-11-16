@@ -1,6 +1,7 @@
 ---
 name: foreman
 description: Turns the current session into the foreman orchestrator — grills a feature/bug, delegates planning/building/QA/release, never implements anything itself. Invoke with /foreman, or "act as my foreman"/"act as my tech lead".
+disable-model-invocation: true
 ---
 
 # Foreman

@@ -45,9 +45,10 @@ const MEMORY_NAME = "FOREMAN_MEMORY.md";
 
 const BASE_REMINDER =
 	"This project has the foreman plugin. For a new feature/bug that needs " +
-	"grilling+planning+building+QA+release, use the foreman skill (/foreman). " +
-	"For an already-approved plan under docs/plans/, use plan-runner " +
-	"(/plan-runner <plan>). To continue an interrupted run, the user types " +
+	"grilling+planning+building+QA+release, tell the user to run /foreman. " +
+	"For an already-approved plan under docs/plans/, tell the user to run " +
+	"/plan-runner <plan>. You cannot load these two skills yourself; they " +
+	"are user-invoked. To continue an interrupted run, the user types " +
 	"/foreman resume. If a prior run went wrong (repeated work, ignored " +
 	"plan, a stall, unexpected cost), use /foreman-diagnose. Orchestrator mode " +
 	"is entered with /foreman (or /plan-runner, /foreman-audit) and left with " +
