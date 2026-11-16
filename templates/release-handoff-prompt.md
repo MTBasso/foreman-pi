@@ -3,7 +3,7 @@ The foreman skill fills this in once its delegated waves for a feature are
 done (planning + building + any QA/bugfix loop), and spawns the
 shipper agent directly with this as its prompt -- same session, no
 copy-paste into a new one.
-The coordinator appends the language/mode/workdir footer; do not write it here.
+The coordinator appends the language/mode/workdir footer; omit it here.
 -->
 
 # Release handoff: <feature/change title>

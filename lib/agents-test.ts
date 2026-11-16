@@ -88,6 +88,61 @@ check(
 	);
 }
 
+{
+	// Phase C step 19: negation-led lines per agent/template (body only, frontmatter excluded) vs. the counts before the rewrite.
+	const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+	const BEFORE: Record<string, number> = {
+		"agents/backend-dev.md": 1,
+		"agents/codebase-auditor.md": 9,
+		"agents/frontend-dev.md": 4,
+		"agents/plan-step-builder.md": 3,
+		"agents/planner.md": 4,
+		"agents/qa-bugfix.md": 4,
+		"agents/qa.md": 8,
+		"agents/reviewer.md": 5,
+		"agents/shipper.md": 11,
+		"templates/handoff-prompt.md": 5,
+		"templates/handoff-summary.md": 0,
+		"templates/release-handoff-prompt.md": 1,
+		"templates/review-handoff-prompt.md": 3,
+	};
+	const neg = (t: string) => t.replace(/^---\n[\s\S]*?\n---\n/, "").split("\n").filter((l) => /\b(never|don't|do not|must not)\b/i.test(l)).length;
+	let before = 0;
+	let after = 0;
+	let each = true;
+	for (const [f, n] of Object.entries(BEFORE)) {
+		const c = neg(fs.readFileSync(path.join(dir, f), "utf8"));
+		before += n;
+		after += c;
+		if (c > n) each = false;
+	}
+	console.log(`note - negation-led lines: ${before} -> ${after}`);
+	check("negation-led lines per agent file do not increase and total drops", each && after < before, `${before} -> ${after}`);
+	let fmSame = true;
+	for (const n of EXPECTED) {
+		const fm = (t: string) => /^---\n([\s\S]*?)\n---/.exec(t)?.[1];
+		const old = execFileSync("git", ["show", `0747448:agents/${n}.md`], { cwd: dir, encoding: "utf8" });
+		if (fm(old) !== fm(fs.readFileSync(path.join(dir, "agents", `${n}.md`), "utf8"))) fmSame = false;
+	}
+	check("agent frontmatter equals the recorded snapshot", fmSame);
+	const rd = (f: string) => fs.readFileSync(path.join(dir, f), "utf8");
+	const reviewer = rd("agents/reviewer.md");
+	const shipper = rd("agents/shipper.md");
+	const auditor = rd("agents/codebase-auditor.md");
+	check(
+		"contract strings still present (Verdict tokens, Blocked-on: review reference, no push without instruction)",
+		/Verdict: approve/.test(reviewer) && /Verdict: changes-requested/.test(reviewer) && /writes? no files/.test(reviewer) &&
+			/Blocked-on: review reference/.test(shipper) && /Blocked-on: review verdict changes-requested/.test(shipper) && /Blocked-on: stale review/.test(shipper) &&
+			/Do not push and do not open a PR unless the handoff explicitly says to/.test(shipper) && /Never issue `git push`\s+and `gh pr create`/.test(shipper) && /never install it/.test(shipper) &&
+			/Never force-push/.test(shipper) && /FOREMAN_AUDIT\.md/.test(auditor) && /Commit only/.test(rd("templates/release-handoff-prompt.md")) && /Verdict: approve/.test(rd("templates/release-handoff-prompt.md")),
+	);
+	check(
+		"no copied Working discipline block (agents and templates)",
+		EXPECTED.every((n) => !/Working discipline|Stuck twice|Edit over Bash/i.test(rd(`agents/${n}.md`))) &&
+			!/Working discipline/i.test(rd("templates/handoff-prompt.md")),
+	);
+}
+
 try {
 	// 1. Package agents are all discovered.
 	{
