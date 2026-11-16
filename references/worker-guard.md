@@ -119,7 +119,9 @@ If a block is a false positive, change the policy in
   `wc`, `cp`, `mv`, `rm`); `printf` is not on it (`printf -v s ...` can rebind the loop variable). The text before `for` is checked
   the same way (only plain literal `NAME=value` assignments besides allowlisted
   commands; `(`, `{`, `trap`, `function`, `alias` refuse). `IFS` anywhere in the
-  command refuses both unrolling and literal-variable substitution; `$[` and
+  command refuses both unrolling and literal-variable substitution, and so does any `#`
+  (comments can hide a quote or a rebind from the scanner, so loops and variables
+  fall back to deny); `$[` and
   `{name}>` / `{name}<` in the body are refused. Anything else leaves the loop
   un-unrolled, so any `$s` path stays denied. A variable command word
   (`$P run $s`) therefore falls back to deny.

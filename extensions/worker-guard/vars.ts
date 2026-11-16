@@ -160,6 +160,8 @@ function substitute(text: string, name: string, value: string): string {
 export function resolveLiteralVars(command: string): string {
 	if (/IFS/.test(command)) return command; // IFS changes word splitting of the substituted value
 	if (!command.includes("$")) return command;
+	if (command.includes("#")) return command; // comments hide quotes/rebinds from this scanner: refuse
+	if (/\{[A-Za-z_][A-Za-z0-9_]*\}\s*[<>]/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command; // {NAME}> rebinds NAME
 	if (/[`()]|\$\(/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
 	if (/(^|[\s;&|])\{(\s|$)/.test(command)) return command; // brace group: the assignment inside might be conditional
 	if (COMPOUND.test(command)) return command;
@@ -275,7 +277,7 @@ export function expandForLoop(command: string): string {
 	const m = /^([\s\S]*?)(?:^|[\s;])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n$`()|&<>]+?)\s*[;\n]\s*do\b([\s\S]*?)(?:[;\n]\s*|\s+)done\b([\s\S]*)$/.exec(command);
 	if (!m) return command;
 	const [, prefix, name, list, body, suffix] = m;
-	if (/IFS/.test(command)) return command;
+	if (/IFS/.test(command) || command.includes("#")) return command; // '#' comments: refuse rather than parse
 	// The prefix may only hold plain literal assignments and allowlisted commands (no functions, traps, groups).
 	if (/[({]|\b(trap|function|alias)\b/.test(prefix)) return command;
 	const prefixCmds = prefix.split(/[;\n]/).filter((p) => p.trim() && !/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(['"]?)[A-Za-z0-9_.\/:@%+,=-]*\1\s*$/.test(p));
@@ -283,7 +285,7 @@ export function expandForLoop(command: string): string {
 	const words = list.trim().split(/\s+/);
 	if (words.length === 0 || words.length > 32 || !words.every((w) => LITERAL.test(w))) return command;
 	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;
-	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;])done(?=[\s;]|$)/.test(suffix)) return command;
+	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;&|])done(?=[\s;&|]|$)/.test(suffix)) return command;
 	if (new RegExp(`(^|[\\s;])${name}=`).test(body) || new RegExp(`(^|[\\s;])${name}=`).test(prefix)) return command;
 	// Fail-closed allowlist: unroll only when the body provably cannot rebind the loop variable at runtime.
 	if (!loopBodyAllowed(body)) return command;

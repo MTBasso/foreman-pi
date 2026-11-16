@@ -945,6 +945,13 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		`for s in .foreman; do echo $[s=1]; mkdir $s; done`,
 		`true {s}>/dev/null; mkdir $s`,
 		`for s in .foreman; do true {s}>/dev/null; mkdir $s; done`].every((c) => blocked(bash("qa", c))));
+	check("round 4: # comments, {D}> and &done do not hide rebinds",
+		[`for s in .foreman/a .foreman/b; do echo hi # '\nprintf -v s ../src/q\n#'\nmkdir $s\ndone`,
+		`for s in .foreman/a .foreman/b; do echo hi # "\nprintf -v s ../src/q\n#"\nmkdir $s\ndone`,
+		`echo hi # x\nfor s in .foreman/a; do mkdir $s; done`,
+		`D=.foreman/x # c\nrm $D/../../y`,
+		`D=.foreman/x; true {D}>/dev/null; rm $D`,
+		`for s in .foreman/a; do mkdir $s; done.d; cmd &done`].every((c) => blocked(bash("qa", c))));
 	check("loop var named like a literal body word is harmless and unrolls (allowlist)",
 		!blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
 	check("loop over a glob stays denied",
