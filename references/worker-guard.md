@@ -113,11 +113,16 @@ If a block is a false positive, change the policy in
   `shipper`) a path under a nested worktree such as `<root>/.worktrees/x/` is
   writable only below that worktree's `.foreman/`; `.foreman/../src` is resolved
   first and stays denied. Dev roles keep the `.git` and real `.env` denials there.
-- Loop rebinding: `for s in x y; do ...; done` is unrolled only when the loop
-  variable is not rebound in the body. If the variable appears as a bare word
-  (`printf -v s ...`, `declare s`, `mapfile s`, `getopts ... s`), the command is
-  left un-unrolled, so any `$s` path stays denied (a loop variable named like a
-  literal body word is a known false positive).
+- Loop rebinding: `for s in x y; do ...; done` is unrolled only under an allowlist.
+  Every command word in the body must be a bare word from a fixed list (`echo`,
+  `cat`, `ls`, `mkdir`, `touch`, `tee`, `test`, `true`, `grep`, `head`, `tail`,
+  `wc`, `cp`, `mv`, `rm`); `printf` is not on it (`printf -v s ...` can rebind the loop variable). The text before `for` is checked
+  the same way (only plain literal `NAME=value` assignments besides allowlisted
+  commands; `(`, `{`, `trap`, `function`, `alias` refuse). `IFS` anywhere in the
+  command refuses both unrolling and literal-variable substitution; `$[` and
+  `{name}>` / `{name}<` in the body are refused. Anything else leaves the loop
+  un-unrolled, so any `$s` path stays denied. A variable command word
+  (`$P run $s`) therefore falls back to deny.
 
 ## v0.3 notes
 

@@ -158,6 +158,7 @@ function substitute(text: string, name: string, value: string): string {
 }
 
 export function resolveLiteralVars(command: string): string {
+	if (/IFS/.test(command)) return command; // IFS changes word splitting of the substituted value
 	if (!command.includes("$")) return command;
 	if (/[`()]|\$\(/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
 	if (/(^|[\s;&|])\{(\s|$)/.test(command)) return command; // brace group: the assignment inside might be conditional
@@ -202,11 +203,11 @@ export function resolveLiteralVars(command: string): string {
 	return out;
 }
 
-const LOOP_COMMANDS = new Set(["echo", "printf", "cat", "ls", "mkdir", "touch", "tee", "test", "true", "grep", "head", "tail", "wc", "cp", "mv", "rm"]);
+const LOOP_COMMANDS = new Set(["echo", "cat", "ls", "mkdir", "touch", "tee", "test", "true", "grep", "head", "tail", "wc", "cp", "mv", "rm"]);
 
 /**
  * Allowlist for a for-loop body: every simple command word is bare and in LOOP_COMMANDS,
- * `printf` takes no option-like argument, and nothing outside single quotes can assign
+ * and nothing outside single quotes can assign
  * (`+=`, `[..]=`, `${x=..}`), escape (backslash, backtick) or substitute (`$(`, `<(`, `>(`).
  */
 function loopBodyAllowed(body: string): boolean {
@@ -253,12 +254,11 @@ function loopBodyAllowed(body: string): boolean {
 	}
 	if (quote) return false;
 	endWord();
-	if (/\+=|\[[^\]]*\]=|\$\(|[<>]\(/.test(outside)) return false;
+	if (/\+=|\[[^\]]*\]=|\$\(|[<>]\(|\$\[|\{[A-Za-z_][A-Za-z0-9_]*\}\s*[<>]/.test(outside)) return false;
 	if (/\$\{(?![A-Za-z_][A-Za-z0-9_]*\})/.test(outside)) return false;
 	for (const words of cmds) {
 		if (words.length === 0) continue;
 		if (!/^[a-z]+$/.test(words[0]) || !LOOP_COMMANDS.has(words[0])) return false;
-		if (words[0] === "printf" && words.slice(1).some((w) => /^["']*-/.test(w))) return false;
 	}
 	return true;
 }
@@ -275,6 +275,11 @@ export function expandForLoop(command: string): string {
 	const m = /^([\s\S]*?)(?:^|[\s;])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n$`()|&<>]+?)\s*[;\n]\s*do\b([\s\S]*?)(?:[;\n]\s*|\s+)done\b([\s\S]*)$/.exec(command);
 	if (!m) return command;
 	const [, prefix, name, list, body, suffix] = m;
+	if (/IFS/.test(command)) return command;
+	// The prefix may only hold plain literal assignments and allowlisted commands (no functions, traps, groups).
+	if (/[({]|\b(trap|function|alias)\b/.test(prefix)) return command;
+	const prefixCmds = prefix.split(/[;\n]/).filter((p) => p.trim() && !/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(['"]?)[A-Za-z0-9_.\/:@%+,=-]*\1\s*$/.test(p));
+	if (prefixCmds.length && !loopBodyAllowed(prefixCmds.join(";"))) return command;
 	const words = list.trim().split(/\s+/);
 	if (words.length === 0 || words.length > 32 || !words.every((w) => LITERAL.test(w))) return command;
 	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;

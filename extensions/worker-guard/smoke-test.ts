@@ -933,7 +933,18 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		bypass.every((b) => blocked(bash("qa", `for s in x y; do ${b}; echo hi > .foreman/$s; done`))));
 	check("plain literal for-loop still unrolled (C5 cases unchanged)",
 		!blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
-		!blocked(bash("qa", `for s in x y; do printf '%s' "$s" > .foreman/$s.txt; done`)));
+		!blocked(bash("qa", `for s in x y; do echo "$s" > .foreman/$s.txt; done`)));
+	check("round 3: printf, prefix, IFS, $[ and {n}> escapes are denied",
+		[`for s in x y; do printf $'-v' s ../src/q; echo hi > .foreman/$s; done`,
+		`for s in x y; do printf \${e}-v s ../src/q; echo hi > .foreman/$s; done`,
+		`for s in x y; do printf $"-v" s ../src/q; echo hi > .foreman/$s; done`,
+		`echo() { printf -vs ../src/q; }; for s in x y; do echo a; echo hi > .foreman/$s; done`,
+		`trap 'printf -vs ../src/q' DEBUG; for s in x y; do echo a; echo hi > .foreman/$s; done`,
+		`IFS=/; for s in .foreman/x; do mkdir $s; done`,
+		`IFS=/; D=.foreman/x; rm $D`,
+		`for s in .foreman; do echo $[s=1]; mkdir $s; done`,
+		`true {s}>/dev/null; mkdir $s`,
+		`for s in .foreman; do true {s}>/dev/null; mkdir $s; done`].every((c) => blocked(bash("qa", c))));
 	check("loop var named like a literal body word is harmless and unrolls (allowlist)",
 		!blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
 	check("loop over a glob stays denied",
