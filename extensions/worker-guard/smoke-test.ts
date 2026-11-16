@@ -895,11 +895,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	const blocked = (v: { block: boolean }) => v.block;
 	const P = `${repo}/.foreman/tool`;
 	check("literal var assigned then used inside a for-loop redirect is judged on the real path",
-		!blocked(bash("qa", `P=${P}; for s in a b c; do $P run $s > ${tmp}/o_$s.txt; done`)) &&
-		!blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s > .foreman/o_$s.txt 2>&1; done`)) &&
-		!blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s 2>&1 | tail -3 > .foreman/o_$s.txt; done`)) &&
 		!blocked(bash("qa", `D=.foreman/o; mkdir -p $D && for s in a b c; do echo $s > $D/$s.txt; done`)) &&
 		!blocked(bash("qa", `D=.foreman/o\nfor s in a b c; do\n echo $s > $D/$s.txt 2>&1\ndone`)));
+	check("for-loop whose body command word is a variable ($P run $s) is not unrolled (allowlist) and stays denied",
+		blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s > .foreman/o_$s.txt 2>&1; done`)));
 	check("the real path is still judged after composing (qa into src / outside)",
 		blocked(bash("qa", `D=src; for s in a b; do echo $s > $D/$s.txt 2>&1; done`)) &&
 		blocked(bash("qa", `D=${outside}; mkdir -p .foreman/x && for s in a b; do echo $s > $D/$s.txt; done`)) &&
@@ -927,11 +926,16 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		blocked(bash("qa", `for s in x y; do local s=../src; echo hi > .foreman/$s; done`)) &&
 		blocked(bash("qa", `for s in x y; do mapfile s < /dev/null; echo hi > .foreman/$s; done`)) &&
 		blocked(bash("qa", `for s in x y; do getopts ab s; echo hi > .foreman/$s; done`)));
+	const bypass = ["\\printf -vs ../src/q", `"printf" -vs ../src/q`, "'printf' -v s ../src/q", "command printf -v s ../src/q", "builtin printf -v s ../src/q",
+		"s+=x", "s[0]=../src/q", `readonly "s=../src/q"`, `declare -n "s"`, "read s", "IFS= read s", "source x", ". x", "eval", "exec", "{ printf -vs ../src/q; }",
+		"printf -vs ../src/q", "printf -- -v s ../src/q", "s=../src/q", "echo ${s:=../src/q}", "echo $((s=1))"];
+	check("allowlist: every rebind spelling in a for-loop body is denied",
+		bypass.every((b) => blocked(bash("qa", `for s in x y; do ${b}; echo hi > .foreman/$s; done`))));
 	check("plain literal for-loop still unrolled (C5 cases unchanged)",
 		!blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
 		!blocked(bash("qa", `for s in x y; do printf '%s' "$s" > .foreman/$s.txt; done`)));
-	check("loop var named like a literal body word falls back to deny",
-		blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
+	check("loop var named like a literal body word is harmless and unrolls (allowlist)",
+		!blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
 	check("loop over a glob stays denied",
 		blocked(bash("qa", `D=.foreman/o; for s in *.txt; do echo x > $D/$s 2>&1; done`)) &&
 		blocked(bash("qa", `D=.foreman/o; for s in $(ls); do echo x > $D/$s; done`)));

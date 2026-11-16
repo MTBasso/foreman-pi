@@ -175,6 +175,7 @@ check("planner: pre-flight names capture tool and runner existence, gaps under R
 // --- Phase C step 17: reviewer QA coverage ----------------------------------
 check("review template has QA covered up to", /QA covered up to: <sha or none>/.test(reviewTpl));
 check("reviewer.md names qa-needed and the diff --stat rule", /qa-needed: <QA_SHA>\.\.<HEAD_SHA>/.test(reviewer) && /git diff --stat <QA_SHA>\.\.HEAD/.test(reviewer) && /QA covered up to/.test(reviewer));
+check("reviewer.md repeats qa-needed in the Summary line", /repeat\s+the `qa-needed: <QA_SHA>\.\.<HEAD_SHA>` token in your `Summary:`/.test(reviewer));
 check("skills and delegation reference route qa-needed to qa", [pr, delegationRef].every((t) => /qa-needed/.test(t) && /`qa`/.test(t)));
 check("qa-needed rides on Verdict: approve and qa runs BEFORE the shipper", /`Verdict: approve`, with the `qa-needed/.test(reviewer) && [pr, delegationRef].every((t) => /`Verdict: approve` with a separate `qa-needed: <QA_SHA>\.\.<HEAD_SHA>` line/.test(t) && /BEFORE dispatching the shipper/.test(t) && /only if\s+`qa` is green/.test(t)));
 check("worker-common keeps imperative guard rules", /do not retry or work around it/.test(common) && /never run `git stash`, `reset --hard`, `clean` or `checkout -- \.`/.test(common) && /passing unit tests is not evidence/.test(common));

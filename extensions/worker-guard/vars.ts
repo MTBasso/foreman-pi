@@ -202,6 +202,67 @@ export function resolveLiteralVars(command: string): string {
 	return out;
 }
 
+const LOOP_COMMANDS = new Set(["echo", "printf", "cat", "ls", "mkdir", "touch", "tee", "test", "true", "grep", "head", "tail", "wc", "cp", "mv", "rm"]);
+
+/**
+ * Allowlist for a for-loop body: every simple command word is bare and in LOOP_COMMANDS,
+ * `printf` takes no option-like argument, and nothing outside single quotes can assign
+ * (`+=`, `[..]=`, `${x=..}`), escape (backslash, backtick) or substitute (`$(`, `<(`, `>(`).
+ */
+function loopBodyAllowed(body: string): boolean {
+	const cmds: string[][] = [[]];
+	let word = "";
+	let hasWord = false;
+	let quote: "" | "'" | '"' = "";
+	let outside = ""; // body with single-quoted literal text blanked
+	const endWord = () => {
+		if (hasWord) cmds[cmds.length - 1].push(word);
+		word = "";
+		hasWord = false;
+	};
+	const endCmd = () => {
+		endWord();
+		cmds.push([]);
+	};
+	for (let i = 0; i < body.length; i++) {
+		const c = body[i];
+		if (quote === "'") {
+			if (c === "'") quote = "";
+			else { word += c; outside += " "; continue; }
+			word += c; outside += c;
+			continue;
+		}
+		if (c === "\\" || c === "`") return false;
+		outside += c;
+		if (quote === '"') {
+			if (c === '"') quote = "";
+			word += c;
+			continue;
+		}
+		if (c === "'" || c === '"') { quote = c; word += c; hasWord = true; continue; }
+		if (c === ";" || c === "\n" || c === "|") { endCmd(); continue; }
+		if (c === "&") {
+			const prev = body[i - 1], next = body[i + 1];
+			if (prev === ">" || prev === "<" || next === ">") { word += c; hasWord = true; continue; }
+			endCmd();
+			continue;
+		}
+		if (/\s/.test(c)) { endWord(); continue; }
+		word += c;
+		hasWord = true;
+	}
+	if (quote) return false;
+	endWord();
+	if (/\+=|\[[^\]]*\]=|\$\(|[<>]\(/.test(outside)) return false;
+	if (/\$\{(?![A-Za-z_][A-Za-z0-9_]*\})/.test(outside)) return false;
+	for (const words of cmds) {
+		if (words.length === 0) continue;
+		if (!/^[a-z]+$/.test(words[0]) || !LOOP_COMMANDS.has(words[0])) return false;
+		if (words[0] === "printf" && words.slice(1).some((w) => /^["']*-/.test(w))) return false;
+	}
+	return true;
+}
+
 /**
  * Unroll one simple `for VAR in <literal words>; do BODY; done` into straight-line
  * statements (one copy of BODY per word, VAR replaced by the literal), so the guard
@@ -219,10 +280,8 @@ export function expandForLoop(command: string): string {
 	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;
 	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;])done(?=[\s;]|$)/.test(suffix)) return command;
 	if (new RegExp(`(^|[\\s;])${name}=`).test(body) || new RegExp(`(^|[\\s;])${name}=`).test(prefix)) return command;
-	// Any construct that can rebind a variable by name, in any spelling (`printf -vs`, `-v "s"`, `declare -n "s"`): do not unroll.
-	if (/(^|[\s;])(declare|typeset|local|mapfile|readarray|getopts|read|eval|export|printf\s+(?:\S+\s+)*?["']?-v)/.test(body)) return command;
-	// The loop variable as a bare word in BODY (`printf -v s`, `declare -n s`, `local s`, `mapfile s`, `getopts x s`, ...) may rebind it at runtime: do not unroll.
-	if (new RegExp(`(^|[\\s;])${name}(?=[\\s;]|$)`).test(body)) return command;
+	// Fail-closed allowlist: unroll only when the body provably cannot rebind the loop variable at runtime.
+	if (!loopBodyAllowed(body)) return command;
 	const copies = words.map((w) => substitute(body.replace(/^\s*;?/, ""), name, w).replace(/[;\s]+$/, ""));
 	return `${prefix.replace(/[;\s]*$/, "")}\n${copies.join("\n")}\n${suffix.replace(/^[;\s]+/, "")}`;
 }
