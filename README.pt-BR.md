@@ -312,6 +312,8 @@ lib/                     módulos compartilhados e seus testes
 agents/                  as 9 definições de worker
 skills/                  foreman, plan-runner, project-memory, design-preview
 references/              documentos de apoio para os quais as skills apontam
+                         (worker-common, foreman-audit, foreman-delegation,
+                         grilling-fallback, ...)
 templates/               template do prompt de handoff
 scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ e verification-log.md

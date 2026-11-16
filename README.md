@@ -324,7 +324,8 @@ extensions/              foreman-mode, orchestrator-guardrail, coordination,
 lib/                     shared modules and their tests
 agents/                  the 9 worker definitions
 skills/                  foreman, plan-runner, project-memory, design-preview
-references/              supporting docs the skills point to
+references/              supporting docs the skills point to (worker-common,
+                         foreman-audit, foreman-delegation, grilling-fallback, ...)
 templates/               handoff prompt template
 scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ and verification-log.md

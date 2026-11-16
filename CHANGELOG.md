@@ -38,6 +38,33 @@ Reliability Phase B (token cuts).
 - The coordinator appends a short worker footer (language, orchestrator-mode note, working directory) to every handoff; handoff templates and skills are slimmer and the orchestrator writes only the deltas (A2).
 - Stale `foreman_delegate` handoffs from earlier turns are pruned from context to a stub pointing at the run json; the delegate result text now includes `run_id` (A1).
 
+Reliability Phase C (prompt rewrites and remaining guardrails).
+
+### Added
+
+- `/foreman resume`: enters orchestrator mode and rebuilds the last run's state (plan Status, ledger tail, unfinished workers) (D3).
+- Notification lines `report: N lines` (A8) and `verified: yes|no|n/a`: a plan step's declared `npm run` Checks are re-run before the notification (C6).
+- Attempt warnings: the 3rd dispatch of a step after two blocked or failed outcomes carries the reasons, also after a session resume (C1).
+- plan-runner preflight block handed to the orchestrator.
+- `FOREMAN_BACKOFF_DECAY_S` (default 300), `FOREMAN_VERIFY_CHECKS` (default on) and `FOREMAN_VERIFY_TIMEOUT_S` (default 600).
+- New references `foreman-audit.md`, `foreman-delegation.md` and `grilling-fallback.md`.
+
+### Changed
+
+- The foreman skill is split: audit and delegation detail live in references read on demand; grilling reuses the `grilling` skill (A6, B3).
+- Worker-facing text (`worker-common.md`, templates, agents) is rewritten in positive form and shorter (B1).
+- `foreman` and `plan-runner` are user-invoked skills (`disable-model-invocation`); the reminder tells the user to run `/foreman` or `/plan-runner` (A7).
+- The session reminder is injected once per session, not again on resume (D4).
+- The planner template has Seams, Out of scope and Status, and uses `Touches`/`Checks`; plan-runner treats the plan `## Status` as source of truth (B2, D1, D2).
+- A degraded worker pool halves once per burst of rate limits and recovers by time.
+
+### Fixed
+
+- `kill` during a rate-limit back-off returns at once.
+- Resumed reviewer, qa, auditor, planner and shipper workers get their own role's preamble.
+- Guard: the innermost nested worktree decides the `.foreman` allowance.
+- Guard: for-loops that may rebind the loop variable (`printf -v`, `declare`, `mapfile`, `getopts`) are not unrolled.
+
 ## [0.3.4]
 
 ### Changed

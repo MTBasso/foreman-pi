@@ -46,7 +46,7 @@ const EXPECTED_AGENTS = [
 	"reviewer",
 	"shipper",
 ];
-const REQUIRED_FILES = ["package.json", "LICENSE", "README.md", "README.pt-BR.md", "CHANGELOG.md", "lib/agents.ts", "lib/spawn.ts", "lib/mode.ts", "lib/workers.ts", "lib/ui.ts", "scripts/run-suites.mjs", "scripts/trace-report.mjs"];
+const REQUIRED_FILES = ["package.json", "LICENSE", "README.md", "README.pt-BR.md", "CHANGELOG.md", "lib/agents.ts", "lib/spawn.ts", "lib/mode.ts", "lib/workers.ts", "lib/ui.ts", "scripts/run-suites.mjs", "scripts/trace-report.mjs", "references/worker-common.md", "references/foreman-audit.md", "references/foreman-delegation.md", "references/grilling-fallback.md"];
 const FORBIDDEN = [/(^|\/)smoke-test\.ts$/, /-test\.ts$/, /(^|\/)live-[^/]*\.ts$/, /^agents\/models\.json$/, /(^|\/)node_modules\//];
 // ---------------------------------------------------------------------------
 
