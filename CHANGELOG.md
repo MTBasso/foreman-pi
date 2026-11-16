@@ -15,6 +15,7 @@ Reliability Phase A.
 
 ### Changed
 
+- worker-guard fails closed on for-loops and `$VAR` paths (`UNROLL_ENABLED = false` in `vars.ts`): five review rounds found bypasses in unrolling and literal-var substitution; write one literal command per path.
 - Workers start with `--no-skills`; set `FOREMAN_WORKER_SKILLS=1` to load your global skills (A4).
 - Guard denials are non-fatal: the worker is told to skip that command and continue; the guard composes literal variables with for-loops and pipes, allows `.foreman` dirs and widens the python read-only probe (C5).
 - The planner can `edit` its plan file (`docs/plans/<slug>.md`) instead of re-emitting it, with large-plan and revision rules (A9).

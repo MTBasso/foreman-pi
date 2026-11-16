@@ -113,24 +113,14 @@ If a block is a false positive, change the policy in
   `shipper`) a path under a nested worktree such as `<root>/.worktrees/x/` is
   writable only below that worktree's `.foreman/`; `.foreman/../src` is resolved
   first and stays denied. Dev roles keep the `.git` and real `.env` denials there.
-- Loop rebinding: `for s in x y; do ...; done` is unrolled only under an allowlist.
-  Every command word in the body must be a bare word from a fixed list (`echo`,
-  `cat`, `ls`, `mkdir`, `touch`, `tee`, `test`, `true`, `grep`, `head`, `tail`,
-  `wc`, `cp`, `mv`, `rm`); `printf` is not on it (`printf -v s ...` can rebind the loop variable). The text before `for` is checked
-  the same way (only plain literal `NAME=value` assignments besides allowlisted
-  commands; `(`, `{`, `trap`, `function`, `alias` refuse). `IFS` anywhere in the
-  command refuses both unrolling and literal-variable substitution, and so does any `#`
-  (comments can hide a quote or a rebind from the scanner, so loops and variables
-  fall back to deny); `$[` and
-  `{name}>` / `{name}<` in the body are refused. Anything else leaves the loop
-  un-unrolled, so any `$s` path stays denied. A variable command word
-  (`$P run $s`) therefore falls back to deny.
+- Loops and variable paths are denied. `for` loops with a variable path and `$VAR`
+  paths (even `D=.foreman/x; mkdir -p $D/seed`) are no longer unrolled or substituted:
+  five review rounds kept finding quote-scanner and rebind bypasses (`$'\''` desync, `printf -v $a$b` spliced names), so
+  `extensions/worker-guard/vars.ts` fails closed (`UNROLL_ENABLED = false`). Write one
+  literal command per path, or use `scripts/run-suites.mjs` for suites.
 
 ## v0.3 notes
 
-- `extensions/worker-guard/vars.ts` rewrites `$VAR` to a literal only when it is
-  assigned a plain literal exactly once as its own statement earlier in the same
-  command; otherwise the variable stays unresolved and the guard denies as before.
 - qa/shipper may write scratch to the temp dir; read-only git forms
   (`stash list|show`, `worktree list`, `branch --list`, `tag -l`) are allowed;
   `git stash` mutations are denied for writer roles.

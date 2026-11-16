@@ -157,7 +157,17 @@ function substitute(text: string, name: string, value: string): string {
 	return out;
 }
 
+/**
+ * Fail closed. Five review rounds (t46-t50) kept finding bypasses in loop unrolling and
+ * literal-var substitution (e.g. `$'\\''` desyncing the quote scanner, `printf -v $a$b`
+ * spliced names): they rely on hand-written shell models that disagree with bash. Both
+ * functions now return the command unchanged, so `$VAR` paths and variable for-loops hit
+ * the normal deny path. Set to true only after a separately designed, reviewed feature.
+ */
+const UNROLL_ENABLED = false;
+
 export function resolveLiteralVars(command: string): string {
+	if (!UNROLL_ENABLED) return command;
 	if (/IFS/.test(command)) return command; // IFS changes word splitting of the substituted value
 	if (!command.includes("$")) return command;
 	if (command.includes("#")) return command; // comments hide quotes/rebinds from this scanner: refuse
@@ -274,6 +284,7 @@ function loopBodyAllowed(body: string): boolean {
  * the command unchanged (the guard then denies any `$VAR` path as before).
  */
 export function expandForLoop(command: string): string {
+	if (!UNROLL_ENABLED) return command; // see UNROLL_ENABLED
 	const m = /^([\s\S]*?)(?:^|[\s;])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n$`()|&<>]+?)\s*[;\n]\s*do\b([\s\S]*?)(?:[;\n]\s*|\s+)done\b([\s\S]*)$/.exec(command);
 	if (!m) return command;
 	const [, prefix, name, list, body, suffix] = m;

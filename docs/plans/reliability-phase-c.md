@@ -274,6 +274,8 @@ Source of truth for plan-runner; mark a step `merged` only when it is on the pla
 - Step 20: merged
 - Step 21: merged
 
+Post-review note: `expandForLoop` and `resolveLiteralVars` are disabled (`UNROLL_ENABLED = false`, fail closed) after five review rounds of bypasses; loops and `$VAR` paths are denied again.
+
 ## Out of scope
 
 - Phase A and B items not named here: E1 follow-ups, `scripts/herdr-tail.mjs` live activity, `handoff_file` for `foreman_delegate`, LLM-assisted compaction, writing the user's `settings.json`, `ctx.getContextUsage()` nudging.

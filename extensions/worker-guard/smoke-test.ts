@@ -802,8 +802,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 {
 	const blocked = (v: { block: boolean }) => v.block;
 	check("var: literal in-repo dir resolves for dev", !blocked(bash("backend-dev", "D=.foreman/x; mkdir -p $D/seed")));
-	check("var: literal tmp dir resolves for qa", !blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
-	check("var: heredoc to $F/path resolves", !blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("var: literal tmp dir is denied (fail-closed, no substitution)", blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("var: heredoc to $F/path is denied (fail-closed, no substitution)", blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
 	check("var: resolved path is still judged (outside repo)", blocked(bash("backend-dev", `O=${outside}; echo x > $O/f`)));
 	check("var: resolved path is still judged (qa into src)", blocked(bash("qa", "D=src; echo x > $D/a.ts")));
 	check("var: rm -rf $S still blocked when S unresolved", blocked(bash("backend-dev", "rm -rf $S")));
@@ -840,7 +842,8 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		check(`${role}: other .git files still blocked`, blocked(bash(role, `echo x >> .git/config`)) && blocked(bash(role, `echo x >> .git/hooks/pre-commit`)));
 		check(`${role}: .git inside a linked worktree still blocked`, blocked(write(role, `${sib}/.git`)));
 		check(`${role}: unrelated outside dir still blocked`, blocked(write(role, `${outside}/x.txt`)));
-		check(`${role}: literal for-loop with redirect to tmp var`, !blocked(bash(role, `for n in a b c; do echo $n >${tmp}/o_$n.txt 2>&1; done`)));
+		// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+		check(`${role}: literal for-loop with redirect to tmp var is denied (fail-closed)`, blocked(bash(role, `for n in a b c; do echo $n >${tmp}/o_$n.txt 2>&1; done`)));
 		check(`${role}: for-loop unrolled path is still judged`, blocked(bash(role, `for n in a b; do echo $n > ${outside}/o_$n.txt; done`)));
 		check(`${role}: for-loop over command substitution still blocked`, blocked(bash(role, `for n in $(ls); do echo $n > ${tmp}/o_$n; done`)));
 		check(`${role}: for-loop var that could be a path still blocked`, blocked(bash(role, `for n in ../../etc/x; do echo x > $n; done`)));
@@ -894,9 +897,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 {
 	const blocked = (v: { block: boolean }) => v.block;
 	const P = `${repo}/.foreman/tool`;
-	check("literal var assigned then used inside a for-loop redirect is judged on the real path",
-		!blocked(bash("qa", `D=.foreman/o; mkdir -p $D && for s in a b c; do echo $s > $D/$s.txt; done`)) &&
-		!blocked(bash("qa", `D=.foreman/o\nfor s in a b c; do\n echo $s > $D/$s.txt 2>&1\ndone`)));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("literal var used inside a for-loop redirect is denied (fail-closed)",
+		blocked(bash("qa", `D=.foreman/o; mkdir -p $D && for s in a b c; do echo $s > $D/$s.txt; done`)) &&
+		blocked(bash("qa", `D=.foreman/o\nfor s in a b c; do\n echo $s > $D/$s.txt 2>&1\ndone`)));
 	check("for-loop whose body command word is a variable ($P run $s) is not unrolled (allowlist) and stays denied",
 		blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s > .foreman/o_$s.txt 2>&1; done`)));
 	check("the real path is still judged after composing (qa into src / outside)",
@@ -931,9 +935,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		"printf -vs ../src/q", "printf -- -v s ../src/q", "s=../src/q", "echo ${s:=../src/q}", "echo $((s=1))"];
 	check("allowlist: every rebind spelling in a for-loop body is denied",
 		bypass.every((b) => blocked(bash("qa", `for s in x y; do ${b}; echo hi > .foreman/$s; done`))));
-	check("plain literal for-loop still unrolled (C5 cases unchanged)",
-		!blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
-		!blocked(bash("qa", `for s in x y; do echo "$s" > .foreman/$s.txt; done`)));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("plain literal for-loop is denied (fail-closed, no unrolling)",
+		blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do echo "$s" > .foreman/$s.txt; done`)));
 	check("round 3: printf, prefix, IFS, $[ and {n}> escapes are denied",
 		[`for s in x y; do printf $'-v' s ../src/q; echo hi > .foreman/$s; done`,
 		`for s in x y; do printf \${e}-v s ../src/q; echo hi > .foreman/$s; done`,
@@ -952,8 +957,9 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		`D=.foreman/x # c\nrm $D/../../y`,
 		`D=.foreman/x; true {D}>/dev/null; rm $D`,
 		`for s in .foreman/a; do mkdir $s; done.d; cmd &done`].every((c) => blocked(bash("qa", c))));
-	check("loop var named like a literal body word is harmless and unrolls (allowlist)",
-		!blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("loop var named like a literal body word is denied (fail-closed, no unrolling)",
+		blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
 	check("loop over a glob stays denied",
 		blocked(bash("qa", `D=.foreman/o; for s in *.txt; do echo x > $D/$s 2>&1; done`)) &&
 		blocked(bash("qa", `D=.foreman/o; for s in $(ls); do echo x > $D/$s; done`)));
@@ -1019,6 +1025,14 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("a nested .foreman symlink escaping to src is denied",
 		(() => { fs.mkdirSync(`${wa}/.foreman`, { recursive: true }); fs.mkdirSync(`${wa}/src`, { recursive: true }); fs.symlinkSync(`${wa}/src`, `${wa}/.foreman/tosrc`); return blocked(write("qa", `${wa}/.foreman/tosrc/f`)); })());
 	check("read-only roles may not write a nested worktree .foreman", blocked(write("reviewer", `${wa}/.foreman/x`)) && blocked(write("planner", `${wa}/.foreman/x`)));
+}
+
+// Fail-closed: loop unrolling and literal-var substitution are disabled (review t50, five rounds of bypasses).
+{
+	const probeDesync = String.raw`for s in .foreman/a .foreman/b; do echo $'\'' ; printf -v s ../src/q ; echo ' ; mkdir $s ; echo $'\''' ; mkdir $s; done`;
+	const probeSplice = "DIR=.foreman/x; a=DI; b=R; printf -v $a$b ../src/q; rm $DIR";
+	check("qa: $'\\'' quote-desync loop probe is denied", bash("qa", probeDesync).block === true);
+	check("qa: printf -v $a$b spliced-name probe is denied", bash("qa", probeSplice).block === true);
 }
 
 fs.rmSync(base, { recursive: true, force: true });
