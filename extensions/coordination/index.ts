@@ -18,7 +18,9 @@ import { t } from "../../lib/i18n.ts";
 import { createModeTracker } from "../../lib/mode.ts";
 import { safeUi, say } from "../../lib/ui.ts";
 import {
+	createHealthWatcher,
 	EMPTY_SNAPSHOT,
+	renderStuckNotice,
 	renderReport,
 	renderWorkersUi,
 	WORKERS_ABORT_EVENT,
@@ -36,6 +38,7 @@ import {
 	ROLES,
 	TASK_ENTRY_TYPE,
 } from "./coordinator.ts";
+import { resolveWorkdir } from "../../lib/worktree.ts";
 import { spawnWorker } from "./spawn-worker.ts";
 
 const STATUS_KEY = "foreman-workers";
@@ -48,6 +51,12 @@ const DelegateParams = Type.Object({
 	plan_step: Type.Optional(Type.Number({ description: "Plan step number this task belongs to (for the ledger)." })),
 	plan_slug: Type.Optional(
 		Type.String({ description: "Plan slug (docs/plans/<slug>.md); first non-empty value is latched for the run." }),
+	),
+	workdir: Type.Optional(
+		Type.String({
+			description:
+				"Absolute path of the plan worktree (or the repo root) the worker runs in. Set once by plan-runner step 0 to the plan worktree; remembered for later delegates in the run, a new value replaces it; an empty string or \".\" clears it.",
+		}),
 	),
 });
 
@@ -70,6 +79,11 @@ export function buildDetails(
 	return { ...ack, role: params.role as string, plan_step: params.plan_step, plan_slug: params.plan_slug };
 }
 
+/** Tool result text for a delegate ack; carries run_id so context pruning never depends on `details`. */
+export function delegateResultText(ack: DelegateAck): string {
+	return JSON.stringify({ task_id: ack.task_id, run_id: ack.run_id, state: ack.state, ack: ack.ack });
+}
+
 /** Plain-text-with-theme rendering of a call; exported for the smoke test. */
 export function callText(
 	args: { role?: unknown; plan_step?: unknown; plan_slug?: unknown; handoff_prompt?: unknown },
@@ -88,12 +102,12 @@ export default function (pi: ExtensionAPI) {
 }
 
 /** The extension body; `spawn` is injectable so the smoke test never starts a real `pi`. */
-export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest) => WorkerHandle) {
+export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest) => WorkerHandle, herdr = createHerdr()) {
 	// Workers never delegate: register nothing in subagent children.
 	if (process.env.FOREMAN_PI_SUBAGENT === "1") return;
 
 	const tracker = createModeTracker(pi);
-	const herdr = createHerdr();
+	const watcher = createHealthWatcher();
 	let coord: Coordinator | undefined;
 	let defaults: { model?: string; thinkingLevel?: string } = {};
 	/** Latest context seen, for status/widget updates (may go stale: every use is guarded). */
@@ -103,9 +117,19 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 
 	const snapshot = (): WorkersSnapshot => coord?.snapshot() ?? EMPTY_SNAPSHOT;
 
+	/** Stuck/repeating/recovered notices: UI and herdr only, never pi.sendMessage (no orchestrator tokens). */
+	function watchHealth() {
+		for (const n of watcher.check(snapshot(), Date.now())) {
+			const text = renderStuckNotice(n);
+			say(uiCtx, text, n.kind === "stuck" ? "warning" : "info");
+			if (n.kind === "stuck") herdr.notify(`foreman: ${n.taskId} ${n.health}`, text);
+		}
+	}
+
 	/** Redraw status bar + widget from the current snapshot; clear them when nothing is live. */
 	function refreshUi() {
-		const rendered = renderWorkersUi(snapshot(), Date.now());
+		watchHealth();
+		const rendered = renderWorkersUi(snapshot(), Date.now(), process.stdout.columns || 100);
 		const live = rendered.status !== undefined;
 		if (live && !ticker) {
 			// Elapsed times move without any state change, so tick while workers are live.
@@ -137,6 +161,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 			coord = createCoordinator({
 				root: cwd,
 				spawn,
+				resolveWorkdir,
 				sendMessage: (m, o) => {
 					const ns = ((m as any).details?.notifications ?? []) as Notification[];
 					for (const n of ns) {
@@ -200,7 +225,7 @@ export function registerCoordination(pi: ExtensionAPI, spawn: (req: SpawnRequest
 			};
 			const ack = get(ctx.cwd).delegate({ ...params, role: params.role as string }, defaults);
 			const details = buildDetails(ack, params);
-			return { content: [{ type: "text", text: JSON.stringify({ task_id: ack.task_id, state: ack.state, ack: ack.ack }) }], details };
+			return { content: [{ type: "text", text: delegateResultText(ack) }], details };
 		},
 
 		renderCall(args, theme, context) {

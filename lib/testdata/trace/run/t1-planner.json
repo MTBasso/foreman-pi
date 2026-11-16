@@ -1,0 +1,1 @@
+{"task_id":"t1-planner","run_id":"r1","role":"planner","plan_step":null,"state":"completed","handoff_prompt":"12345678","usage":{"input":10,"output":20,"cacheRead":30,"cacheWrite":40,"cost":0.5,"turns":2,"toolCalls":3,"attempts":1,"firstRequestTokens":70,"guardDenials":{"total":1,"byReason":{"no eval":1}}}}

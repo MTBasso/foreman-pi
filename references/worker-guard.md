@@ -4,6 +4,10 @@ The `worker-guard` extension (`extensions/worker-guard/`) is a path-scoped
 write policy for foreman workers. Read this when a worker reports
 `Status: blocked` because of it, or before trusting it as a safety boundary.
 
+Worker-facing rules (literal paths, one command per suite, scratch under
+`.foreman/`, what to do on a denial) live in `references/worker-common.md`,
+under Gotchas; this file is the policy reference and is not appended to worker prompts.
+
 ## What it does
 
 Each worker is a child `pi` spawned with `FOREMAN_PI_SUBAGENT=1` and
@@ -11,7 +15,11 @@ Each worker is a child `pi` spawned with `FOREMAN_PI_SUBAGENT=1` and
 other `pi` process (including the orchestrator session) it does nothing. An
 unknown role fails closed to read-only. Every `write`, `edit` and `bash` tool
 call is checked in a `tool_call` handler; a denial carries an English reason
-telling the worker to end its report with `Status: blocked`.
+telling the worker to stop that command, not work around it, keep going, list
+the command under `Guard-denied:` in its foreman-report, and use
+`Status: blocked` only if the denial prevents the core deliverable. The
+coordinator never rewrites the reported status; it surfaces `Guard-denied:`
+items in the task notification (`guard-denied:` line).
 
 | Role | May write |
 | --- | --- |
@@ -58,7 +66,10 @@ Details worth knowing:
   `find . -name '*.pyc' -delete` at the repo root stays denied (fail closed).
 - `cd` is tracked within a command string: later relative paths resolve against
   the new directory, so `cd .foreman && echo x > f` is allowed for `qa` and
-  `cd src && echo x > f` is not. `( ... )`, `$( ... )`, a pipeline and a
+  `cd src && echo x > f` is not. A `../x` redirect that resolves outside the
+  allowed area is a correct denial (`cd src && echo x > ../x.txt` stays blocked
+  for `qa`; `../.foreman/x.log` from a subdirectory is allowed because it
+  resolves inside `.foreman`). `( ... )`, `$( ... )`, a pipeline and a
   background `cd x &` are scoped (they do not change the parent's directory).
   A `cd` to something unresolvable (`$VAR`, `~`, a glob, no argument, `cd -`,
   `pushd`/`popd`), a `cd` that is conditional (`a && cd x; ...`, inside
@@ -73,6 +84,9 @@ Details worth knowing:
 
 This is a heuristic guard, not a sandbox.
 
+- `scripts/run-suites.mjs`: its child processes are not judged by the guard; it
+  validates suites (no leading `-`, so no flag injection; `--python`/`--pyright`
+  must be absolute) and only runs the named suite paths. The reviewer (read-only) never runs it.
 - Interpreters and build tools write anywhere: `node script.js`,
   `python x.py`, `make`, `npm run ...`, `git` hooks, `awk`, `tar`, `curl -o`.
   Only commands the parser can see are judged.
@@ -94,11 +108,19 @@ This is a heuristic guard, not a sandbox.
 If a block is a false positive, change the policy in
 `extensions/worker-guard/policy.ts` and add a case to `smoke-test.ts`.
 
+- Nested linked worktrees: the innermost worktree containing a path decides
+  (`owningWorktree` in `policy.ts`). For scoped roles (`qa`, `codebase-auditor`,
+  `shipper`) a path under a nested worktree such as `<root>/.worktrees/x/` is
+  writable only below that worktree's `.foreman/`; `.foreman/../src` is resolved
+  first and stays denied. Dev roles keep the `.git` and real `.env` denials there.
+- Loops and variable paths are denied. `for` loops with a variable path and `$VAR`
+  paths (even `D=.foreman/x; mkdir -p $D/seed`) are no longer unrolled or substituted:
+  five review rounds kept finding quote-scanner and rebind bypasses (`$'\''` desync, `printf -v $a$b` spliced names), so
+  `extensions/worker-guard/vars.ts` fails closed (`UNROLL_ENABLED = false`). Write one
+  literal command per path, or use `scripts/run-suites.mjs` for suites.
+
 ## v0.3 notes
 
-- `extensions/worker-guard/vars.ts` rewrites `$VAR` to a literal only when it is
-  assigned a plain literal exactly once as its own statement earlier in the same
-  command; otherwise the variable stays unresolved and the guard denies as before.
 - qa/shipper may write scratch to the temp dir; read-only git forms
   (`stash list|show`, `worktree list`, `branch --list`, `tag -l`) are allowed;
   `git stash` mutations are denied for writer roles.

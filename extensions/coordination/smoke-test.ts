@@ -6,16 +6,19 @@
  * fake ExtensionAPI for the wiring in index.ts. See live-rpc.ts for the real
  * end-to-end check.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHerdr } from "../../lib/herdr.ts";
+import { createBackoffGate, type BackoffGate } from "../../lib/backoff.ts";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { PACKAGE_ROOT, composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { t } from "../../lib/i18n.ts";
 import { MODE_EVENT } from "../../lib/mode.ts";
 import { ROLES as SHARED_ROLES } from "../../lib/roles.ts";
-import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, renderReport, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
-import extension, { buildDetails, callText, registerCoordination } from "./index.ts";
+import { GLYPHS, WORKERS_ABORT_EVENT, WORKERS_EVENT, createHealthWatcher, renderReport, renderStuckNotice, renderWorkersUi, type WorkersSnapshot } from "../../lib/workers.ts";
+import extension, { buildDetails, callText, delegateResultText, registerCoordination } from "./index.ts";
 import {
 	createCoordinator,
 	finalReport,
@@ -48,7 +51,7 @@ interface Sent {
 	ledgerLinesAtSend: number;
 }
 
-function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string } = {}) {
+function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boolean; root?: string; resolveWorkdir?: (root: string, requested: string) => string; maxWriters?: number; gate?: BackoffGate; now?: () => number; verify?: (o: any) => any } = {}) {
 	const root = opts.root ?? mkdtempSync(join(tmpdir(), "foreman-coord-"));
 	const workers = new Map<string, { req: SpawnRequest; resolve: (r: WorkerResult) => void; killed: boolean }>();
 	const spawned: string[] = [];
@@ -61,6 +64,11 @@ function harness(opts: { maxWorkers?: number; timeoutMs?: number; active?: boole
 		batchMs: 20,
 		timeoutMs: opts.timeoutMs ?? 0,
 		isOrchestratorActive: () => active,
+		resolveWorkdir: opts.resolveWorkdir,
+		maxWriters: opts.maxWriters,
+		gate: opts.gate,
+		...(opts.verify ? { verify: opts.verify } : {}),
+		...(opts.now ? { now: opts.now } : {}),
 		spawn(req) {
 			spawned.push(req.taskId);
 			let resolve!: (r: WorkerResult) => void;
@@ -426,6 +434,8 @@ async function main() {
 		check("renderCall hides plan_slug collapsed, shows expanded", !/my-plan/.test(callText(a, false, th)) && /my-plan/.test(callText(a, true, th)));
 		const det: any = buildDetails({ task_id: "t1-qa", state: "running", ack: "x", run_id: "r" } as any, a);
 		check("result details include role, plan_step, plan_slug", det.role === "qa" && det.plan_step === 7 && det.plan_slug === "my-plan" && det.task_id === "t1-qa");
+		const resTxt = JSON.parse(delegateResultText({ task_id: "t1-qa", state: "running", ack: "x", run_id: "r9" } as any));
+		check("delegate result text includes run_id", resTxt.run_id === "r9" && resTxt.task_id === "t1-qa" && resTxt.state === "running");
 		check("renderCall via tool def works", /step 7/.test(orch.tools[0].renderCall(a, th, { expanded: false }).render(200).join("\n")));
 		check("mode on (event) + unknown role -> execute throws Unknown role", /Unknown role/.test(err));
 		for (const h of orch.handlers.agent_settled ?? []) await h({ type: "agent_settled", aborted: false }, ctx);
@@ -518,6 +528,34 @@ async function main() {
 		check("render: no raw placeholders", ![en.status!, pt.status!, ...en.widget!, ...pt.widget!, en.rep, pt.rep].some((x) => /\{\w+\}/.test(x)));
 		const none = renderReport(empty, { active: false, source: "default" }, now);
 		check("report: empty state says nothing ran", none.includes(t("report.none")) && /off \(default\)/.test(none));
+
+		// E1 task 4: activity line and report detail.
+		const view = (o: Partial<import("../../lib/activity.ts").ActivityView> = {}): import("../../lib/activity.ts").ActivityView => ({
+			phase: "writing", label: "write app/static/js/builder.js 38 KB", bytes: 38_000, lastEventAt: now - 1000, turns: 3, toolCalls: 21, outTokens: 14_000, cost: 0.42,
+			recent: [], health: "active", denials: 0, lastDenial: "", ...o,
+		});
+		const snapA = (a?: import("../../lib/activity.ts").ActivityView, cols?: number, title = "Carousel UI") =>
+			renderWorkersUi({ running: [{ taskId: "t1-dev", role: "dev", planStep: 13, title, startedAt: now - 283_000, activity: a }], queued: 0, finished: [] }, now, cols).widget![0];
+		check("widget line for an active writing worker matches the documented shape", snapA(view()) === "● step 13 · Carousel UI · 4m43s · writing app/static/js/builder.js 38 KB · 21 tools · 14k out", snapA(view()));
+		const glyphs: Array<[import("../../lib/activity.ts").Health, string]> = [["active", "●"], ["waiting", "◐"], ["silent", "⚠"], ["repeating", "⟳"], ["denied", "✖"]];
+		check("each health glyph renders for its state", glyphs.every(([h, g]) => snapA(view({ health: h })).startsWith(`${g} step 13`)));
+		const longLine = snapA(view({ label: `write ${"very/long/dir/".repeat(20)}file.ts 90 KB` }), 100);
+		check("line at 100 columns is one line and keeps elapsed time when the label is long", Array.from(longLine).length <= 100 && !longLine.includes("\n") && longLine.startsWith("● step 13 · Carousel UI · 4m43s · writing") && longLine.endsWith("…"), longLine);
+		const narrow = snapA(view(), 30);
+		check("narrow width never cuts glyph, step/title or elapsed", narrow.startsWith("● step 13 · Carousel UI · 4m43s") && Array.from(narrow).length <= 40);
+		check("no-activity worker keeps the old line", snapA(undefined) === "▶ step 13 · Carousel UI · 4m43s" && snapA(view({ phase: "idle", label: "", turns: 0, toolCalls: 0, outTokens: 0, cost: 0 })) === "▶ step 13 · Carousel UI · 4m43s");
+		const qf = renderWorkersUi({ running: [{ taskId: "t1-dev", role: "dev", startedAt: now - 5000, activity: view() }], queued: 2, finished: [{ taskId: "t0-qa", role: "qa", state: "failed", finishedAt: now }] }, now).widget!;
+		check("queued and finished lines unchanged", qf[1] === "… 2 queued" && qf[2] === `${GLYPHS.failed} qa · failed`, JSON.stringify(qf));
+		const recent = Array.from({ length: 7 }, (_, i) => ({ label: `bash cmd${i}`, durationMs: 2000 + i * 1000, isError: false, at: now }));
+		const liveA: WorkersSnapshot = { running: [{ taskId: "t1-dev", role: "dev", planStep: 13, startedAt: now - 60_000, activity: view({ recent: recent.slice(0, 5), denials: 2, lastDenial: "Blocked by the foreman worker guard: x", health: "silent", lastEventAt: now - 95_000 }) }], queued: 0, finished: [] };
+		const repEn = renderReport(liveA, { active: true, source: "entry" }, now);
+		check("renderReport lists last 5 actions, tokens and denial count", [0, 1, 2, 3, 4].every((i) => repEn.includes(`bash cmd${i}`)) && repEn.includes("14k output tokens") && repEn.includes("21 tool calls") && repEn.includes("guard denials: 2") && repEn.includes("$0.42") && repEn.includes("no events for 95s"), repEn);
+		process.env.FOREMAN_LANG = "pt-BR";
+		const repPt = renderReport(liveA, { active: true, source: "entry" }, now);
+		const linePt = snapA(view());
+		delete process.env.FOREMAN_LANG;
+		check("pt-BR renders the same structure", repPt.split("\n").length === repEn.split("\n").length && repPt.includes("negações do guard: 2") && repPt.includes("sem eventos há 95s") && linePt.startsWith("● etapa 13 · Carousel UI · 4m43s · escrevendo") && ![repPt, linePt].some((x) => /\{\w+\}/.test(x)), repPt);
+		check("empty / no running workers still returns {}", Object.keys(renderWorkersUi(empty, now, 100)).length === 0);
 	}
 
 	// Phase 7c. index.ts: status bar, widget, events, /foreman-status, abort (fake spawn).
@@ -719,6 +757,18 @@ async function main() {
 		const psh = parseFinalBlock(blk("Status: blocked\nSummary: no review reference in the handoff\nFiles: none\nRulings: none\nBlocked-on: review reference"));
 		check("parser: shipper blocked report", psh.status === "blocked" && psh.contract === "ok");
 		check("parser: empty report", parseFinalBlock("").status === undefined);
+		const pgd = parseFinalBlock(blk("Status: completed\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: none\nGuard-denied: python3 -c 'exec(1)'\n- npm test\nRendered: n/a"));
+		check("parseFinalBlock reads Guard-denied", pgd.contract === "ok" && pgd.status === "completed" && pgd.guardDenied.length === 2 && pgd.guardDenied[0] === "python3 -c 'exec(1)'" && pgd.guardDenied[1] === "npm test", JSON.stringify(pgd.guardDenied));
+		check("parseFinalBlock: Guard-denied none/absent is empty", parseFinalBlock(blk("Status: completed\nSummary: s\nGuard-denied: none")).guardDenied.length === 0 && parseFinalBlock(blk("Status: completed\nSummary: s")).guardDenied.length === 0);
+		check("formatBlock omits guard-denied when empty", !formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: [] }).includes("guard-denied"));
+		{
+			const many = Array.from({ length: 8 }, (_, i) => `cmd${i}`);
+			const f = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: many });
+			check("formatBlock caps guard-denied at 5 items with +N more", f.includes("cmd4") && !f.includes("cmd5") && f.includes("+3 more"), f);
+			const long = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: ["x".repeat(500)] });
+			check("formatBlock caps each guard-denied item at 200 chars", long.includes("x".repeat(200)) && !long.includes("x".repeat(201)));
+		}
+		check("formatBlock includes guard-denied when present", formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", guardDenied: ["npm test", "rm x"] }).includes("guard-denied: npm test | rm x"));
 		const nb = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "ok" });
 		const nm = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o", contract: "malformed" });
 		const nn = formatBlock({ taskId: "t1-qa", role: "qa", status: "completed", summary: "s", output: "o" });
@@ -786,7 +836,652 @@ async function main() {
 		const sample = composeWorkerPrompt(pkg[0]);
 		const m = /Package root: (\S+)/.exec(sample);
 		check("compose: Package root line is the real path and exists", !!m && m[1] === PACKAGE_ROOT && existsSync(join(m[1], "references", "worker-common.md")));
+		check("compose: worker prompt carries Gotchas, Guard-denied and the baseline-diff path", /### Gotchas/.test(sample) && /Guard-denied:/.test(sample) && sample.includes(`${PACKAGE_ROOT}/scripts/baseline-diff.mjs`));
 		check("compose: {{PACKAGE_ROOT}} also substituted in the agent body", composeWorkerPrompt({ systemPrompt: "see {{PACKAGE_ROOT}}/x" }).includes(`see ${PACKAGE_ROOT}/x`));
+	}
+
+	// A2. spawn-worker appends the coordinator footer via composeTaskArg with the final cwd.
+	{
+		const src = readFileSync(join(process.cwd(), "extensions", "coordination", "spawn-worker.ts"), "utf-8");
+		check("spawn-worker composes the Task arg with the footer and final cwd", /workerFooter\(\{ locale: detectLocale\(\), cwd \}\)/.test(src) && /composeTaskArg\(\{ handoff: promptText/.test(src));
+	}
+
+	// Step 5. workdir: remembered per run, used as the worker cwd.
+	{
+		const wtBase = mkdtempSync(join(tmpdir(), "foreman-wt-"));
+		const wt1 = join(wtBase, "one");
+		const wt2 = join(wtBase, "two");
+		mkdirSync(wt1);
+		mkdirSync(wt2);
+		const fakeResolve = (root: string, req: string) => {
+			if (!req.startsWith(wtBase)) throw new Error(`workdir ${req} is not allowed`);
+			return req;
+		};
+		const h = harness({ maxWorkers: 8, resolveWorkdir: fakeResolve });
+		const a1 = h.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: wt1 });
+		const req1 = h.workers.get(a1.task_id)!.req;
+		check("delegate passes workdir as SpawnRequest.cwd and keeps runDir under root", req1.cwd === wt1 && req1.runDir === join(h.root, ".foreman", "runs", h.coord.runId));
+		const a2 = h.coord.delegate({ role: "qa", handoff_prompt: "b" });
+		check("workdir is remembered for later delegates in the run", h.workers.get(a2.task_id)!.req.cwd === wt1);
+		const a3 = h.coord.delegate({ role: "qa", handoff_prompt: "c", workdir: wt2 });
+		const a4 = h.coord.delegate({ role: "qa", handoff_prompt: "d" });
+		check("per-call workdir overrides the remembered one", h.workers.get(a3.task_id)!.req.cwd === wt2 && h.workers.get(a4.task_id)!.req.cwd === wt2);
+		const before = h.spawned.length;
+		let threw = false;
+		try { h.coord.delegate({ role: "qa", handoff_prompt: "e", workdir: "/etc" }); } catch { threw = true; }
+		const a5 = h.coord.delegate({ role: "qa", handoff_prompt: "f" });
+		check("invalid workdir throws from delegate and spawns nothing", threw && h.spawned.length === before + 1 && h.workers.get(a5.task_id)!.req.cwd === wt2);
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman", "runs", h.coord.runId, `${a1.task_id}.json`), "utf8"));
+		check("meta json records workdir", meta.workdir === wt1);
+		const h2 = harness();
+		const b1 = h2.coord.delegate({ role: "qa", handoff_prompt: "x" });
+		check("no workdir: cwd is the root", h2.workers.get(b1.task_id)!.req.cwd === h2.root);
+		// Latch cleared by an empty value or ".".
+		for (const clear of ["", "."]) {
+			const hc = harness({ resolveWorkdir: fakeResolve });
+			hc.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: wt1 });
+			const c2 = hc.coord.delegate({ role: "qa", handoff_prompt: "b", workdir: clear });
+			const c3 = hc.coord.delegate({ role: "qa", handoff_prompt: "c" });
+			check(`workdir ${JSON.stringify(clear)} clears the latch`, hc.workers.get(c2.task_id)!.req.cwd === hc.root && hc.workers.get(c3.task_id)!.req.cwd === hc.root);
+			hc.cleanup();
+		}
+		// Latched dir deleted before start: fall back to root, note in meta.
+		{
+			const hd = harness({ resolveWorkdir: fakeResolve });
+			const gone = join(wtBase, "gone");
+			mkdirSync(gone);
+			hd.coord.delegate({ role: "qa", handoff_prompt: "a", workdir: gone });
+			rmSync(gone, { recursive: true });
+			const d2 = hd.coord.delegate({ role: "qa", handoff_prompt: "b" });
+			const m = JSON.parse(readFileSync(join(hd.root, ".foreman", "runs", hd.coord.runId, `${d2.task_id}.json`), "utf8"));
+			check("deleted workdir falls back to root with workdir_fallback note", hd.workers.get(d2.task_id)!.req.cwd === hd.root && typeof m.workdir_fallback === "string" && m.workdir_fallback.includes(gone) && m.cwd === hd.root, JSON.stringify(m));
+			hd.cleanup();
+		}
+		rmSync(wtBase, { recursive: true, force: true });
+		h.cleanup();
+		h2.cleanup();
+	}
+
+	// Step 6. Overlap warning on delegate.
+	{
+		const h = harness({ maxWorkers: 8 });
+		mkdirSync(join(h.root, "docs", "plans"), { recursive: true });
+		writeFileSync(join(h.root, "docs", "plans", "wave.md"), [
+			"## Parallel",
+			"1. **One** (Touches: `lib/a.ts`, `lib/i18n/en.ts`)",
+			"2. **Two** (Touches: `lib/i18n/en.ts`)",
+			"3. **Three** (Touches: `docs/z.md`)",
+		].join("\n"));
+		const a1 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "a", plan_slug: "wave", plan_step: 1 });
+		check("no warning for the first step of a wave", !/shares files/.test(a1.ack));
+		const a2 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "b", plan_slug: "wave", plan_step: 2 });
+		check("delegate ack warns on overlap with a running step", /step 2 shares files with running step 1/.test(a2.ack) && /lib\/i18n\/en\.ts/.test(a2.ack) && a2.state === "running");
+		const a3 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "c", plan_slug: "wave", plan_step: 3 });
+		check("no warning when Touches are disjoint", !/shares files/.test(a3.ack));
+		h.finish(a1.task_id, ok("done"));
+		await new Promise((r) => setTimeout(r, 30));
+		const a4 = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "d", plan_slug: "wave", plan_step: 2 });
+		check("no warning once the overlapping step finished", !/shares files/.test(a4.ack));
+		const h2 = harness({ maxWorkers: 8 });
+		mkdirSync(join(h2.root, "docs", "plans"), { recursive: true });
+		writeFileSync(join(h2.root, "docs", "plans", "seq.md"), "1. **One** (Touches: `a.ts`)\n2. **Two** (Touches: `a.ts`)\n");
+		h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "a", plan_slug: "seq", plan_step: 1 });
+		const b2 = h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "b", plan_slug: "seq", plan_step: 2 });
+		check("no warning when the plan has no Parallel section", !/shares files/.test(b2.ack));
+		h.cleanup();
+		h2.cleanup();
+	}
+
+	{
+		// Step 8: shared back-off gate and writer cap.
+		const savedWriters = process.env.FOREMAN_MAX_WRITERS;
+		delete process.env.FOREMAN_MAX_WRITERS;
+		const h = harness({ maxWorkers: 8, gate: createBackoffGate() });
+		const w1 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w1" });
+		const w2 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w2" });
+		const w3 = h.coord.delegate({ role: "frontend-dev", handoff_prompt: "w3" });
+		check("FOREMAN_MAX_WRITERS default is 2", w1.state === "running" && w2.state === "running" && w3.state === "queued");
+		const r1 = h.coord.delegate({ role: "reviewer", handoff_prompt: "r1" });
+		const w4 = h.coord.delegate({ role: "backend-dev", handoff_prompt: "w4" });
+		check("readers start while two writers run and a third writer queues", r1.state === "running" && w4.state === "queued" && h.coord.stats().queued === 2);
+		h.finish(w1.task_id, ok("done"));
+		await sleep(30);
+		check("queued writer keeps its place and starts when a writer finishes", h.spawned.includes(w3.task_id) && !h.spawned.includes(w4.task_id) && h.coord.stats().queued === 1);
+		h.finish(w2.task_id, ok("done"));
+		await sleep(30);
+		check("next queued writer starts in order", h.spawned.includes(w4.task_id));
+		for (const id of [...h.workers.keys()]) h.finish(id, ok("x"));
+		await sleep(60);
+		h.cleanup();
+		if (savedWriters !== undefined) process.env.FOREMAN_MAX_WRITERS = savedWriters;
+
+		const gate = createBackoffGate({ now: () => Date.now(), rng: () => 0.5 });
+		const g = harness({ maxWorkers: 4, gate });
+		const a = g.coord.delegate({ role: "reviewer", handoff_prompt: "a" });
+		const b = g.coord.delegate({ role: "reviewer", handoff_prompt: "b" });
+		gate.noteRateLimit("429", 150);
+		gate.noteRateLimit("529 overloaded", 100);
+		check("two workers hitting 429 share one pause (coordinator)", gate.remainingMs() > 100 && gate.remainingMs() <= 150);
+		const c = g.coord.delegate({ role: "reviewer", handoff_prompt: "c" });
+		check("coordinator does not start a queued task while paused", c.state === "queued" && !g.spawned.includes(c.task_id));
+		g.finish(a.task_id, ok("a"));
+		g.finish(b.task_id, ok("b"));
+		await sleep(60);
+		check("still queued before the pause ends", !g.spawned.includes(c.task_id));
+		await sleep(200);
+		check("coordinator starts it after the pause ends", g.spawned.includes(c.task_id));
+		for (const id of [...g.workers.keys()]) g.finish(id, ok("x"));
+		await sleep(60);
+		g.cleanup();
+	}
+
+	// Step 9: orphan evidence.
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const out = join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.md`);
+		check("stub report exists right after delegate", existsSync(out) && readFileSync(out, "utf8").startsWith(`# ${ack.task_id} RUNNING`));
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.json`), "utf8"));
+		check("meta json records cwd", typeof meta.cwd === "string" && meta.cwd.length > 0);
+		h.finish(ack.task_id, ok("final words"));
+		await h.coord.whenIdle();
+		check("stub is overwritten by the final report", readFileSync(out, "utf8").trim() === "final words");
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-orph-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n\nstarted: x\n");
+		const h = harness({ root });
+		h.coord.recover([{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" }]);
+		await h.coord.whenIdle();
+		const n = h.sent.flatMap((s) => s.message.details.notifications)[0] as any;
+		check("recover: stub-only orphan is failed and orphaned, not completed", n.status === "failed" && /orphaned/.test(n.summary));
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-orph2-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		const repo = join(root, "wt");
+		mkdirSync(repo);
+		execFileSync("git", ["init", "-q"], { cwd: repo });
+		writeFileSync(join(repo, "a.txt"), "x");
+		writeFileSync(join(repo, "b.txt"), "y");
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n");
+		writeFileSync(join(dir, "t1-qa.json"), JSON.stringify({ cwd: repo }));
+		writeFileSync(
+			join(dir, "t1-qa.events.jsonl"),
+			[JSON.stringify({ type: "message_end", message: assistant("I was halfway through the migration") })].join("\n") + "\n",
+		);
+		// no evidence at all for t2
+		writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\n");
+		writeFileSync(join(dir, "t2-qa.json"), JSON.stringify({ cwd: join(root, "gone") }));
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" },
+			{ runId: "old", taskId: "t2-qa", role: "qa", state: "running", output: ".foreman/runs/old/t2-qa.md" },
+		]);
+		await h.coord.whenIdle();
+		const ns = h.sent.flatMap((s) => s.message.details.notifications) as any[];
+		const n1 = ns.find((n) => n.taskId === "t1-qa");
+		const n2 = ns.find((n) => n.taskId === "t2-qa");
+		check("recover: orphan notification includes last assistant text from events log", n1.status === "failed" && /halfway through the migration/.test(n1.summary));
+		check("recover: orphan notification includes git status --short of the worker cwd (temp git repo)", n1.partial === 2 && /partial: 2 changed paths/.test(formatBlock(n1)));
+		check("recover: missing cwd or events log degrades to the old message", n2.status === "failed" && n2.summary === "orphaned (orchestrator restarted)" && n2.partial === undefined);
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-seq-"));
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t7-qa", role: "qa", state: "completed", output: "x" },
+			{ runId: "old2", taskId: "t3-planner", role: "planner", state: "completed", output: "y" },
+		]);
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "next" });
+		check("seq is seeded from recovered entries so the next task id is higher", ack.task_id === "t8-qa", ack.task_id);
+		h.cleanup();
+	}
+
+	// Step 12: activity wiring and status.json.
+	{
+		let clock = 1_000_000;
+		const h = harness({ now: () => clock });
+		let changes = 0;
+		h.coord.onChange(() => changes++);
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const statusPath = join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.status.json`);
+		const ev = (i: number) => ({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: `x${i}` } });
+		const before = changes;
+		check("SpawnRequest carries onEvent and onAttempt", typeof req.onEvent === "function" && typeof req.onAttempt === "function");
+		check("snapshot: running worker has no activity data yet (renders the old line)", renderWorkersUi(h.coord.snapshot(), clock).widget![0].startsWith("▶ "));
+		req.onEvent!(ev(0));
+		const sa = h.coord.snapshot().running[0].activity;
+		check("snapshot: running worker carries the tracker view", sa?.phase === "reporting" && sa.health === "active" && renderWorkersUi(h.coord.snapshot(), clock).widget![0].startsWith("● "));
+		check("status.json is written on the first event", existsSync(statusPath));
+		const first = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json has view, updated_at and cwd", first.view?.phase === "reporting" && typeof first.updated_at === "string" && typeof first.cwd === "string");
+		clock += 500;
+		for (let i = 1; i < 50; i++) req.onEvent!(ev(i));
+		const second = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json is written at most every 2 s (fake clock)", second.updated_at === first.updated_at);
+		clock += 2000;
+		req.onEvent!(ev(99));
+		const third = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json rewritten after 2 s", third.updated_at !== first.updated_at);
+		check("status.json is atomic: no temp file is left behind", !existsSync(`${statusPath}.tmp`));
+		check("no emitChange per event", changes === before);
+		check("getTask(id).activity exposes the tracker", h.coord.getTask(ack.task_id)?.activity?.view(clock).phase === "reporting");
+		req.onEvent!({ type: "turn_end" });
+		req.onAttempt!(1);
+		check("tracker resets on retry attempt", h.coord.getTask(ack.task_id)!.activity!.view(clock).turns === 0 && h.coord.getTask(ack.task_id)!.activity!.view(clock).phase === "idle");
+		req.onEvent!({ type: "turn_end" });
+		clock += 100;
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		const fin = JSON.parse(readFileSync(statusPath, "utf8"));
+		check("status.json final write on finish", fin.view.turns === 1 && fin.finished === true, JSON.stringify(fin).slice(0, 200));
+		h.cleanup();
+	}
+	{
+		const root = mkdtempSync(join(tmpdir(), "foreman-coord-status-"));
+		const dir = join(root, ".foreman/runs/old");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "t1-qa.md"), "# t1-qa RUNNING\n");
+		writeFileSync(
+			join(dir, "t1-qa.status.json"),
+			JSON.stringify({ updated_at: new Date().toISOString(), cwd: root, view: { phase: "tool", label: "npm test", lastEventAt: Date.now() - 42_000, outTokens: 1234, recent: [{ label: "bash npm run build", durationMs: 10, isError: false, at: 1 }] } }),
+		);
+		writeFileSync(join(dir, "t1-qa.events.jsonl"), JSON.stringify({ type: "message_end", message: assistant("log fallback text") }) + "\n");
+		writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\n");
+		writeFileSync(join(dir, "t2-qa.events.jsonl"), JSON.stringify({ type: "message_end", message: assistant("only the log") }) + "\n");
+		const h = harness({ root });
+		h.coord.recover([
+			{ runId: "old", taskId: "t1-qa", role: "qa", state: "running", output: ".foreman/runs/old/t1-qa.md" },
+			{ runId: "old", taskId: "t2-qa", role: "qa", state: "running", output: ".foreman/runs/old/t2-qa.md" },
+		]);
+		await h.coord.whenIdle();
+		const ns = h.sent.flatMap((s) => s.message.details.notifications) as any[];
+		const n1 = ns.find((n) => n.taskId === "t1-qa");
+		const n2 = ns.find((n) => n.taskId === "t2-qa");
+		check("recover reads status.json into the orphan summary", /npm test/.test(n1.summary) && /1234/.test(n1.summary) && /4\ds ago/.test(n1.summary), n1.summary);
+		check("recover keeps the events log as fallback without status.json", /only the log/.test(n2.summary) && !/tokens/.test(n2.summary), n2.summary);
+		h.cleanup();
+	}
+
+	// Phase 14. Stuck and repeating notifications.
+	{
+		const view = (health: string, over: Record<string, unknown> = {}): any => ({ phase: "tool", label: "npm test", bytes: 0, lastEventAt: 0, turns: 1, toolCalls: 3, outTokens: 10, cost: 0, recent: [], health, denials: 0, lastDenial: "", ...over });
+		const snapOf = (health: string, over: Record<string, unknown> = {}): WorkersSnapshot => ({ running: [{ taskId: "t1-qa", role: "qa", planStep: 3, title: "Suite", startedAt: 0, activity: view(health, over) }], queued: 0, finished: [] });
+		const w = createHealthWatcher();
+		check("health: active worker produces no notice", w.check(snapOf("active"), 1000).length === 0);
+		const n1 = w.check(snapOf("silent", { lastEventAt: 1000 }), 100_000);
+		check("flip to silent notifies once", n1.length === 1 && n1[0].kind === "stuck" && n1[0].health === "silent");
+		check("staying silent does not re-notify", w.check(snapOf("silent"), 101_000).length === 0 && w.check(snapOf("silent"), 300_000).length === 0);
+		const n2 = w.check(snapOf("active"), 310_000);
+		check("recovery clears the flag and notifies once", n2.length === 1 && n2[0].kind === "recovered" && w.check(snapOf("active"), 311_000).length === 0);
+		const n3 = w.check(snapOf("repeating", { recent: [{ label: "bash npm run build --flag", durationMs: 1, isError: true, at: 1 }] }), 400_000);
+		check("repeating notifies with the repeated command head", n3.length === 1 && /npm run build/.test(renderStuckNotice(n3[0])), n3.length ? renderStuckNotice(n3[0]) : "none");
+		const wf = createHealthWatcher();
+		wf.check(snapOf("silent"), 0);
+		wf.check(snapOf("active"), 1000);
+		check("flapping within 60 s is throttled, then allowed", wf.check(snapOf("silent"), 5000).length === 0 && wf.check(snapOf("silent"), 70_000).length === 1);
+		const wl = createHealthWatcher();
+		wl.check(snapOf("silent"), 0);
+		wl.check({ running: [], queued: 0, finished: [] }, 1000);
+		check("a worker that finishes while flagged leaves no state", wl.size() === 0 && wl.check(snapOf("silent"), 2000).length === 1);
+		check("stuck notice text is localized in both catalogs", /stuck/i.test(renderStuckNotice(n1[0])) && (process.env.FOREMAN_LANG = "pt-BR", !/\{/.test(renderStuckNotice(n1[0])) && renderStuckNotice(n1[0]) !== (delete process.env.FOREMAN_LANG, renderStuckNotice(n1[0]))));
+		delete process.env.FOREMAN_LANG;
+
+		// FOREMAN_STUCK_AFTER_S=0 disables the silent flip; =1 enables it (tracker threshold).
+		const savedStuck = process.env.FOREMAN_STUCK_AFTER_S;
+		const savedBatch14 = process.env.FOREMAN_BATCH_MS;
+		const stuckView = async (secs: string) => {
+			process.env.FOREMAN_STUCK_AFTER_S = secs;
+			const h = harness();
+			h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			await sleep(1300);
+			const v = h.coord.snapshot().running[0]?.activity;
+			h.finish("t1-qa", ok("done"));
+			await h.coord.whenIdle();
+			h.cleanup();
+			return v;
+		};
+		const off = await stuckView("0");
+		const on = await stuckView("1");
+		check("FOREMAN_STUCK_AFTER_S=0 disables the silent flip", off?.health !== "silent");
+		check("FOREMAN_STUCK_AFTER_S threshold flips silent", on?.health === "silent", String(on?.health));
+		if (savedStuck === undefined) delete process.env.FOREMAN_STUCK_AFTER_S; else process.env.FOREMAN_STUCK_AFTER_S = savedStuck;
+
+		// Integration through index.ts: UI + herdr only, never sendMessage.
+		process.env.FOREMAN_STUCK_AFTER_S = "1";
+		process.env.FOREMAN_BATCH_MS = "20";
+		const herdrCalls: string[][] = [];
+		const fakeHerdr = createHerdr({ HERDR_ENV: "1", HERDR_PANE_ID: "p1", HERDR_BIN_PATH: "herdr" }, (_b, a) => herdrCalls.push(a));
+		const tools: any[] = [];
+		const handlers: Record<string, any[]> = {};
+		const sentMsgs: any[] = [];
+		const workers = new Map<string, (r: WorkerResult) => void>();
+		const api: any = {
+			events: createEventBus(),
+			registerTool: (x: any) => tools.push(x),
+			registerCommand: () => {},
+			registerMessageRenderer: () => {},
+			on: (e: string, hd: any) => ((handlers[e] ??= []).push(hd), () => {}),
+			sendMessage: (m: any) => sentMsgs.push(m),
+			appendEntry: () => {},
+		};
+		registerCoordination(api, (req) => {
+			let resolve!: (r: WorkerResult) => void;
+			const done = new Promise<WorkerResult>((res) => (resolve = res));
+			workers.set(req.taskId, resolve);
+			return { done, kill: () => resolve({ code: null, signal: "SIGTERM", messages: [], stderr: "" }) };
+		}, fakeHerdr);
+		const dir = mkdtempSync(join(tmpdir(), "foreman-coord-stuck-"));
+		const notes: Array<[string, string]> = [];
+		const ctx: any = { cwd: dir, hasUI: true, sessionManager: { getEntries: () => [], getBranch: () => [] }, ui: { setStatus: () => {}, setWidget: () => {}, notify: (m: string, l: string) => notes.push([m, l]) } };
+		await handlers.session_start[0]({ reason: "startup" }, ctx);
+		api.events.emit(MODE_EVENT, { active: true });
+		await tools[0].execute("id", { role: "qa", handoff_prompt: "x" }, undefined, undefined, ctx);
+		await sleep(3500);
+		const stuckNotes = notes.filter(([m]) => /stuck/i.test(m));
+		check("stuck notice reaches the UI as a warning, once", stuckNotes.length === 1 && stuckNotes[0][1] === "warning", JSON.stringify(notes));
+		check("herdr.notify is called when herdr is active (fake herdr)", herdrCalls.some((a) => a[0] === "notification" && /stuck/i.test(a.join(" "))), JSON.stringify(herdrCalls));
+		check("stuck notice is never sent via sendMessage", sentMsgs.length === 0);
+		workers.get("t1-qa")!(ok("x"));
+		await sleep(100);
+		if (savedStuck === undefined) delete process.env.FOREMAN_STUCK_AFTER_S; else process.env.FOREMAN_STUCK_AFTER_S = savedStuck;
+		if (savedBatch14 === undefined) delete process.env.FOREMAN_BATCH_MS; else process.env.FOREMAN_BATCH_MS = savedBatch14;
+	}
+
+	// usage in the run json (B4)
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const msg = (u: Record<string, unknown>) => ({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash" }], usage: u } });
+		req.onEvent!(msg({ input: 5, output: 7, cacheRead: 11, cacheWrite: 13, cost: { total: 0.5 } }));
+		req.onAttempt!(1);
+		req.onEvent!(msg({ input: 1, output: 1, cacheRead: 1, cacheWrite: 1, cost: { total: 0.25 } }));
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		const meta = JSON.parse(readFileSync(join(h.root, ".foreman/runs", h.coord.runId, `${ack.task_id}.json`), "utf8"));
+		const u = meta.usage;
+		check("coordinator meta json has usage after finish", !!u && u.input === 6 && u.output === 8 && u.cacheRead === 12 && u.cacheWrite === 14 && u.turns === 2 && u.toolCalls === 2 && u.attempts === 2 && u.cost === 0.75 && u.guardDenials?.total === 0, JSON.stringify(u));
+		check("meta json keeps the raw handoff next to usage", meta.handoff_prompt === "go");
+	}
+	{
+		const h = harness();
+		const ack = h.coord.delegate({ role: "qa", handoff_prompt: "go" });
+		const req = h.workers.get(ack.task_id)!.req;
+		const bad = { get type(): string { throw new Error("boom"); } };
+		let threw = false;
+		try { req.onEvent!(bad); } catch { threw = true; }
+		h.finish(ack.task_id, ok("done"));
+		await h.coord.whenIdle();
+		check("usage feed throwing does not fail the task", !threw && h.sent.length === 1 && /status: completed/.test(h.sent[0].message.content));
+	}
+
+	// Step 7 (C1): circuit breaker, advisory text in the delegate ack.
+	{
+		const blocked = (why: string) =>
+			ok(`--- foreman-report ---\nStatus: blocked\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: ${why}\n--- end foreman-report ---`);
+		const failedRes = (): WorkerResult => ({ code: 1, signal: null, messages: [], stderr: "boom" });
+		const attempt = async (h: ReturnType<typeof harness>, step: number | undefined, res: WorkerResult, slug: string | undefined = "cb") => {
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "go", ...(step !== undefined ? { plan_step: step } : {}), ...(slug ? { plan_slug: slug } : {}) });
+			h.finish(a.task_id, res);
+			await h.coord.whenIdle();
+			return a;
+		};
+		const next = (h: ReturnType<typeof harness>, step: number | undefined) => {
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "again", ...(step !== undefined ? { plan_step: step } : {}), plan_slug: "cb" });
+			h.finish(a.task_id, ok("done"));
+			return a.ack;
+		};
+		{
+			const h = harness();
+			const a1 = (await attempt(h, 3, blocked("needs root"))).ack;
+			const a2 = (await attempt(h, 3, blocked("needs sudo"))).ack;
+			check("attempts 1 and 2 of a blocked step carry no warning", !/Attempt/.test(a1) && !/Attempt/.test(a2));
+			const a3 = next(h, 3);
+			check("3rd dispatch after two blocked outcomes warns with both reasons", /Attempt 3 for step 3/.test(a3) && /needs root/.test(a3) && /needs sudo/.test(a3) && /rule on it/.test(a3) && /END YOUR TURN/.test(a3), a3);
+			check("differing reasons are not flagged identical", !/identical/.test(a3));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 2, failedRes());
+			await attempt(h, 2, blocked("x"));
+			check("failed plus blocked counts", /Attempt 3 for step 2/.test(next(h, 2)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 1, blocked("a"));
+			await attempt(h, 1, ok("all good"));
+			await attempt(h, 1, blocked("b"));
+			check("a completed attempt resets the count", !/Attempt/.test(next(h, 1)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 1, blocked("a"));
+			await attempt(h, 2, blocked("a"));
+			check("different plan steps are tracked separately", !/Attempt/.test(next(h, 1)) && !/Attempt/.test(next(h, 2)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, undefined, blocked("a"), undefined);
+			await attempt(h, undefined, blocked("a"), undefined);
+			const a = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x" });
+			check("no plan_step never warns", !/Attempt/.test(a.ack));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 4, blocked("same  thing"));
+			await attempt(h, 4, blocked("same thing"));
+			check("identical reasons are flagged", /The last two reasons are identical\./.test(next(h, 4)));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 5, blocked("a"));
+			await attempt(h, 5, blocked("b"));
+			const ab = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x", plan_step: 5, plan_slug: "cb" });
+			await h.coord.abortAll();
+			await h.coord.whenIdle();
+			const after = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "y", plan_step: 5, plan_slug: "cb" });
+			check("aborted outcomes are ignored", /Attempt 3 for step 5/.test(ab.ack) && /Attempt 3 for step 5/.test(after.ack) && !/aborted/.test(after.ack), after.ack);
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			await attempt(h, 6, blocked("r1"));
+			await attempt(h, 6, blocked("r2"));
+			const entries = h.entries.filter((e) => e.customType === "foreman-task").map((e) => e.data);
+			check("finish persists blockedOn", entries.some((e) => e.state === "blocked" && e.blockedOn === "r2"));
+			const h2 = harness();
+			h2.coord.recover(entries);
+			const a = h2.coord.delegate({ role: "plan-step-builder", handoff_prompt: "z", plan_step: 6, plan_slug: "cb" });
+			check("recover() seeds history so a resumed session warns on its first re-dispatch", /Attempt 3 for step 6/.test(a.ack) && /r1/.test(a.ack) && /r2/.test(a.ack), a.ack);
+			h.cleanup();
+			h2.cleanup();
+		}
+	}
+
+	// Step 8 (A8): report size hint.
+	{
+		const lineCount = (f: string) => { const t = readFileSync(f, "utf8"); return t === "" ? 0 : t.replace(/\n$/, "").split("\n").length; };
+		{
+			const h = harness();
+			const a = h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			h.finish(a.task_id, ok("line one\nline two\nline three"));
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			const outFile = join(h.root, n.output);
+			check("completed notification has report: N lines equal to the output file", n.reportLines === lineCount(outFile) && n.reportLines === 3 && h.sent[0].message.content.includes("report: 3 lines"));
+			check("report line sits right after output:", new RegExp(`output: ${n.output.replace(/[.]/g, "\\.")}\\nreport: 3 lines\\n`).test(h.sent[0].message.content));
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			const a = h.coord.delegate({ role: "qa", handoff_prompt: "x" });
+			h.finish(a.task_id, { code: 2, signal: null, messages: [assistant("partial work")], stderr: "boom" });
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			check("failed body is counted", n.status === "failed" && n.reportLines === lineCount(join(h.root, n.output)) && n.reportLines > 1);
+			h.cleanup();
+		}
+		{
+			const h = harness();
+			const oldRun = "old-run";
+			const dir = join(h.root, ".foreman/runs", oldRun);
+			mkdirSync(dir, { recursive: true });
+			writeFileSync(join(dir, "t1-qa.md"), "Recovered a\nRecovered b\n");
+			writeFileSync(join(dir, "t2-qa.md"), "# t2-qa RUNNING\nstub\n");
+			const entries = [1, 2, 3].map((i) => ({ runId: oldRun, taskId: `t${i}-qa`, role: "qa", state: "running", planStep: i, output: `.foreman/runs/${oldRun}/t${i}-qa.md` }));
+			h.coord.recover(entries);
+			await h.coord.whenIdle();
+			const ns = h.sent[0].message.details.notifications as any[];
+			check("recovered notification counts an existing report, none for a stub or missing file", ns.find((n) => n.taskId === "t1-qa")?.reportLines === 2 && ns.find((n) => n.taskId === "t3-qa")?.reportLines === undefined && ns.find((n) => n.taskId === "t2-qa")?.reportLines === undefined);
+			h.cleanup();
+		}
+		{
+			const base = { taskId: "t1-qa", role: "qa", status: "completed" as const, summary: "s", output: ".foreman/runs/r/t1-qa.md" };
+			check("formatBlock omits the line when unknown", !formatBlock(base).includes("report:"));
+			check("formatBlock prints report line when known", formatBlock({ ...base, reportLines: 7 }).includes("output: .foreman/runs/r/t1-qa.md\nreport: 7 lines\n"));
+		}
+	}
+
+
+	// C6: coordinator-side verification of the step's declared Checks (fake verifier; lib/verify-checks-test.ts covers the runner).
+	{
+		const mkPlan = (root: string) => {
+			mkdirSync(join(root, "docs", "plans"), { recursive: true });
+			writeFileSync(join(root, "docs", "plans", "p.md"), "1. **X** (Touches: a)\n   - Checks: `npm run t`\n");
+		};
+		const fakeVerify = () => {
+			const calls: any[] = [];
+			let killed = 0;
+			let release!: (r: any) => void;
+			const verify = (o: any) => {
+				calls.push(o);
+				const done = new Promise<any>((res) => (release = res));
+				return { done, kill: () => { killed++; release({ verified: "n/a", note: "killed" }); } };
+			};
+			return { verify, calls, killed: () => killed, release: (r: any) => release(r) };
+		};
+		const savedVerify = process.env.FOREMAN_VERIFY_CHECKS;
+		delete process.env.FOREMAN_VERIFY_CHECKS;
+		const go = (h: ReturnType<typeof harness>, role = "plan-step-builder") => h.coord.delegate({ role, handoff_prompt: "x", plan_step: 1, plan_slug: "p" }).task_id;
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = go(h);
+			h.finish(id, ok("built it"));
+			await sleep(100);
+			check("notification waits for verification and idle waiters wait too", h.sent.length === 0 && f.calls.length === 1);
+			let idle = false;
+			void h.coord.whenIdle().then(() => (idle = true));
+			await sleep(50);
+			check("idle waiters wait for verification", !idle && h.sent.length === 0);
+			f.release({ verified: "yes" });
+			await h.coord.whenIdle();
+			check("exit 0 verification adds verified: yes and runs in the root", h.sent.length === 1 && h.sent[0].message.content.includes("\nverified: yes\n") && f.calls[0].cwd === h.root && f.calls[0].step === 1 && f.calls[0].planText.includes("npm run t"));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = go(h);
+			h.finish(id, ok("built it"));
+			await sleep(30);
+			f.release({ verified: "no", note: "FAIL npm:t (.foreman/qa-logs/npm_t.log)" });
+			await h.coord.whenIdle();
+			const n = h.sent[0].message.details.notifications[0];
+			check("a no never changes status; note is printed", n.status === "completed" && h.sent[0].message.content.includes("verified: no — FAIL npm:t"));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: () => { throw new Error("boom"); } });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await h.coord.whenIdle();
+			check("a throwing verifier yields n/a and the notification still goes out", h.sent.length === 1 && /verified: n\/a/.test(h.sent[0].message.content));
+			h.cleanup();
+			void f;
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const a = go(h);
+			const b = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "y", plan_step: 1, plan_slug: "p" }).task_id;
+			h.finish(a, ok("built it"));
+			await sleep(60);
+			check("concurrent writer running gives n/a", f.calls.length === 0 && /verified: n\/a — another writer is running/.test(h.sent[0]?.message.content ?? ""));
+			h.finish(b, ok("done"));
+			await sleep(60);
+			check("verification runs once no other writer is running", f.calls.length === 1);
+			f.release({ verified: "yes" });
+			await sleep(30);
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h, "qa"), ok("qa green"));
+			h.finish(go(h), { code: 1, signal: null, messages: [], stderr: "bad" });
+			h.finish(go(h), ok("--- foreman-report ---\nStatus: blocked\nSummary: s\nFiles: none\nRulings: none\nBlocked-on: root\n--- end foreman-report ---"));
+			await h.coord.whenIdle();
+			check("other roles and non-completed statuses are not verified", f.calls.length === 0 && h.sent.every((s) => !s.message.content.includes("verified:")));
+			h.cleanup();
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			const id = h.coord.delegate({ role: "plan-step-builder", handoff_prompt: "x" }).task_id;
+			h.finish(id, ok("built it"));
+			await h.coord.whenIdle();
+			check("no plan_step or slug means no verified line", f.calls.length === 0 && !h.sent[0].message.content.includes("verified:"));
+			h.cleanup();
+		}
+		{
+			process.env.FOREMAN_VERIFY_CHECKS = "off";
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await h.coord.whenIdle();
+			check("FOREMAN_VERIFY_CHECKS=off skips", f.calls.length === 0 && !h.sent[0].message.content.includes("verified:"));
+			h.cleanup();
+			delete process.env.FOREMAN_VERIFY_CHECKS;
+		}
+		{
+			const f = fakeVerify();
+			const h = harness({ verify: f.verify });
+			mkPlan(h.root);
+			h.finish(go(h), ok("built it"));
+			await sleep(60);
+			h.coord.shutdown();
+			await sleep(60);
+			check("shutdown during verification kills the child and sends nothing", f.killed() === 1 && h.sent.length === 0);
+			h.cleanup();
+		}
+		{
+			const base = { taskId: "t1-plan-step-builder", role: "plan-step-builder", status: "completed" as const, summary: "s", output: ".foreman/runs/r/t1.md" };
+			check("verified: line appears in formatBlock", formatBlock({ ...base, verified: "yes" }).includes("\nverified: yes\n") && formatBlock({ ...base, verified: "no", verifiedNote: "FAIL x" }).includes("\nverified: no — FAIL x\n") && !formatBlock(base).includes("verified:"));
+		}
+		if (savedVerify !== undefined) process.env.FOREMAN_VERIFY_CHECKS = savedVerify;
 	}
 
 	if (savedSubagentEnv !== undefined) process.env.FOREMAN_PI_SUBAGENT = savedSubagentEnv;

@@ -40,13 +40,16 @@ function keepModeTimeoutMs(): number {
 	const n = Number(process.env.FOREMAN_KEEP_MODE_TIMEOUT_MS);
 	return process.env.FOREMAN_KEEP_MODE_TIMEOUT_MS && Number.isFinite(n) && n > 0 ? n : DEFAULT_KEEP_MODE_TIMEOUT_MS;
 }
+const REMINDER_TYPE = "foreman-session-reminder";
 const MEMORY_NAME = "FOREMAN_MEMORY.md";
 
 const BASE_REMINDER =
 	"This project has the foreman plugin. For a new feature/bug that needs " +
-	"grilling+planning+building+QA+release, use the foreman skill (/foreman). " +
-	"For an already-approved plan under docs/plans/, use plan-runner " +
-	"(/plan-runner <plan>). If a prior run went wrong (repeated work, ignored " +
+	"grilling+planning+building+QA+release, tell the user to run /foreman. " +
+	"For an already-approved plan under docs/plans/, tell the user to run " +
+	"/plan-runner <plan>. You cannot load these two skills yourself; they " +
+	"are user-invoked. To continue an interrupted run, the user types " +
+	"/foreman resume. If a prior run went wrong (repeated work, ignored " +
 	"plan, a stall, unexpected cost), use /foreman-diagnose. Orchestrator mode " +
 	"is entered with /foreman (or /plan-runner, /foreman-audit) and left with " +
 	"/foreman off. Converse with the user in the language of their messages " +
@@ -132,6 +135,16 @@ export function missingDelegateWarning(getAllTools: () => { name: string }[]): s
 	return " WARNING: the foreman_delegate tool is not loaded in this session, so you cannot delegate; tell the user the coordination extension failed to load.";
 }
 
+/** True when the session branch already holds the injected reminder (a custom_message entry). */
+function branchHasReminder(ctx: any): boolean {
+	try {
+		const branch = ctx?.sessionManager?.getBranch?.() ?? [];
+		return branch.some((e: any) => e?.type === "custom_message" && e?.customType === REMINDER_TYPE);
+	} catch {
+		return false; // unreadable branch: send the reminder again (today's behaviour)
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	// Workers (FOREMAN_PI_SUBAGENT=1, see lib/spawn.ts workerEnv) are not orchestrator sessions: no reminder,
 	// and no false "foreman_delegate not loaded" warning (workers never get that tool).
@@ -173,7 +186,14 @@ export default function (pi: ExtensionAPI) {
 		// full orientation. resume/fork/reload can be a mid-run continuation.
 		const isFreshSession = event.reason === "startup" || event.reason === "new";
 		const orientation = isFreshSession ? gatherOrientation(ctx.cwd) : undefined;
-		pendingReminder = BASE_REMINDER + missingDelegateWarning(() => pi.getAllTools()) + (orientation ? "\n\n" + orientation : "");
+		const warning = missingDelegateWarning(() => pi.getAllTools());
+		// D4: the reminder is paid once per session. A resumed/forked/reloaded session that already
+		// holds it keeps only the (possibly changed) delegate warning.
+		if (!isFreshSession && branchHasReminder(ctx)) {
+			pendingReminder = warning ? warning.trim() : null;
+		} else {
+			pendingReminder = BASE_REMINDER + warning + (orientation ? "\n\n" + orientation : "");
+		}
 
 		const src = tracker.source();
 		if ((event.reason === "resume" || event.reason === "fork") && tracker.isActive() && (src === "entry" || src === "event") && ctx.hasUI) {
@@ -190,7 +210,7 @@ export default function (pi: ExtensionAPI) {
 
 		return {
 			message: {
-				customType: "foreman-session-reminder",
+				customType: REMINDER_TYPE,
 				content: message,
 				display: false,
 			},

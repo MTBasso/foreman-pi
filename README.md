@@ -44,6 +44,7 @@ For an already-approved plan under `docs/plans/`, use `/plan-runner <plan>`.
 | Command | What it does |
 |---|---|
 | `/foreman [task]` | Enter orchestrator mode and start the foreman workflow. |
+| `/foreman resume` | Enter orchestrator mode and rebuild the state of the last run (plan Status, ledger tail, unfinished workers) so the orchestrator re-dispatches what is unfinished. Warns and sends nothing when there is no run state. |
 | `/foreman off` | Leave the mode and restore tools. If workers are running it asks for confirmation before aborting them; with no UI it refuses. |
 | `/foreman-status` | Show mode and worker status (no model call). |
 | `/foreman-audit` | Enter orchestrator mode and run a read-only codebase audit. |
@@ -77,6 +78,8 @@ status: completed        # completed | failed | blocked
 plan-step: 2             # or -
 summary: <first ~400 chars of the worker's report>
 output: .foreman/runs/<run-id>/t1-planner.md
+report: 42 lines         # size of the output file, so you can decide how much to read
+verified: yes            # the step's declared npm Checks re-run by the coordinator (yes, no or n/a)
 </task-notification>
 ```
 
@@ -139,12 +142,20 @@ An explicit model bypasses the `foreman/hybrid` fallback layer.
 | `FOREMAN_MODEL_<ROLE>` / `FOREMAN_MODEL_<TIER>` | unset | Model override per role or tier. |
 | `FOREMAN_THINKING_<ROLE>` | unset | Thinking-level override per role. |
 | `FOREMAN_MAX_WORKERS` | 4 | Concurrent workers; extra delegations queue. |
+| `FOREMAN_MAX_WRITERS` | 2 | Concurrent writer workers (builders, devs, bugfixers); extra writers queue while readers still start. Counts toward `FOREMAN_MAX_WORKERS`. |
+| `FOREMAN_BACKOFF_DECAY_S` | 300 | Seconds after the last provider rate limit before one slot of the halved worker pool comes back (repeats until the pool is whole again; clean finishes still restore a slot at once). A burst of 429s halves the pool once. `0` disables restoration by time. |
+| `FOREMAN_VERIFY_CHECKS` | on | After a `plan-step-builder` finishes a plan step as `completed`, the notification is held while the step's declared `npm run <script>` Checks (only scripts present in `package.json`, never free text) are re-run through `scripts/run-suites.mjs`, and gets `verified: yes\|no\|n/a`. `off` disables. |
+| `FOREMAN_VERIFY_TIMEOUT_S` | 600 | Time budget in seconds for that verification; on timeout the line is `verified: n/a`. |
+| `FOREMAN_MAX_RESUMES` | 2 | Times a worker that already produced output is resumed after a transient provider error (the retry then continues from git state). Counted separately from the no-output retries; invalid values fall back to 2. |
+| `FOREMAN_STUCK_AFTER_S` | 90 | Seconds of silence (no events, no tool running) before a worker is flagged as stuck with a one-time warning in the UI and herdr; `0` disables stuck detection. Nothing is killed; repeating-command and guard-denial warnings are unaffected. |
+| `FOREMAN_WORKER_SKILLS` | unset | Set to `1` to let workers load your global skills. By default workers start with `--no-skills` (the optional `impeccable` skill is still passed to qa, frontend-dev and codebase-auditor when installed). |
 | `FOREMAN_BATCH_MS` | 300 | Debounce window for batching completions. |
 | `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | Per-worker timeout (0 disables). |
 | `FOREMAN_ABORT_WAIT_MS` | 7000 | How long `/foreman off` waits for workers to stop after confirming. |
 | `FOREMAN_KEEP_MODE_TIMEOUT_MS` | 30000 | How long the resume/fork "keep orchestrator mode?" prompt waits. |
 | `FOREMAN_CONTEXT_PRUNE` | true | `false` disables notification pruning. |
 | `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | Completed results kept per role. |
+| `FOREMAN_CONTEXT_PRUNE_HANDOFFS` | true | `false` keeps old `foreman_delegate` handoff text in context (default replaces it with a pointer to the run json; the latest turn is always kept in full). |
 | `FOREMAN_CONTEXT_DEBUG` | off | `1` logs before/after/pruned counts to stderr. |
 | `FOREMAN_PRIMARY_MODEL` / `FOREMAN_FALLBACK_MODEL` | `claude-sonnet-4-5` / `gpt-4o-mini` | `foreman/hybrid` model ids. See "Model fallback". |
 | `FOREMAN_PI_SUBAGENT`, `FOREMAN_PI_ROLE` | set by the spawner | Mark a worker process and its role. Not meant to be set by hand. |
@@ -258,6 +269,25 @@ the last notification; `failed` and `blocked` blocks are never pruned; pruned
 blocks collapse into one line per role
 (`[pruned: K older <role> results — recover: <output paths>]`).
 
+### Compaction
+
+In orchestrator mode (never in a worker), `session_before_compact` replaces pi's
+LLM summary with a summary the extension builds from data it owns: the run and
+plan, workdir and branch, the plan `## Status` step table (or the newest task
+per step), in-flight and blocked tasks with their output paths, rulings and
+unresolved items, the `FOREMAN_MEMORY.md` Decisions log, and your last 8
+messages, ending with a recovery line (read the plan Status and the run
+`ledger.log`; do not re-dispatch merged steps). Outside orchestrator mode, with
+no `foreman-task` entry on the branch, with `FOREMAN_CONTEXT_PRUNE=false`, or on
+any error, pi's default compaction runs unchanged.
+
+Compaction starts when `contextTokens > contextWindow - reserveTokens` (pi
+default `reserveTokens` 16384). To compact near 100k tokens, set
+`compaction.reserveTokens` to `contextWindow - 100000` in your pi
+`settings.json`, or per model with
+`compaction.modelOverrides["<provider>/<model>"].reserveTokens`. This package
+does not write your `settings.json`.
+
 ## Tests and CI
 
 ```bash
@@ -294,9 +324,10 @@ extensions/              foreman-mode, orchestrator-guardrail, coordination,
 lib/                     shared modules and their tests
 agents/                  the 9 worker definitions
 skills/                  foreman, plan-runner, project-memory, design-preview
-references/              supporting docs the skills point to
+references/              supporting docs the skills point to (worker-common,
+                         foreman-audit, foreman-delegation, grilling-fallback, ...)
 templates/               handoff prompt template
-scripts/                 check-package.ts
+scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ and verification-log.md
 ```
 

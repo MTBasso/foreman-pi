@@ -1,0 +1,24 @@
+{
+  "source": {
+    "run_id": "20261112-150722-ta7m95",
+    "task_id": "t8-plan-step-builder",
+    "usageSource": "events"
+  },
+  "role": "plan-step-builder",
+  "plan_step": 6,
+  "handoff_prompt": "# Handoff: Plan readme-gap, step 6 (One schema pass for all Phase 2 data)\n\n## Role\nYou are the plan-step-builder agent. Implement ONLY step 6 of docs/plans/readme-gap.md, fully (migration + schema.sql + tests), and commit it.\n\n## User language\nUser language: en.\n\n## Build instructions\nBuild instructions: none. Follow step 6's Touches and Checks, the plan's \"Decisions (resolved)\" and \"Conventions every step follows\". Keep the DDL in migrations.py and schema.sql identical (the migrations.py docstring lists the drift points).\n\n## Grilled requirement\nWork ONLY in the worktree /home/null/Code/directAds/.worktrees/readme-gap (branch feat/readme-gap); read the plan at docs/plans/readme-gap.md there. Phase 1 (steps 1-5) is committed. Touch only app/migrations.py, schema.sql, app/services/test_schema_migration_mock.py (new). Check whether the revised plan added anything to step 6 (e.g. a pixel_id column) and follow the plan text. Commit: \"feat(db): schema pass for carousel, drafts, nicknames, saved audiences\".\nHARD RULE for every command (guard-enforced): full literal paths, never shell variables, loops, `$`-expansion or variable redirect targets. Python is exactly `/home/null/Code/directAds/.venv/bin/python`. Use file tools to write files. Never touch workspace/*.sqlite (the live DB).\nRun your new suite, test_smart_approval_mock, test_publish_pause_mock, test_i18n_mock and pyright on touched files (pyright has ~29 pre-existing errors; report only NEW ones).\n\n## Decided context (do not re-ask these)\nPython/FastAPI, SQLite, fish shell. Never write secrets to disk.\n\n## Deliverable\nStep 6 committed with checks passing. Report commit sha, results, rulings.\n\n## Constraints\nNo push. Nothing on master. Do not edit other steps' files.\n\n## About orchestrator mode\nOrchestrator mode does not apply to you; proceed normally.",
+  "baseline": {
+    "handoffTokens": 459,
+    "turns": 22,
+    "toolCalls": 28,
+    "input": 46,
+    "output": 17522,
+    "cacheRead": 1021966,
+    "cacheWrite": 46382,
+    "cost": 0.39346359999999997,
+    "guardDenials": {
+      "total": 0,
+      "byReason": {}
+    }
+  }
+}

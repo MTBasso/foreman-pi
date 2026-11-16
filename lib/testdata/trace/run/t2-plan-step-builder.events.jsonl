@@ -1,0 +1,5 @@
+{"type":"message_end","message":{"role":"system","content":""}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}],"usage":{"input":1,"output":2,"cacheRead":3,"cacheWrite":4,"cost":{"total":0.25}}}}
+{"type":"message_end","message":{"role":"toolResult","isError":true,"content":[{"type":"text","text":"Blocked by the foreman worker guard: no eval. Try again"}]}}
+not json
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":6,"cacheRead":7,"cacheWrite":8,"cost":{"total":0.25}}}}

@@ -5,10 +5,12 @@
  * Spawns no `pi` process. Uses temp dirs for PI_CODING_AGENT_DIR and cwd so the
  * real user config and any enclosing project's .pi/agents never leak in.
  */
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { discoverAgents } from "./agents.ts";
+import { parseStatusSection, parseStepChecks, parseTouches, parseStepTitle } from "./plan-steps.ts";
 
 const EXPECTED = [
 	"backend-dev",
@@ -35,6 +37,111 @@ fs.mkdirSync(path.join(agentDir, "agents"), { recursive: true });
 fs.mkdirSync(cwd, { recursive: true });
 const prevDir = process.env.PI_CODING_AGENT_DIR;
 process.env.PI_CODING_AGENT_DIR = agentDir;
+
+check(
+	"worker-common.md documents Guard-denied",
+	/Guard-denied:/.test(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "references", "worker-common.md"), "utf8")),
+);
+
+{
+	const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+	for (const n of ["qa", "qa-bugfix", "plan-step-builder"]) {
+		const t = fs.readFileSync(path.join(dir, "agents", `${n}.md`), "utf8");
+		check(`${n} references run-suites`, /run-suites\.mjs/.test(t));
+	}
+	const now = fs.readFileSync(path.join(dir, "references", "worker-common.md"), "utf8").split("\n").length;
+	const before = execFileSync("git", ["show", "4f44754:references/worker-common.md"], { cwd: dir, encoding: "utf8" }).split("\n").length;
+	check("worker-common.md grew by at most 6 lines", now - before <= 6, `${before} -> ${now}`);
+}
+
+{
+	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");
+	const tools = /^tools:\s*(.*)$/m.exec(planner)?.[1]?.split(",").map((t) => t.trim()).join(",");
+	check("planner tools include edit and still exclude nothing else changed", tools === "read,grep,find,bash,write,edit", String(tools));
+}
+
+{
+	const planner = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "agents", "planner.md"), "utf8");
+	const fmt = /```markdown\n([\s\S]*?)\n```/.exec(planner)?.[1] ?? "";
+	check("planner.md has Seams, Out of scope and Status in its format", /Seams:/.test(fmt) && /^## Out of scope/m.test(fmt) && /^## Status/m.test(fmt) && /- Step N: not started/.test(fmt));
+	check("planner step line uses Touches and Checks", /\(Touches:/.test(fmt) && !/\(File:/.test(fmt) && /^\s*- Checks:/m.test(fmt) && /^\s*- Renders:/m.test(fmt));
+	const fixture = fmt
+		.replace(/<step name>/, "Do thing")
+		.replace(/\(Touches:[^)]*\)/, "(Touches: `a.ts`, `b.ts`)")
+		.replace(/^(\s*- Checks:).*$/m, "$1 `npm run test:a`, `npm test`")
+		.replace(/^(\s*- Renders:).*$/m, "$1 no")
+		.replace(/- Step N: not started/, "- Step 1: not started");
+	const st = parseStatusSection(fixture);
+	const ck = parseStepChecks(fixture, 1);
+	check(
+		"a plan following the template parses: title, touches, status, checks",
+		parseStepTitle(fixture, 1) === "Do thing" &&
+			JSON.stringify(parseTouches(fixture, 1)) === JSON.stringify(["a.ts", "b.ts"]) &&
+			st?.get(1)?.state === "not started" &&
+			JSON.stringify(ck?.npmScripts) === JSON.stringify(["test:a", "test"]),
+		`${parseStepTitle(fixture, 1)} ${JSON.stringify(parseTouches(fixture, 1))} ${JSON.stringify([...(st ?? [])])} ${JSON.stringify(ck)}`,
+	);
+	const fm = /^---\n([\s\S]*?)\n---/.exec(planner)?.[1] ?? "";
+	check(
+		"planner frontmatter unchanged",
+		fm === "name: planner\ndescription: Dispatched via `foreman_delegate`. Receives grilled requirements and project context from the foreman session and produces an implementation plan only. Never writes or edits code.\ntools: read, grep, find, bash, write, edit\ntier: strong\nthinking: high",
+	);
+}
+
+{
+	// Phase C step 19: negation-led lines per agent/template (body only, frontmatter excluded) vs. the counts before the rewrite.
+	const dir = path.join(path.dirname(new URL(import.meta.url).pathname), "..");
+	const BEFORE: Record<string, number> = {
+		"agents/backend-dev.md": 1,
+		"agents/codebase-auditor.md": 9,
+		"agents/frontend-dev.md": 4,
+		"agents/plan-step-builder.md": 3,
+		"agents/planner.md": 4,
+		"agents/qa-bugfix.md": 4,
+		"agents/qa.md": 8,
+		"agents/reviewer.md": 5,
+		"agents/shipper.md": 11,
+		"templates/handoff-prompt.md": 5,
+		"templates/handoff-summary.md": 0,
+		"templates/release-handoff-prompt.md": 1,
+		"templates/review-handoff-prompt.md": 3,
+	};
+	const neg = (t: string) => t.replace(/^---\n[\s\S]*?\n---\n/, "").split("\n").filter((l) => /\b(never|don't|do not|must not)\b/i.test(l)).length;
+	let before = 0;
+	let after = 0;
+	let each = true;
+	for (const [f, n] of Object.entries(BEFORE)) {
+		const c = neg(fs.readFileSync(path.join(dir, f), "utf8"));
+		before += n;
+		after += c;
+		if (c > n) each = false;
+	}
+	console.log(`note - negation-led lines: ${before} -> ${after}`);
+	check("negation-led lines per agent file do not increase and total drops", each && after < before, `${before} -> ${after}`);
+	let fmSame = true;
+	for (const n of EXPECTED) {
+		const fm = (t: string) => /^---\n([\s\S]*?)\n---/.exec(t)?.[1];
+		const old = execFileSync("git", ["show", `0747448:agents/${n}.md`], { cwd: dir, encoding: "utf8" });
+		if (fm(old) !== fm(fs.readFileSync(path.join(dir, "agents", `${n}.md`), "utf8"))) fmSame = false;
+	}
+	check("agent frontmatter equals the recorded snapshot", fmSame);
+	const rd = (f: string) => fs.readFileSync(path.join(dir, f), "utf8");
+	const reviewer = rd("agents/reviewer.md");
+	const shipper = rd("agents/shipper.md");
+	const auditor = rd("agents/codebase-auditor.md");
+	check(
+		"contract strings still present (Verdict tokens, Blocked-on: review reference, no push without instruction)",
+		/Verdict: approve/.test(reviewer) && /Verdict: changes-requested/.test(reviewer) && /writes? no files/.test(reviewer) &&
+			/Blocked-on: review reference/.test(shipper) && /Blocked-on: review verdict changes-requested/.test(shipper) && /Blocked-on: stale review/.test(shipper) &&
+			/Do not push and do not open a PR unless the handoff explicitly says to/.test(shipper) && /Never issue `git push`\s+and `gh pr create`/.test(shipper) && /never install it/.test(shipper) &&
+			/Never force-push/.test(shipper) && /FOREMAN_AUDIT\.md/.test(auditor) && /Commit only/.test(rd("templates/release-handoff-prompt.md")) && /Verdict: approve/.test(rd("templates/release-handoff-prompt.md")),
+	);
+	check(
+		"no copied Working discipline block (agents and templates)",
+		EXPECTED.every((n) => !/Working discipline|Stuck twice|Edit over Bash/i.test(rd(`agents/${n}.md`))) &&
+			!/Working discipline/i.test(rd("templates/handoff-prompt.md")),
+	);
+}
 
 try {
 	// 1. Package agents are all discovered.

@@ -625,7 +625,7 @@ check("every role has a policy kind", ROLES.every((r) => ["readonly", "scoped", 
 const W: [string, string, boolean][] = [
 	["qa", ".foreman/../src/a.txt", true],
 	["qa", "./.foreman/./a.txt", false],
-	["qa", ".foreman", true],
+	["qa", ".foreman", false],
 	["qa", ".foreman/tosrc/new.ts", true],
 	["qa", "link-out/x", true],
 	["qa", `${repo}/.foreman/a.md`, false],
@@ -665,9 +665,9 @@ runBash("unknown-role", [
 // --- language: reasons are English and the Portuguese prompt changes nothing ----------------------------------
 {
 	const v = bash("qa", "echo 'olá' > existing.txt");
-	check("block reason is English ASCII and tells the worker to report Status: blocked", v.block && /^[\x20-\x7e]+$/.test(v.reason) && v.reason.includes("Status: blocked"), v.block ? v.reason : "");
+	check("deny reason mentions Guard-denied and not unconditional blocked", v.block && /^[\x20-\x7e]+$/.test(v.reason) && v.reason.includes("Guard-denied:") && v.reason.includes("only if") && !v.reason.includes("end your foreman-report with"), v.block ? v.reason : "");
 	const w = write("planner", "src/a.ts");
-	check("write block reason says Status: blocked", w.block && w.reason.includes("Status: blocked"));
+	check("write block reason mentions Guard-denied", w.block && w.reason.includes("Guard-denied:"));
 	check("accented text inside a quoted string is not a write", bash("qa", 'echo "não escreva > aqui"').block === false);
 }
 
@@ -722,6 +722,11 @@ const editEvent = (p: string) => ({ type: "tool_call", toolName: "edit", toolCal
 	check("extension: qa edit of src blocked", (await fire(g.handlers, "tool_call", editEvent("src/a.ts")))?.block === true);
 	check("extension: read tool untouched", (await fire(g.handlers, "tool_call", { type: "tool_call", toolName: "read", toolCallId: "1", input: { path: "src/a.ts" } })) === undefined);
 	setEnv("1", "planner");
+	check("edit goes through the extension handler (fire tool_call with an edit event)",
+		(await fire(g.handlers, "tool_call", editEvent("docs/plans/x.md"))) === undefined &&
+		(await fire(g.handlers, "tool_call", editEvent("src/a.ts")))?.block === true &&
+		(await fire(g.handlers, "tool_call", editEvent("docs/plans/sub/x.md")))?.block === true &&
+		(await fire(g.handlers, "tool_call", editEvent("docs/other.md")))?.block === true);
 	check("extension: planner write blocked", (await fire(g.handlers, "tool_call", writeEvent("src/a.ts")))?.block === true);
 	setEnv("1", "reviewer");
 	check("extension: reviewer edit blocked", (await fire(g.handlers, "tool_call", editEvent(".foreman/a.md")))?.block === true);
@@ -736,7 +741,7 @@ const editEvent = (p: string) => ({ type: "tool_call", toolName: "edit", toolCal
 	setEnv("1", "backend-dev");
 	check("extension: dev write inside repo allowed", (await fire(g.handlers, "tool_call", writeEvent("src/new.ts"))) === undefined);
 	const r = await fire(g.handlers, "tool_call", bashEvent("rm -rf src"));
-	check("extension: block result carries an English reason", r?.block === true && String(r.reason).includes("Status: blocked"));
+	check("extension: block result carries an English reason", r?.block === true && String(r.reason).includes("Guard-denied:"));
 }
 
 // orchestrator guardrail is unaffected by the worker guard (and vice versa)
@@ -765,7 +770,7 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 {
 	const src = readFileSync(new URL("../coordination/spawn-worker.ts", import.meta.url), "utf8");
 	check("spawn-worker passes workerEnv(agent.name) to the child", src.includes("...workerEnv(agent.name)"));
-	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes('"--no-session"'));
+	check("spawn-worker runs the child with --no-session (no session file written by the child)", src.includes("workerBaseArgs(") && readFileSync(new URL("../../lib/spawn.ts", import.meta.url), "utf8").includes('"--no-session"'));
 }
 
 // --- v0.3 loosening: tmp scratch for scoped roles, read-only git forms, no stash -------------
@@ -797,8 +802,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 {
 	const blocked = (v: { block: boolean }) => v.block;
 	check("var: literal in-repo dir resolves for dev", !blocked(bash("backend-dev", "D=.foreman/x; mkdir -p $D/seed")));
-	check("var: literal tmp dir resolves for qa", !blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
-	check("var: heredoc to $F/path resolves", !blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("var: literal tmp dir is denied (fail-closed, no substitution)", blocked(bash("qa", `S=${tmp}/q; mkdir -p $S; echo hi > $S/out.txt`)));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("var: heredoc to $F/path is denied (fail-closed, no substitution)", blocked(bash("backend-dev", "F=.foreman/seed\ncat > $F/a.json <<'E'\n{}\nE\n")));
 	check("var: resolved path is still judged (outside repo)", blocked(bash("backend-dev", `O=${outside}; echo x > $O/f`)));
 	check("var: resolved path is still judged (qa into src)", blocked(bash("qa", "D=src; echo x > $D/a.ts")));
 	check("var: rm -rf $S still blocked when S unresolved", blocked(bash("backend-dev", "rm -rf $S")));
@@ -809,6 +816,10 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	check("var: single-quoted $D stays literal (qa cannot write src via it)", blocked(bash("qa", "D=.foreman; echo x > '$D'")));
 	check("var: used before assignment not resolved", blocked(bash("backend-dev", "echo x > $D/y; D=.foreman/x")));
 	check("planner may write docs/plans/*.md via tool", !write("planner", "docs/plans/foo.md").block);
+	check("planner may edit docs/plans/x.md via the edit tool", !write("planner", "docs/plans/x.md").block);
+	check("planner edit of src/a.ts is blocked", write("planner", "src/a.ts").block);
+	check("planner edit of docs/plans/sub/x.md is blocked", write("planner", "docs/plans/sub/x.md").block);
+	check("planner edit of docs/other.md is blocked", write("planner", "docs/other.md").block);
 	check("planner may not write other docs", write("planner", "docs/foo.md").block && write("planner", "src/a.ts").block && write("planner", "docs/plans/sub/x.md").block);
 	check("planner may redirect into docs/plans/*.md", !bash("planner", "cat > docs/plans/foo.md <<'E'\n# p\nE\n").block);
 	check("planner redirect elsewhere still blocked", bash("planner", "echo x > docs/foo.md").block && bash("planner", "echo x > src/a.ts").block);
@@ -831,7 +842,8 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 		check(`${role}: other .git files still blocked`, blocked(bash(role, `echo x >> .git/config`)) && blocked(bash(role, `echo x >> .git/hooks/pre-commit`)));
 		check(`${role}: .git inside a linked worktree still blocked`, blocked(write(role, `${sib}/.git`)));
 		check(`${role}: unrelated outside dir still blocked`, blocked(write(role, `${outside}/x.txt`)));
-		check(`${role}: literal for-loop with redirect to tmp var`, !blocked(bash(role, `for n in a b c; do echo $n >${tmp}/o_$n.txt 2>&1; done`)));
+		// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+		check(`${role}: literal for-loop with redirect to tmp var is denied (fail-closed)`, blocked(bash(role, `for n in a b c; do echo $n >${tmp}/o_$n.txt 2>&1; done`)));
 		check(`${role}: for-loop unrolled path is still judged`, blocked(bash(role, `for n in a b; do echo $n > ${outside}/o_$n.txt; done`)));
 		check(`${role}: for-loop over command substitution still blocked`, blocked(bash(role, `for n in $(ls); do echo $n > ${tmp}/o_$n; done`)));
 		check(`${role}: for-loop var that could be a path still blocked`, blocked(bash(role, `for n in ../../etc/x; do echo x > $n; done`)));
@@ -842,6 +854,185 @@ check("workerEnv sets subagent flag and role", JSON.stringify(workerEnv("qa")) =
 	for (const c of ['python3 -c "import os; os.remove(\'x\')"', 'python3 -c "open(\'x\',\'w\')"', 'python3 script.py', 'python3 -c "import os;os.system(\'ls\')"', 'pip install foo', 'python3 -m http.server', 'python3 -c "print($HOME)"'])
 		check(`planner may not run: ${c}`, blocked(bash("planner", c)));
 	check("reviewer gets the same probes", !blocked(bash("reviewer", 'python3 -c "import json"')));
+}
+
+// --- C5 step 1: .foreman directory and sibling-worktree .foreman for scoped roles -----------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const sib = path.join(base, "sibling-wt");
+	const sibB = (role: string, cmd: string) => checkBash(role, repo, cmd, opts);
+	check("fixture: sibling worktree exists (c5)", fs.existsSync(sib));
+	check("qa may mkdir .foreman", !blocked(bash("qa", "mkdir .foreman")));
+	check("shipper may mkdir -p .foreman/qa-logs", !blocked(bash("shipper", "mkdir -p .foreman/qa-logs")));
+	check("codebase-auditor may mkdir -p .foreman/x", !blocked(bash("codebase-auditor", "mkdir -p .foreman/x")));
+	check("qa may write <sibling worktree>/.foreman/x from main cwd", !blocked(write("qa", `${sib}/.foreman/x`)) && !blocked(sibB("qa", `echo x > ${sib}/.foreman/qa-logs/x.log`)) && !blocked(sibB("qa", `mkdir -p ${sib}/.foreman/qa-logs`)));
+	check("shipper may write <sibling worktree>/.foreman/x from main cwd", !blocked(write("shipper", `${sib}/.foreman/x`)));
+	check("qa may mkdir the sibling .foreman directory itself", !blocked(sibB("qa", `mkdir ${sib}/.foreman`)));
+	check("qa may not write <sibling worktree>/src/a.ts", blocked(write("qa", `${sib}/src/a.ts`)) && blocked(sibB("qa", `echo x > ${sib}/src/a.ts`)));
+	check("qa may not write <sibling worktree>/.git/config", blocked(write("qa", `${sib}/.git/config`)) && blocked(sibB("qa", `echo x > ${sib}/.git/config`)));
+	check("qa may not write the sibling worktree root", blocked(write("qa", `${sib}/x.txt`)) && blocked(write("qa", sib)));
+	check("qa may not write <sibling worktree>/.foreman-x or .foreman/../src", blocked(write("qa", `${sib}/.foreman-x/a`)) && blocked(write("qa", `${sib}/.foreman/../src/a.txt`)) && blocked(sibB("qa", `echo x > ${sib}/.foreman/../src/a.txt`)));
+	check("qa may not write a symlink in sibling .foreman escaping to src", (() => { fs.mkdirSync(`${sib}/.foreman`, { recursive: true }); fs.mkdirSync(`${sib}/src`, { recursive: true }); fs.symlinkSync(`${sib}/src`, `${sib}/.foreman/tosrc`); return blocked(write("qa", `${sib}/.foreman/tosrc/f`)); })());
+	check("outside dir .foreman stays denied", blocked(write("qa", `${outside}/.foreman/x`)) && blocked(sibB("qa", `mkdir -p ${outside}/.foreman`)));
+	check("planner/reviewer may not mkdir .foreman", blocked(bash("planner", "mkdir .foreman")) && blocked(bash("reviewer", "mkdir -p .foreman/x")));
+	check(".foreman/../src/a.txt still denied", blocked(bash("qa", "echo x > .foreman/../src/a.txt")) && blocked(write("qa", ".foreman/../src/a.txt")) && blocked(bash("qa", "mkdir .foreman/../src2")));
+	check(".git still denied for qa", blocked(bash("qa", "mkdir .git/x")) && blocked(write("qa", ".git/config")));
+	// relative ../ redirect judged on the resolved path
+	const sub = (role: string, cmd: string) => checkBash(role, repo, `cd src && ${cmd}`, opts);
+	check("relative ../ redirect judged on resolved path", !blocked(sub("qa", "echo x > ../.foreman/x.log")) && blocked(sub("qa", "echo x > ../x.txt")) && blocked(sub("qa", "echo x > ../../outside/x")) && blocked(sub("qa", "echo x > ../.foreman/../src/x")));
+}
+
+// --- C4 step 5: qa running with cwd = a linked worktree ----------------------------------------
+{
+	const sib = path.join(base, "sibling-wt");
+	const inWt = (role: string, cmd: string) => checkBash(role, sib, cmd, opts);
+	check("guard: qa with cwd = linked worktree may write .foreman/qa-logs/x.log",
+		!checkBash("qa", sib, "mkdir -p .foreman/qa-logs", opts).block &&
+		!inWt("qa", "echo x > .foreman/qa-logs/x.log").block &&
+		!checkWrite("qa", sib, ".foreman/qa-logs/x.log", opts).block &&
+		checkWrite("qa", sib, "src/a.ts", opts).block);
+}
+
+// --- C5 step 2: literal vars composed with for-loops; python read-only probe grammar -------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const P = `${repo}/.foreman/tool`;
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("literal var used inside a for-loop redirect is denied (fail-closed)",
+		blocked(bash("qa", `D=.foreman/o; mkdir -p $D && for s in a b c; do echo $s > $D/$s.txt; done`)) &&
+		blocked(bash("qa", `D=.foreman/o\nfor s in a b c; do\n echo $s > $D/$s.txt 2>&1\ndone`)));
+	check("for-loop whose body command word is a variable ($P run $s) is not unrolled (allowlist) and stays denied",
+		blocked(bash("qa", `P=.foreman/tool; for s in a b c; do $P run $s > .foreman/o_$s.txt 2>&1; done`)));
+	check("the real path is still judged after composing (qa into src / outside)",
+		blocked(bash("qa", `D=src; for s in a b; do echo $s > $D/$s.txt 2>&1; done`)) &&
+		blocked(bash("qa", `D=${outside}; mkdir -p .foreman/x && for s in a b; do echo $s > $D/$s.txt; done`)) &&
+		blocked(bash("qa", `D=src; echo a 2>&1 | tail -1 > $D/x.txt`)));
+	check("same with a variable the loop reassigns stays denied",
+		blocked(bash("qa", `D=.foreman/o; for D in /etc; do echo x > $D/y 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o; for s in a b; do D=/etc; echo x > $D/$s 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o\nfalse || D=src\necho x > $D/y 2>&1`)) &&
+		blocked(bash("qa", `D=.foreman/o; D=src; mkdir -p .foreman/z && echo x > $D/y`)));
+	check("conditional assignment on a continued line is not trusted",
+		blocked(bash("qa", `false &&\nD=.foreman/o\necho x > $D/y`)) &&
+		blocked(bash("qa", `false ||\nD=.foreman/o\necho x > $D/y`)) &&
+		blocked(bash("qa", `echo a |\nD=.foreman/o\necho x > $D/y`)));
+	check("for-loop rebind in any spelling (printf -vs, quoted -v, declare -n quoted) is denied",
+		blocked(bash("qa", `for s in x y; do printf -vs ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -v "s" ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -v 's' ../src/q; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do declare -n "s"=t; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do printf -vs ../src/q; echo hi > .foreman/$s; done`)));
+	check("for-loop with printf -v on the loop variable is denied or judged on the runtime path",
+		blocked(bash("qa", `for s in x y; do printf -v s '../src/%s' "$s"; echo hi > .foreman/$s; done`)));
+	check("declare, mapfile and getopts on the loop variable denied",
+		blocked(bash("qa", `for s in x y; do declare s=../src/$s; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do declare -n s; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do local s=../src; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do mapfile s < /dev/null; echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do getopts ab s; echo hi > .foreman/$s; done`)));
+	const bypass = ["\\printf -vs ../src/q", `"printf" -vs ../src/q`, "'printf' -v s ../src/q", "command printf -v s ../src/q", "builtin printf -v s ../src/q",
+		"s+=x", "s[0]=../src/q", `readonly "s=../src/q"`, `declare -n "s"`, "read s", "IFS= read s", "source x", ". x", "eval", "exec", "{ printf -vs ../src/q; }",
+		"printf -vs ../src/q", "printf -- -v s ../src/q", "s=../src/q", "echo ${s:=../src/q}", "echo $((s=1))"];
+	check("allowlist: every rebind spelling in a for-loop body is denied",
+		bypass.every((b) => blocked(bash("qa", `for s in x y; do ${b}; echo hi > .foreman/$s; done`))));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("plain literal for-loop is denied (fail-closed, no unrolling)",
+		blocked(bash("qa", `for s in x y; do echo hi > .foreman/$s; done`)) &&
+		blocked(bash("qa", `for s in x y; do echo "$s" > .foreman/$s.txt; done`)));
+	check("round 3: printf, prefix, IFS, $[ and {n}> escapes are denied",
+		[`for s in x y; do printf $'-v' s ../src/q; echo hi > .foreman/$s; done`,
+		`for s in x y; do printf \${e}-v s ../src/q; echo hi > .foreman/$s; done`,
+		`for s in x y; do printf $"-v" s ../src/q; echo hi > .foreman/$s; done`,
+		`echo() { printf -vs ../src/q; }; for s in x y; do echo a; echo hi > .foreman/$s; done`,
+		`trap 'printf -vs ../src/q' DEBUG; for s in x y; do echo a; echo hi > .foreman/$s; done`,
+		`IFS=/; for s in .foreman/x; do mkdir $s; done`,
+		`IFS=/; D=.foreman/x; rm $D`,
+		`for s in .foreman; do echo $[s=1]; mkdir $s; done`,
+		`true {s}>/dev/null; mkdir $s`,
+		`for s in .foreman; do true {s}>/dev/null; mkdir $s; done`].every((c) => blocked(bash("qa", c))));
+	check("round 4: # comments, {D}> and &done do not hide rebinds",
+		[`for s in .foreman/a .foreman/b; do echo hi # '\nprintf -v s ../src/q\n#'\nmkdir $s\ndone`,
+		`for s in .foreman/a .foreman/b; do echo hi # "\nprintf -v s ../src/q\n#"\nmkdir $s\ndone`,
+		`echo hi # x\nfor s in .foreman/a; do mkdir $s; done`,
+		`D=.foreman/x # c\nrm $D/../../y`,
+		`D=.foreman/x; true {D}>/dev/null; rm $D`,
+		`for s in .foreman/a; do mkdir $s; done.d; cmd &done`].every((c) => blocked(bash("qa", c))));
+	// Deliberate fail-closed decision (t50): unrolling/substitution disabled, so this is now DENIED.
+	check("loop var named like a literal body word is denied (fail-closed, no unrolling)",
+		blocked(bash("qa", `for out in a b; do echo hi > .foreman/$out; echo out; done`)));
+	check("loop over a glob stays denied",
+		blocked(bash("qa", `D=.foreman/o; for s in *.txt; do echo x > $D/$s 2>&1; done`)) &&
+		blocked(bash("qa", `D=.foreman/o; for s in $(ls); do echo x > $D/$s; done`)));
+
+	const ok = (c: string) => !blocked(bash("planner", c));
+	const no = (c: string) => blocked(bash("planner", c));
+	check("planner may run python3 -c json.load(open) len print",
+		ok(`python3 -c "import json; print(len(json.load(open('data.json'))))"`) &&
+		ok(`python3 -c 'import json; f = "a.json"; print(len(json.load(open(f))))'`) &&
+		ok(`python3 -c "import json; print(sorted(json.load(open('x.json'))))"`) &&
+		ok(`python3 -c "import json; print(str(len(list(json.load(open('x.json'))))))"`) &&
+		ok(`python3 -c "import json; d = json.load(open('x.json'))"`) === false &&
+		ok(`python3 -c 'import json\nf = "a.json"\nprint(json.load(open(f)))'`));
+	check("planner may not python3 -c open(..., \"w\")",
+		no(`python3 -c "print(open('x','w'))"`) &&
+		no(`python3 -c "import json; print(json.load(open('x','w')))"`) &&
+		no(`python3 -c "import json; print(json.load(open('x', mode='w')))"`) &&
+		no(`python3 -c "import json; print(len(open('x')))"`) &&
+		no(`python3 -c "f = open('x', 'w')"`) &&
+		no(`python3 -c "import json; print(json.dump(1, open('x')))"`));
+	check("planner may not python3 -c exec/eval/__import__/os.system",
+		no(`python3 -c "exec('x=1')"`) && no(`python3 -c "print(eval('1'))"`) && no(`python3 -c "print(len(eval('1')))"`) &&
+		no(`python3 -c "__import__('os').system('ls')"`) && no(`python3 -c "print(__import__('os'))"`) &&
+		no(`python3 -c "import os; print(os.system('ls'))"`) && no(`python3 -c "import os; os.system('ls')"`) &&
+		no(`python3 -c "print(len(json.load(open(f))), exec('1'))"`) &&
+		no(`python3 -c "print(len(a), len(b))"`) && no(`python3 -c 'f = "$HOME"; print(f)'`) && no(`python3 -c "print(len(json.load(open(f))"`));
+	check("reviewer same probes as planner",
+		!blocked(bash("reviewer", `python3 -c "import json; print(len(json.load(open('data.json'))))"`)) &&
+		blocked(bash("reviewer", `python3 -c "print(open('x','w'))"`)) && blocked(bash("reviewer", `python3 -c "exec('1')"`)) &&
+		blocked(bash("reviewer", `python3 -c "import os; os.system('ls')"`)) && blocked(bash("reviewer", `python3 -c "__import__('os')"`)));
+}
+
+// --- nested worktrees: the innermost worktree decides ------------------------------------------
+{
+	const blocked = (v: { block: boolean }) => v.block;
+	const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd: repo, stdio: "ignore" });
+	const wa = path.join(repo, ".worktrees", "a");
+	const wb = path.join(repo, ".worktrees", "b");
+	try { g("worktree", "add", "-q", wa, "-b", "nest-a"); g("worktree", "add", "-q", wb, "-b", "nest-b"); } catch { /* checked below */ }
+	check("fixture: nested worktrees exist", fs.existsSync(wa) && fs.existsSync(wb));
+	const fromMain = (role: string, cmd: string) => checkBash(role, repo, cmd, opts);
+	const fromA = (role: string, p: string) => checkWrite(role, wa, p, opts);
+	const fromAB = (role: string, cmd: string) => checkBash(role, wa, cmd, opts);
+
+	check("qa may write <root>/.worktrees/a/.foreman/x from the main root",
+		!blocked(write("qa", `${wa}/.foreman/x`)) && !blocked(write("qa", ".worktrees/a/.foreman/x")) &&
+		!blocked(fromMain("qa", `echo x > ${wa}/.foreman/x.log`)) && !blocked(fromMain("qa", `mkdir -p .worktrees/a/.foreman/qa-logs`)));
+	check("qa may not write <root>/.worktrees/a/src/x",
+		blocked(write("qa", `${wa}/src/x`)) && blocked(write("qa", ".worktrees/a/src/x")) && blocked(write("qa", `${wa}/x.txt`)) && blocked(write("qa", wa)) &&
+		blocked(fromMain("qa", `echo x > ${wa}/src/x`)) && blocked(write("qa", `${wa}/.foreman-x/a`)));
+	check("from root a, qa may write ../b/.foreman/x when b is nested under main (innermost wins)",
+		!blocked(fromA("qa", "../b/.foreman/x")) && !blocked(fromA("qa", `${wb}/.foreman/x`)) && !blocked(fromAB("qa", "echo x > ../b/.foreman/x")) &&
+		blocked(fromA("qa", "../b/src/x")) && blocked(fromA("qa", "../b/x.txt")) && blocked(fromAB("qa", "echo x > ../b/src/x")));
+	check("shipper same as qa",
+		!blocked(write("shipper", `${wa}/.foreman/x`)) && !blocked(fromA("shipper", "../b/.foreman/x")) &&
+		blocked(write("shipper", `${wa}/src/x`)) && blocked(fromA("shipper", "../b/src/x")));
+	check("nested worktree .git and .env still denied for dev roles",
+		DEV.every((r) => blocked(write(r, `${wa}/.git`)) && blocked(write(r, `${wa}/.env`)) && blocked(fromA(r, "../b/.git")) && blocked(fromA(r, "../b/.env")) && blocked(fromA(r, "../b/.env.local")) &&
+			!blocked(fromA(r, "../b/.env.example")) && !blocked(fromA(r, "../b/src/x.ts"))));
+	check(".foreman/../src through a nested worktree denied",
+		blocked(write("qa", `${wa}/.foreman/../src/x`)) && blocked(fromA("qa", "../b/.foreman/../src/x")) && blocked(fromAB("qa", "echo x > ../b/.foreman/../src/x")) &&
+		blocked(fromMain("shipper", `echo x > ${wa}/.foreman/../src/x`)));
+	check("a nested .foreman symlink escaping to src is denied",
+		(() => { fs.mkdirSync(`${wa}/.foreman`, { recursive: true }); fs.mkdirSync(`${wa}/src`, { recursive: true }); fs.symlinkSync(`${wa}/src`, `${wa}/.foreman/tosrc`); return blocked(write("qa", `${wa}/.foreman/tosrc/f`)); })());
+	check("read-only roles may not write a nested worktree .foreman", blocked(write("reviewer", `${wa}/.foreman/x`)) && blocked(write("planner", `${wa}/.foreman/x`)));
+}
+
+// Fail-closed: loop unrolling and literal-var substitution are disabled (review t50, five rounds of bypasses).
+{
+	const probeDesync = String.raw`for s in .foreman/a .foreman/b; do echo $'\'' ; printf -v s ../src/q ; echo ' ; mkdir $s ; echo $'\''' ; mkdir $s; done`;
+	const probeSplice = "DIR=.foreman/x; a=DI; b=R; printf -v $a$b ../src/q; rm $DIR";
+	check("qa: $'\\'' quote-desync loop probe is denied", bash("qa", probeDesync).block === true);
+	check("qa: printf -v $a$b spliced-name probe is denied", bash("qa", probeSplice).block === true);
 }
 
 fs.rmSync(base, { recursive: true, force: true });

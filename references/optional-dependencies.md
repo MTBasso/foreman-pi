@@ -2,8 +2,9 @@ Referenced from `foreman`'s step 0.5. Read this only when you haven't
 already confirmed (this session, or recently on this machine) that the
 optional dependencies are installed.
 
-This plugin leans on four optional skills from other sources: `grill-me`,
-`improve-codebase-architecture`, `writing-for-agents` (all from
+This plugin leans on optional skills from other sources: `grilling` (or its
+older name `grill-me`; without either, `references/grilling-fallback.md` is
+the interview), `improve-codebase-architecture`, `writing-for-agents` (all from
 `mattpocock/skills`), and `impeccable` (from `pbakaus/impeccable`, for
 removing "AI slop" from generated UI). None of them is required.
 

@@ -10,9 +10,13 @@
  * the value is certain.
  *
  * Rules (all must hold for a name to be substituted):
- *  - the command has no subshell/brace groups, backticks, `$(`, compound
- *    keywords (if/while/for/case/...), `&&`, `||`, `|`, or `&` (assignment
- *    might not run, or run in a subshell);
+ *  - the command has no subshell/brace groups, backticks, `$(` or compound
+ *    keywords (if/while/for/case/...);
+ *  - `&&`, `||`, `|` and `&` are allowed (so `2>&1`, pipes and `mkdir -p $D && ...`
+ *    resolve) because the assignment must itself be a whole statement, must be the
+ *    ONLY `NAME=` occurrence in the command, and the statement before it must not
+ *    end in `&&`, `||`, `|` or `|&` (a continued line would make it conditional or
+ *    run it in a pipeline subshell);
  *  - the assignment is a whole statement `NAME=literal` / `export NAME=literal`
  *    starting at the beginning of the command or after `;` / newline;
  *  - literal is [A-Za-z0-9_./:@%+,=-]+ (optionally in one pair of quotes): no
@@ -153,9 +157,23 @@ function substitute(text: string, name: string, value: string): string {
 	return out;
 }
 
+/**
+ * Fail closed. Five review rounds (t46-t50) kept finding bypasses in loop unrolling and
+ * literal-var substitution (e.g. `$'\\''` desyncing the quote scanner, `printf -v $a$b`
+ * spliced names): they rely on hand-written shell models that disagree with bash. Both
+ * functions now return the command unchanged, so `$VAR` paths and variable for-loops hit
+ * the normal deny path. Set to true only after a separately designed, reviewed feature.
+ */
+const UNROLL_ENABLED = false;
+
 export function resolveLiteralVars(command: string): string {
+	if (!UNROLL_ENABLED) return command;
+	if (/IFS/.test(command)) return command; // IFS changes word splitting of the substituted value
 	if (!command.includes("$")) return command;
-	if (/[`()]|\$\(|&|\|/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
+	if (command.includes("#")) return command; // comments hide quotes/rebinds from this scanner: refuse
+	if (/\{[A-Za-z_][A-Za-z0-9_]*\}\s*[<>]/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command; // {NAME}> rebinds NAME
+	if (/[`()]|\$\(/.test(command.replace(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/g, "$X"))) return command;
+	if (/(^|[\s;&|])\{(\s|$)/.test(command)) return command; // brace group: the assignment inside might be conditional
 	if (COMPOUND.test(command)) return command;
 	const parsed = statements(command);
 	if (!parsed) return command;
@@ -183,7 +201,9 @@ export function resolveLiteralVars(command: string): string {
 		const asg = new RegExp(`(^|[\\s;])(?:export\\s+)?${name}=`, "g");
 		const bareHits = (command.match(bare) ?? []).length;
 		const asgHits = (command.match(asg) ?? []).length;
-		if (bareHits > asgHits) continue;
+		if (bareHits > asgHits || asgHits !== 1) continue;
+		const prev = a.stmtIndex > 0 ? parsed.stmts[a.stmtIndex - 1].text : "";
+		if (/(\|\||&&|\||\|&)\s*(#[^\n]*)?$/.test(prev.trimEnd())) continue; // assignment is on a continued line: conditional or in a pipeline
 		const edits: Array<[number, number]> = [];
 		parsed.stmts.forEach((s, idx) => {
 			if (idx <= a.stmtIndex) return;
@@ -195,6 +215,66 @@ export function resolveLiteralVars(command: string): string {
 	return out;
 }
 
+const LOOP_COMMANDS = new Set(["echo", "cat", "ls", "mkdir", "touch", "tee", "test", "true", "grep", "head", "tail", "wc", "cp", "mv", "rm"]);
+
+/**
+ * Allowlist for a for-loop body: every simple command word is bare and in LOOP_COMMANDS,
+ * and nothing outside single quotes can assign
+ * (`+=`, `[..]=`, `${x=..}`), escape (backslash, backtick) or substitute (`$(`, `<(`, `>(`).
+ */
+function loopBodyAllowed(body: string): boolean {
+	const cmds: string[][] = [[]];
+	let word = "";
+	let hasWord = false;
+	let quote: "" | "'" | '"' = "";
+	let outside = ""; // body with single-quoted literal text blanked
+	const endWord = () => {
+		if (hasWord) cmds[cmds.length - 1].push(word);
+		word = "";
+		hasWord = false;
+	};
+	const endCmd = () => {
+		endWord();
+		cmds.push([]);
+	};
+	for (let i = 0; i < body.length; i++) {
+		const c = body[i];
+		if (quote === "'") {
+			if (c === "'") quote = "";
+			else { word += c; outside += " "; continue; }
+			word += c; outside += c;
+			continue;
+		}
+		if (c === "\\" || c === "`") return false;
+		outside += c;
+		if (quote === '"') {
+			if (c === '"') quote = "";
+			word += c;
+			continue;
+		}
+		if (c === "'" || c === '"') { quote = c; word += c; hasWord = true; continue; }
+		if (c === ";" || c === "\n" || c === "|") { endCmd(); continue; }
+		if (c === "&") {
+			const prev = body[i - 1], next = body[i + 1];
+			if (prev === ">" || prev === "<" || next === ">") { word += c; hasWord = true; continue; }
+			endCmd();
+			continue;
+		}
+		if (/\s/.test(c)) { endWord(); continue; }
+		word += c;
+		hasWord = true;
+	}
+	if (quote) return false;
+	endWord();
+	if (/\+=|\[[^\]]*\]=|\$\(|[<>]\(|\$\[|\{[A-Za-z_][A-Za-z0-9_]*\}\s*[<>]/.test(outside)) return false;
+	if (/\$\{(?![A-Za-z_][A-Za-z0-9_]*\})/.test(outside)) return false;
+	for (const words of cmds) {
+		if (words.length === 0) continue;
+		if (!/^[a-z]+$/.test(words[0]) || !LOOP_COMMANDS.has(words[0])) return false;
+	}
+	return true;
+}
+
 /**
  * Unroll one simple `for VAR in <literal words>; do BODY; done` into straight-line
  * statements (one copy of BODY per word, VAR replaced by the literal), so the guard
@@ -204,14 +284,22 @@ export function resolveLiteralVars(command: string): string {
  * the command unchanged (the guard then denies any `$VAR` path as before).
  */
 export function expandForLoop(command: string): string {
+	if (!UNROLL_ENABLED) return command; // see UNROLL_ENABLED
 	const m = /^([\s\S]*?)(?:^|[\s;])for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+([^;\n$`()|&<>]+?)\s*[;\n]\s*do\b([\s\S]*?)(?:[;\n]\s*|\s+)done\b([\s\S]*)$/.exec(command);
 	if (!m) return command;
 	const [, prefix, name, list, body, suffix] = m;
+	if (/IFS/.test(command) || command.includes("#")) return command; // '#' comments: refuse rather than parse
+	// The prefix may only hold plain literal assignments and allowlisted commands (no functions, traps, groups).
+	if (/[({]|\b(trap|function|alias)\b/.test(prefix)) return command;
+	const prefixCmds = prefix.split(/[;\n]/).filter((p) => p.trim() && !/^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*=(['"]?)[A-Za-z0-9_.\/:@%+,=-]*\1\s*$/.test(p));
+	if (prefixCmds.length && !loopBodyAllowed(prefixCmds.join(";"))) return command;
 	const words = list.trim().split(/\s+/);
 	if (words.length === 0 || words.length > 32 || !words.every((w) => LITERAL.test(w))) return command;
 	if (COMPOUND.test(body) || /(^|[\s;])(break|continue|read|unset)(?=[\s;]|$)/.test(body) || /[`()]|\$\(/.test(body)) return command;
-	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;])done(?=[\s;]|$)/.test(suffix)) return command;
+	if (/(^|[\s;])(for|while|until)\s/.test(suffix) || /(^|[\s;&|])done(?=[\s;&|]|$)/.test(suffix)) return command;
 	if (new RegExp(`(^|[\\s;])${name}=`).test(body) || new RegExp(`(^|[\\s;])${name}=`).test(prefix)) return command;
+	// Fail-closed allowlist: unroll only when the body provably cannot rebind the loop variable at runtime.
+	if (!loopBodyAllowed(body)) return command;
 	const copies = words.map((w) => substitute(body.replace(/^\s*;?/, ""), name, w).replace(/[;\s]+$/, ""));
 	return `${prefix.replace(/[;\s]*$/, "")}\n${copies.join("\n")}\n${suffix.replace(/^[;\s]+/, "")}`;
 }

@@ -35,8 +35,12 @@ themselves say to stop for.
 
 - Skim `git diff --stat` before reporting done to confirm you stayed inside
   the step's "Touches:" (if it has one).
-- Never report a step checked or merged unless you actually ran what proves it.
-- Stuck twice is exactly what a "waiting on you" stop is for: report
-  `Status: blocked` rather than forcing it through alone.
-- No destructive commands beyond what the build instructions themselves call
-  for, without explicit authorization.
+- Report a step checked or merged only after running what proves it.
+- When the build instructions are `none` or say nothing about status, set the
+  step's line in the plan's `## Status` to `merged` as your last commit and
+  say so in the report.
+- Baseline step (the step records the test baseline): run the suite once. If
+  it cannot complete, report `completed` with Summary `baseline unavailable:
+  <reason>` and write no baseline file.
+- Run suites with `node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> <py:|node:|npm:>suite...` (see "Running test suites" in the shared worker rules) instead of ad-hoc loops.
+- Destructive commands only as far as the build instructions call for them.

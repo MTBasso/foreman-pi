@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { PACKAGE_ROOT } from "../../lib/agents.ts";
+import { formatResumeState, type ResumeState } from "../../lib/resume-state.ts";
 
 export function stripFrontmatter(text: string): string {
 	const m = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/.exec(text);
@@ -76,12 +77,15 @@ export function buildForemanPrompt(request: string, root: string = PACKAGE_ROOT)
 export function buildAuditPrompt(scope: string, root: string = PACKAGE_ROOT): string {
 	const s = scope.trim();
 	return [
-		"You are now the foreman orchestrator, running an audit request. Follow the foreman skill below, but go straight to §1.5 (audit request): skip the grilling and planning steps.",
+		"You are now the foreman orchestrator, running an audit request. Follow the foreman skill below, but go straight to the audit path (the audit reference below): skip the grilling and planning steps.",
 		MODE_NOTE,
 		preface(root),
 		"--- foreman skill ---",
 		readSkillBody("foreman", root),
 		"--- end foreman skill ---",
+		"--- foreman audit reference ---",
+		readReference("foreman-audit", root),
+		"--- end reference ---",
 		s ? `Audit scope (verbatim):\n${s}` : "No scope was given: audit the whole project, or ask the user one question to narrow it if that is clearly too broad.",
 	].join("\n\n");
 }
@@ -98,8 +102,8 @@ export function buildDiagnosePrompt(problem: string, root: string = PACKAGE_ROOT
 	].join("\n\n");
 }
 
-export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: string = PACKAGE_ROOT): string {
-	return [
+export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: string = PACKAGE_ROOT, preflight?: string): string {
+	const parts = [ 
 		"You are now the plan-runner orchestrator. Follow the plan-runner skill below.",
 		MODE_NOTE,
 		preface(root),
@@ -108,5 +112,33 @@ export function buildPlanRunnerPrompt(planPath: string, exists: boolean, root: s
 		"--- end plan-runner skill ---",
 		`Plan to run: ${planPath}` +
 			(exists ? "" : "\n(The file did not exist when the command ran: verify the path with the user before dispatching anything.)"),
-	].join("\n\n");
+	];
+	if (preflight) parts.push(`--- preflight (gathered by the extension; do not re-run) ---\n${preflight}`);
+	return parts.join("\n\n");
+}
+
+const RESUME_RULE =
+	"Resume the interrupted work: re-dispatch what is unfinished in one response. Never re-dispatch a step that is `merged` or `decided`. Read an unfinished task's report path (with `limit`) before re-dispatching it.";
+
+/** Prompt for `/foreman resume`: pre-assembled state, the resume rule, and (unless already embedded) the skill body. */
+export function buildResumePrompt(state: ResumeState, opts: { includeSkill: boolean }, root: string = PACKAGE_ROOT): string {
+	const planRunner = !!state.planSlug;
+	const marker = planRunner ? "plan-runner" : "foreman";
+	const parts = [
+		`You are the ${planRunner ? "plan-runner" : "foreman"} orchestrator and the user ran /foreman resume.`,
+		MODE_NOTE,
+		formatResumeState(state),
+		RESUME_RULE,
+	];
+	if (opts.includeSkill) {
+		parts.push(preface(root), `--- ${marker} skill ---`, readSkillBody(marker, root), `--- end ${marker} skill ---`);
+	} else {
+		parts.push(`The ${marker} skill is already in this conversation (earlier \`--- ${marker} skill ---\` block): keep following it.`);
+	}
+	return parts.join("\n\n");
+}
+
+/** The marker line of the skill embed `buildResumePrompt` would add. */
+export function skillMarker(state: ResumeState): string {
+	return `--- ${state.planSlug ? "plan-runner" : "foreman"} skill ---`;
 }

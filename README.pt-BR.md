@@ -46,6 +46,7 @@ Para um plano já aprovado em `docs/plans/`, use `/plan-runner <plano>`.
 | Comando | O que faz |
 |---|---|
 | `/foreman [tarefa]` | Entra no modo orquestrador e inicia o fluxo do foreman. |
+| `/foreman resume` | Entra no modo orquestrador e reconstrói o estado da última execução (Status do plano, fim do ledger, workers inacabados) para o orquestrador re-despachar o que falta. Avisa e não envia nada se não houver estado. |
 | `/foreman off` | Sai do modo e restaura as ferramentas. Se houver workers rodando, pede confirmação antes de abortá-los; sem UI, recusa. |
 | `/foreman-status` | Mostra o modo e o estado dos workers (sem chamada ao modelo). |
 | `/foreman-audit` | Entra no modo orquestrador e executa uma auditoria somente leitura da base de código. |
@@ -79,6 +80,8 @@ status: completed        # completed | failed | blocked
 plan-step: 2             # ou -
 summary: <primeiros ~400 caracteres do relatório do worker>
 output: .foreman/runs/<run-id>/t1-planner.md
+report: 42 lines         # tamanho do arquivo de saída, para decidir quanto ler
+verified: yes            # Checks npm do passo reexecutados pelo coordenador (yes, no ou n/a)
 </task-notification>
 ```
 
@@ -142,12 +145,20 @@ strong. Um modelo explícito contorna a camada de fallback do `foreman/hybrid`.
 | `FOREMAN_MODEL_<ROLE>` / `FOREMAN_MODEL_<TIER>` | não definidas | Sobrescrita de modelo por papel ou tier. |
 | `FOREMAN_THINKING_<ROLE>` | não definida | Sobrescrita do nível de thinking por papel. |
 | `FOREMAN_MAX_WORKERS` | 4 | Workers simultâneos; delegações extras entram na fila. |
+| `FOREMAN_MAX_WRITERS` | 2 | Workers escritores simultâneos (builders, devs, bugfixers); os extras entram na fila enquanto os leitores continuam iniciando. Conta dentro de `FOREMAN_MAX_WORKERS`. |
+| `FOREMAN_BACKOFF_DECAY_S` | 300 | Segundos após o último limite de taxa do provedor até uma vaga do pool reduzido voltar (repete até o pool ficar inteiro; término limpo de worker ainda devolve uma vaga na hora). Uma rajada de 429 reduz o pool uma única vez. `0` desativa a restauração por tempo. |
+| `FOREMAN_VERIFY_CHECKS` | ligado | Quando um `plan-step-builder` termina um passo do plano como `completed`, a notificação fica retida enquanto os Checks `npm run <script>` declarados no passo (só scripts presentes em `package.json`, nunca texto livre) são reexecutados via `scripts/run-suites.mjs`, e recebe `verified: yes\|no\|n/a`. `off` desativa. |
+| `FOREMAN_VERIFY_TIMEOUT_S` | 600 | Tempo máximo em segundos dessa verificação; no timeout a linha é `verified: n/a`. |
+| `FOREMAN_MAX_RESUMES` | 2 | Quantas vezes um worker que já produziu saída é retomado após um erro transitório do provedor (a retomada continua a partir do estado do git). Contado à parte das tentativas sem saída; valores inválidos voltam para 2. |
+| `FOREMAN_STUCK_AFTER_S` | 90 | Segundos de silêncio (sem eventos e sem ferramenta rodando) até um worker ser marcado como travado, com um aviso único na UI e no herdr; `0` desativa a detecção. Nada é encerrado; os avisos de comando repetido e de bloqueio do guard não mudam. |
+| `FOREMAN_WORKER_SKILLS` | não definida | Defina como `1` para os workers carregarem suas skills globais. Por padrão os workers iniciam com `--no-skills` (a skill opcional `impeccable` continua sendo passada a qa, frontend-dev e codebase-auditor quando instalada). |
 | `FOREMAN_BATCH_MS` | 300 | Janela de debounce para agrupar conclusões. |
 | `FOREMAN_WORKER_TIMEOUT_MS` | 1800000 (30 min) | Timeout por worker (0 desativa). |
 | `FOREMAN_ABORT_WAIT_MS` | 7000 | Quanto o `/foreman off` espera os workers pararem após a confirmação. |
 | `FOREMAN_KEEP_MODE_TIMEOUT_MS` | 30000 | Quanto o aviso de retomada/fork "manter o modo orquestrador?" espera. |
 | `FOREMAN_CONTEXT_PRUNE` | true | `false` desativa a poda de notificações. |
 | `FOREMAN_CONTEXT_KEEP_PER_ROLE` | 1 | Resultados concluídos mantidos por papel. |
+| `FOREMAN_CONTEXT_PRUNE_HANDOFFS` | true | `false` mantém o texto de handoffs antigos de `foreman_delegate` no contexto (por padrão é trocado por um ponteiro para o json da execução; o turno mais recente é sempre mantido por inteiro). |
 | `FOREMAN_CONTEXT_DEBUG` | desligada | `1` registra no stderr as contagens antes/depois/podadas. |
 | `FOREMAN_PRIMARY_MODEL` / `FOREMAN_FALLBACK_MODEL` | `claude-sonnet-4-5` / `gpt-4o-mini` | Ids de modelo do `foreman/hybrid`. Veja "Fallback de modelo". |
 | `FOREMAN_PI_SUBAGENT`, `FOREMAN_PI_ROLE` | definidas pelo spawner | Marcam um processo de worker e seu papel. Não devem ser definidas à mão. |
@@ -242,6 +253,26 @@ por papel, mais todos os blocos da última notificação; blocos `failed` e
 `blocked` nunca são podados; os blocos podados se reduzem a uma linha por papel
 (`[pruned: K older <role> results — recover: <output paths>]`).
 
+### Compactação
+
+No modo orquestrador (nunca em um worker), `session_before_compact` troca o
+resumo por LLM do pi por um resumo montado pela extensão a partir de dados que
+ela possui: execução e plano, diretório de trabalho e branch, a tabela de
+passos do `## Status` do plano (ou a tarefa mais recente por passo), tarefas em
+andamento e bloqueadas com seus caminhos de saída, decisões e pendências, o
+Decisions log do `FOREMAN_MEMORY.md` e suas últimas 8 mensagens, terminando com
+uma linha de recuperação (ler o Status do plano e o `ledger.log` da execução;
+não reenviar passos já `merged`). Fora do modo orquestrador, sem entrada
+`foreman-task` na branch, com `FOREMAN_CONTEXT_PRUNE=false` ou em qualquer
+erro, a compactação padrão do pi roda sem alterações.
+
+A compactação começa quando `contextTokens > contextWindow - reserveTokens`
+(`reserveTokens` padrão do pi: 16384). Para compactar perto de 100k tokens,
+defina `compaction.reserveTokens` como `contextWindow - 100000` no
+`settings.json` do pi, ou por modelo com
+`compaction.modelOverrides["<provider>/<model>"].reserveTokens`. Este pacote
+não escreve o seu `settings.json`.
+
 ## Testes e CI
 
 ```bash
@@ -281,8 +312,10 @@ lib/                     módulos compartilhados e seus testes
 agents/                  as 9 definições de worker
 skills/                  foreman, plan-runner, project-memory, design-preview
 references/              documentos de apoio para os quais as skills apontam
+                         (worker-common, foreman-audit, foreman-delegation,
+                         grilling-fallback, ...)
 templates/               template do prompt de handoff
-scripts/                 check-package.ts
+scripts/                 check-package.ts, run-suites.mjs, trace-report.mjs
 docs/                    plans/ e verification-log.md
 ```
 

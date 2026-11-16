@@ -11,6 +11,7 @@
  */
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 /** Prompts above this many bytes are passed by file pointer, not argv. */
@@ -18,6 +19,38 @@ export const MAX_INLINE_PROMPT_BYTES = 100 * 1024;
 
 /** Delay between SIGTERM and the SIGKILL escalation in `kill()`. */
 export const KILL_GRACE_MS = 5000;
+
+/** Roles whose agent file uses the optional `impeccable` skill. */
+const IMPECCABLE_ROLES = new Set(["qa", "frontend-dev", "codebase-auditor"]);
+
+/**
+ * Base argv for a worker child. Skips the user's global skills (their
+ * descriptions inflate every request) unless FOREMAN_WORKER_SKILLS=1; the
+ * optional `impeccable` skill is kept for the roles that use it. Context files
+ * and extensions stay on (worker-guard and model routing need them).
+ */
+export function workerBaseArgs(
+	role: string,
+	env: NodeJS.ProcessEnv,
+	opts: { cwd?: string; home?: string } = {},
+): string[] {
+	const args = ["--mode", "json", "-p", "--no-session"];
+	if (env.FOREMAN_WORKER_SKILLS === "1") return args;
+	args.push("--no-skills");
+	if (IMPECCABLE_ROLES.has(role)) {
+		const home = opts.home ?? os.homedir();
+		const cwd = opts.cwd ?? process.cwd();
+		const roots = [path.join(cwd, ".agents", "skills"), path.join(home, ".agents", "skills"), path.join(home, ".pi", "agent", "skills")];
+		for (const r of roots) {
+			const dir = path.join(r, "impeccable");
+			if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
+				args.push("--skill", dir);
+				break;
+			}
+		}
+	}
+	return args;
+}
 
 export interface PiInvocation {
 	command: string;
@@ -49,6 +82,8 @@ export interface RunPiJsonOptions {
 	invocation?: PiInvocation;
 	/** Append the child's raw JSON event stream here (lets a herdr pane follow it live). */
 	logFile?: string;
+	/** Called with every parsed JSON event (incl. message_update) before the message_end filter; exceptions are swallowed. */
+	onEvent?: (event: any) => void;
 	/** Override the SIGTERM -> SIGKILL delay (tests). */
 	killGraceMs?: number;
 }
@@ -118,6 +153,13 @@ export function runPiJson(args: string[], opts: RunPiJsonOptions): PiRunHandle {
 				event = JSON.parse(line);
 			} catch {
 				return;
+			}
+			if (opts.onEvent) {
+				try {
+					opts.onEvent(event);
+				} catch {
+					// activity is UI-only; it must never break collection
+				}
 			}
 			if (event?.type !== "message_end") return;
 			const m = event.message;

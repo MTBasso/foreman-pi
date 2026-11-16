@@ -1,5 +1,71 @@
 # Changelog
 
+## [Unreleased]
+
+Reliability Phase A.
+
+### Added
+
+- `workdir` parameter on delegation: workers run in the plan's worktree (latched per run) instead of the orchestrator's cwd (C4).
+- Mid-task resume: a worker that produced output and then hit a transient provider error is resumed from git state, up to `FOREMAN_MAX_RESUMES` (default 2), counted apart from no-output retries; a shared back-off gate and a writer cap `FOREMAN_MAX_WRITERS` (default 2) (C2).
+- Orphan evidence: always-on `<task>.events.jsonl`, `<task>.status.json`, a stub report and unique task ids, so an orphaned worker leaves a trail (C3).
+- Live activity: a per-worker activity line in the widget and `/foreman-status`, stuck detection with a one-time notification (`FOREMAN_STUCK_AFTER_S`, default 90, `0` disables; nothing is killed) (E1).
+- `Guard-denied:` field in the worker foreman-report, surfaced in the task notification (C5).
+- plan-runner lints overlapping Touches in a parallel wave (C4).
+
+### Changed
+
+- worker-guard fails closed on for-loops and `$VAR` paths (`UNROLL_ENABLED = false` in `vars.ts`): five review rounds found bypasses in unrolling and literal-var substitution; write one literal command per path.
+- Workers start with `--no-skills`; set `FOREMAN_WORKER_SKILLS=1` to load your global skills (A4).
+- Guard denials are non-fatal: the worker is told to skip that command and continue; the guard composes literal variables with for-loops and pipes, allows `.foreman` dirs and widens the python read-only probe (C5).
+- The planner can `edit` its plan file (`docs/plans/<slug>.md`) instead of re-emitting it, with large-plan and revision rules (A9).
+
+### Fixed
+
+- Transient `credential validation` errors are now retried (C2).
+
+Reliability Phase B (token cuts).
+
+### Added
+
+- `scripts/trace-report.mjs <run-dir>`: per-worker audit table (handoff tokens, turns, tool calls, token usage, cost, guard denials), with `--baseline` deltas and `--json`; replay fixtures and recorded baselines in `docs/replay-baselines.md` (B4).
+- Per-worker `usage` (tokens, turns, tool calls, attempts, guard denials by reason) in the run json `<task>.json` (B4).
+- `scripts/run-suites.mjs`: runs named test suites serially, one PASS/FAIL line each, failing names plus the last 30 lines, full logs under `.foreman/qa-logs/`, optional pyright baseline diff; qa, qa-bugfix and plan-step-builder point at it (A5).
+- Run-state compaction: in orchestrator mode `session_before_compact` builds a summary from plan status, tasks, rulings, memory and recent user messages instead of an LLM pass; any error falls back to pi's default (A3).
+- `FOREMAN_CONTEXT_PRUNE_HANDOFFS` (default on; `false` disables) for the handoff pruning below (A1).
+
+### Changed
+
+- The coordinator appends a short worker footer (language, orchestrator-mode note, working directory) to every handoff; handoff templates and skills are slimmer and the orchestrator writes only the deltas (A2).
+- Stale `foreman_delegate` handoffs from earlier turns are pruned from context to a stub pointing at the run json; the delegate result text now includes `run_id` (A1).
+
+Reliability Phase C (prompt rewrites and remaining guardrails).
+
+### Added
+
+- `/foreman resume`: enters orchestrator mode and rebuilds the last run's state (plan Status, ledger tail, unfinished workers) (D3).
+- Notification lines `report: N lines` (A8) and `verified: yes|no|n/a`: a plan step's declared `npm run` Checks are re-run before the notification (C6).
+- Attempt warnings: the 3rd dispatch of a step after two blocked or failed outcomes carries the reasons, also after a session resume (C1).
+- plan-runner preflight block handed to the orchestrator.
+- `FOREMAN_BACKOFF_DECAY_S` (default 300), `FOREMAN_VERIFY_CHECKS` (default on) and `FOREMAN_VERIFY_TIMEOUT_S` (default 600).
+- New references `foreman-audit.md`, `foreman-delegation.md` and `grilling-fallback.md`.
+
+### Changed
+
+- The foreman skill is split: audit and delegation detail live in references read on demand; grilling reuses the `grilling` skill (A6, B3).
+- Worker-facing text (`worker-common.md`, templates, agents) is rewritten in positive form and shorter (B1).
+- `foreman` and `plan-runner` are user-invoked skills (`disable-model-invocation`); the reminder tells the user to run `/foreman` or `/plan-runner` (A7).
+- The session reminder is injected once per session, not again on resume (D4).
+- The planner template has Seams, Out of scope and Status, and uses `Touches`/`Checks`; plan-runner treats the plan `## Status` as source of truth (B2, D1, D2).
+- A degraded worker pool halves once per burst of rate limits and recovers by time.
+
+### Fixed
+
+- `kill` during a rate-limit back-off returns at once.
+- Resumed reviewer, qa, auditor, planner and shipper workers get their own role's preamble.
+- Guard: the innermost nested worktree decides the `.foreman` allowance.
+- Guard: for-loops that may rebind the loop variable (`printf -v`, `declare`, `mapfile`, `getopts`) are not unrolled.
+
 ## [0.3.4]
 
 ### Changed

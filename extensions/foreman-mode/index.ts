@@ -13,7 +13,10 @@
  * mode commands.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { t } from "../../lib/i18n.ts";
+import { planPreflight, planRoots } from "../../lib/plan-preflight.ts";
 import {
 	createModeTracker,
 	envOverride,
@@ -24,7 +27,8 @@ import {
 } from "../../lib/mode.ts";
 import { safeUi, say } from "../../lib/ui.ts";
 import { activeCount, WORKERS_ABORT_EVENT, WORKERS_EVENT, type WorkersSnapshot } from "../../lib/workers.ts";
-import { buildAuditPrompt, buildDiagnosePrompt, buildForemanPrompt, buildPlanRunnerPrompt, resolvePlanPath } from "./prompts.ts";
+import { gatherResumeState } from "../../lib/resume-state.ts";
+import { buildAuditPrompt, buildDiagnosePrompt, buildForemanPrompt, buildPlanRunnerPrompt, buildResumePrompt, resolvePlanPath, skillMarker } from "./prompts.ts";
 
 const STATUS_KEY = "foreman-mode";
 /** Longer than the SIGTERM -> SIGKILL grace (5s) so a stubborn worker is still reaped before we give up waiting. */
@@ -35,6 +39,11 @@ function abortWaitMs(): number {
 	if (raw === undefined || raw === "") return DEFAULT_ABORT_WAIT_MS;
 	const n = Number(raw);
 	return Number.isFinite(n) && n >= 0 ? n : DEFAULT_ABORT_WAIT_MS;
+}
+
+/** True when `cmd` is an existing file in a PATH directory. Filesystem only: nothing is executed. */
+function commandOnPath(cmd: string): boolean {
+	return (process.env.PATH ?? "").split(delimiter).some((d) => d && existsSync(join(d, cmd)));
 }
 
 export default function (pi: ExtensionAPI) {
@@ -101,6 +110,15 @@ export default function (pi: ExtensionAPI) {
 		else pi.sendUserMessage(prompt);
 	}
 
+	/** True when a session-branch entry already carries `marker` (an earlier skill embed). Errors mean "no". */
+	function branchHas(ctx: any, marker: string): boolean {
+		try {
+			return JSON.stringify(ctx?.sessionManager?.getBranch?.() ?? []).includes(marker);
+		} catch {
+			return false;
+		}
+	}
+
 	/** Ask coordination to abort every worker; resolves on its ack or after a bounded wait. */
 	function abortWorkers(): Promise<void> {
 		return new Promise<void>((resolve) => {
@@ -147,12 +165,25 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("foreman", {
 		description: t("cmd.foreman.desc"),
-		getArgumentCompletions: (prefix: string) =>
-			"off".startsWith(prefix.toLowerCase()) && prefix !== "" ? [{ value: "off", label: "off" }] : null,
+		getArgumentCompletions: (prefix: string) => {
+			if (prefix === "") return null;
+			const items = ["resume", "off"].filter((v) => v.startsWith(prefix.toLowerCase())).map((v) => ({ value: v, label: v }));
+			return items.length ? items : null;
+		},
 		handler: async (args, ctx) => {
 			const a = (args ?? "").trim();
 			if (/^off$/i.test(a)) {
 				await leave(ctx);
+				return;
+			}
+			if (/^resume$/i.test(a)) {
+				const state = gatherResumeState(ctx.cwd ?? process.cwd());
+				if (!state) {
+					say(ctx, t("cmd.resume.none"), "warning");
+					return;
+				}
+				if (!enter(ctx)) return;
+				send(buildResumePrompt(state, { includeSkill: !branchHas(ctx, skillMarker(state)) }), ctx);
 				return;
 			}
 			if (!enter(ctx)) return;
@@ -187,7 +218,29 @@ export default function (pi: ExtensionAPI) {
 			const plan = resolvePlanPath(arg, ctx.cwd);
 			if (!plan.exists) say(ctx, t("cmd.plan.missing", { path: plan.path }), "warning");
 			if (!enter(ctx)) return;
-			send(buildPlanRunnerPrompt(plan.path, plan.exists), ctx);
+			let preflight: string | undefined;
+			try {
+				if (plan.exists) {
+					const read = (p: string): string | undefined => {
+						try {
+							return readFileSync(p, "utf8");
+						} catch {
+							return undefined;
+						}
+					};
+					const planText = readFileSync(plan.path, "utf8");
+					preflight = planPreflight({
+						planText,
+						roots: planRoots(ctx.cwd, plan.path),
+						exists: existsSync,
+						onPath: commandOnPath,
+						readFile: read,
+					});
+				}
+			} catch {
+				preflight = undefined;
+			}
+			send(buildPlanRunnerPrompt(plan.path, plan.exists, undefined, preflight), ctx);
 		},
 	});
 }

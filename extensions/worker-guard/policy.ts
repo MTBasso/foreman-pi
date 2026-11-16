@@ -61,7 +61,7 @@ export function workerGuardActive(env: Record<string, string | undefined>): bool
 }
 
 const SUFFIX =
-	' Do not retry it or work around it with another tool or command. Finish what you can and end your foreman-report with "Status: blocked" naming this reason.';
+	' Stop that command and do not work around it with another tool or command. Continue the remaining work, list the denied command under "Guard-denied:" in your foreman-report, and use "Status: blocked" only if this denial prevents the core deliverable.';
 
 function deny(msg: string): Verdict {
 	return { block: true, reason: `Blocked by the foreman worker guard: ${msg}.${SUFFIX}` };
@@ -172,6 +172,13 @@ function siblingWorktrees(root: string): string[] {
 	}
 }
 
+/** The innermost (longest path) other worktree containing `abs`; nested worktrees make several contain it. */
+function owningWorktree(root: string, abs: string): string | undefined {
+	let best: string | undefined;
+	for (const w of siblingWorktrees(root)) if (inside(w, abs) && (best === undefined || w.length > best.length)) best = w;
+	return best;
+}
+
 /** Why `abs` may not be written by this role, or undefined when it may. */
 function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: boolean): string | undefined {
 	if (abs === null) return `the path "${shown}" could not be resolved (dangling symlink, unreadable, or the working directory is unknown after a "cd" that cannot be resolved)`;
@@ -187,7 +194,14 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 		case "shipper": {
 			// Scratch output in the temp dir is harmless and was the most common false block.
 			if (allowTmp && rel === null && inside(ctx.tmp, abs, true)) return undefined;
-			if (segs[0] === ".foreman" && segs.length > 1) return undefined;
+			if (segs[0] === ".foreman") return undefined;
+			// The .foreman directory of a linked worktree of this repo (plan worktree) is scratch space too.
+			// `abs` is already resolved (`..` popped, symlinks followed), so `.foreman/../src` cannot match here.
+			// A worktree nested inside the root (rel !== null) counts only when it lies strictly below the root.
+			{
+				const wt = owningWorktree(ctx.root, abs);
+				if (wt && (rel === null || inside(ctx.root, wt, true)) && path.relative(wt, abs).split(path.sep)[0] === ".foreman") return undefined;
+			}
 			if (ctx.kind === "scoped" && rel === "FOREMAN_AUDIT.md") return undefined;
 			const allowed = ctx.kind === "scoped" ? ".foreman/ and FOREMAN_AUDIT.md" : ".foreman/";
 			return `role "${ctx.role}" may only write under ${allowed}, but "${shown}" resolves to ${abs}`;
@@ -196,7 +210,7 @@ function pathProblem(ctx: Ctx, abs: string | null, shown: string, allowTmp: bool
 			if (rel === null) {
 				if (allowTmp && inside(ctx.tmp, abs, true)) return undefined;
 				// A linked worktree of this same repo is part of the project (plan-step-builder creates one in step 0).
-				const wt = siblingWorktrees(ctx.root).find((w) => inside(w, abs));
+				const wt = owningWorktree(ctx.root, abs);
 				if (wt) {
 					const wsegs = path.relative(wt, abs).split(path.sep);
 					if (wsegs.includes(".git")) return `writing into .git is not allowed ("${shown}")`;
@@ -1197,7 +1211,29 @@ const FIND_BAD = new Set(["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fpr
 
 const PY_NAMES = /^python(3(\.\d+)?)?$/;
 const PIP_NAMES = /^pip3?$/;
-const PY_STMT = /^(import [\w.]+( as \w+)?(, ?[\w.]+( as \w+)?)*|from [\w.]+ import [\w., *]+|print\((?:"[^"\\$`]*"|'[^'\\$`]*'|[A-Za-z_][\w.]*)\)|print\(hasattr\([\w.]+, ?(?:"\w+"|'\w+')\)\))$/;
+const PY_STR = /^(?:"[^"\\$`]*"|'[^'\\$`]*')$/;
+const PY_NAME = /^[A-Za-z_][\w.]*$/;
+const PY_STMT = /^(import [\w.]+( as \w+)?(, ?[\w.]+( as \w+)?)*|from [\w.]+ import [\w., *]+|print\(hasattr\([\w.]+, ?(?:"\w+"|'\w+')\)\))$/;
+
+/** `<expr>` of a read-only probe: name, string literal, `len|sorted|str|list(<expr>)`, or `json.load(open(<string-or-name>))` (single argument, so read-only). The whole text must parse. */
+function pyExprOk(s: string, depth = 0): boolean {
+	s = s.trim();
+	if (depth > 6) return false;
+	if (PY_NAME.test(s) || PY_STR.test(s)) return true;
+	const j = /^json\.load\(\s*open\(\s*([^()]+?)\s*\)\s*\)$/.exec(s);
+	if (j) return PY_NAME.test(j[1]) || PY_STR.test(j[1]);
+	const f = /^(?:len|sorted|str|list)\(([\s\S]*)\)$/.exec(s);
+	return f ? pyExprOk(f[1], depth + 1) : false;
+}
+
+/** One statement of a read-only probe: `import x`, `from x import y`, `NAME = "<literal>"`, `print(<expr>)`. */
+function pyStmtOk(x: string): boolean {
+	if (PY_STMT.test(x)) return true;
+	const asg = /^([A-Za-z_]\w*)\s*=\s*([\s\S]+)$/.exec(x);
+	if (asg) return PY_STR.test(asg[2].trim());
+	const p = /^print\(([\s\S]*)\)$/.exec(x);
+	return p ? pyExprOk(p[1]) : false;
+}
 
 /** Read-only probes a planner needs: `python -c "import x; print(x.__version__)"`, `pip show|list|freeze|check`. */
 function interpreterProbeProblem(name: string, args: Word[]): string | undefined | null {
@@ -1211,9 +1247,9 @@ function interpreterProbeProblem(name: string, args: Word[]): string | undefined
 	}
 	if (ops.length === 2 && ops[0].text === "-c") {
 		const stmts = ops[1].text.split(/\s*;\s*|\n/).map((x) => x.trim()).filter(Boolean);
-		if (stmts.length > 0 && stmts.every((x) => PY_STMT.test(x))) return undefined;
+		if (stmts.length > 0 && stmts.every(pyStmtOk)) return undefined;
 	}
-	return `"${name}" is only allowed for read-only probes: -c with import / from-import / print(name) statements, or pip show|list|freeze|check`;
+	return `"${name}" is only allowed for read-only probes: -c with import / from-import / NAME = "literal" / print(<expr>) statements (expr: name, string, len|sorted|str|list(...), json.load(open(file))), or pip show|list|freeze|check`;
 }
 
 function readonlyProblem(ctx: Ctx, name: string, args: Word[]): string | undefined {

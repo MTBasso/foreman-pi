@@ -57,6 +57,18 @@ State plainly, once and in the user's language: "Working in worktree
 directly on the current branch, as agreed.") Everything downstream (orchestrator mode, the ledger in plan-runner's §0.5, any delegate spawned) happens
 relative to this workspace.
 
+### Pass the worktree as `workdir`
+
+A worktree only helps if workers run in it. On every `foreman_delegate`,
+pass `workdir: "<absolute path of this worktree>"` (it must be the project
+root or one of its `git worktree list` entries; anything else is rejected
+before a worker starts). The path is remembered for later delegates in the
+run and can be replaced by a new value. Workers then use it as their cwd, so
+the guard root, `.foreman` writes and per-worker isolation branch from this
+worktree. Reports and ledgers stay under the orchestrator session's own `.foreman/`.
+Steps of a parallel wave that share a file must still run one after the
+other; the ack warns when they overlap.
+
 ## Cleanup
 
 Isolation set up here is cleaned up at the natural end of the flow that

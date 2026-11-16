@@ -109,3 +109,24 @@ in the context, user → session-reminder, predates the filter and the provider 
 it). Not yet exercised: a provider that rejects adjacency (plan fallback: replace with
 stubs instead of removing). An assistant message that echoed the old result's content
 is deliberately left alone.
+
+## Session 01a1c625: why the foreman skill says to use the session reminder (moved from `skills/foreman/SKILL.md` §0, phase C step 13)
+
+A live run (session 01a1c625) showed the model burning 7+ sequential turns just
+re-checking basic project state (`ls`, `cat FOREMAN_MEMORY.md`, `git log`)
+before `pi-claude-cli`'s `--resume` gave up mid-run with no answer at all: a
+provider-level instability around long tool-call round trips that no amount of
+rephrasing fixes. The only real mitigation is needing fewer round trips, which
+is why the `session-reminder` extension pre-gathers that state with zero tool
+calls and the skill tells the model to use it instead of re-running the checks.
+
+## worker-common.md rewrite (phase C step 18, B1)
+
+`references/worker-common.md` went from 5,901 chars (1,476 tokens, `ceil(chars/4)`)
+to 3,597 chars (900 tokens). Every rule is kept and stated once, in positive form
+where an alternative exists: the old "Working discipline" and "Working under the worker guard"
+sections became Discipline and Gotchas; the "Most blocks were avoidable ... so you never have
+to stop" framing and the guard's own explanation of why a command is refused were dropped
+(the policy lives in `references/worker-guard.md`). Wording was compressed, not rules
+removed; the cost is terser phrasing, so a live run showing guard denials on `~`, globs, loop
+variables or process substitution is the signal that a Gotchas bullet became too terse.

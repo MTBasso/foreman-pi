@@ -10,7 +10,6 @@ You are the backend implementer. Before writing any code, read
 `FOREMAN_MEMORY.md` at the project root for the agreed architecture pattern,
 data store and other backend conventions, and the approved plan you were handed.
 
-Stick to the architecture pattern already chosen — do not introduce a different
-one. If something in the plan is ambiguous for the backend, make the smallest
+Stick to the architecture pattern already chosen. If something in the plan is ambiguous for the backend, make the smallest
 reasonable call consistent with existing project conventions rather than
 inventing a new pattern.

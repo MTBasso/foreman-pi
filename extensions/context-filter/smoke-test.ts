@@ -2,7 +2,9 @@
  * Smoke test for the context filter (pure pruneMessages + the real `context`
  * handler against a fake ExtensionAPI). Run: npx tsx extensions/context-filter/smoke-test.ts
  */
-import extension, { pruneMessages } from "./index.ts";
+import { buildRunState } from "./compaction.ts";
+import { formatBlock } from "../coordination/coordinator.ts";
+import extension, { pruneHandoffs, pruneMessages } from "./index.ts";
 
 let pass = 0;
 let fail = 0;
@@ -60,6 +62,15 @@ const build = (): any[] => [
 const text = (m: any) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content));
 const stubOf = (arr: any[]) => arr.find((m) => m.customType === "foreman-context-pruned");
 const allText = (arr: any[]) => arr.map(text).join("\n");
+
+// report size hint: the extra `report: N lines` block line must not change pruning
+{
+	const withReport = (n: N) => ({ ...notif([n]), content: formatBlock({ ...n, status: n.status as any, reportLines: 42 }) });
+	const input: any[] = [system, user, asst, withReport(note("t1-qa", "qa")), withReport(note("t2-qa", "qa")), asst2];
+	check("fixture block carries report: 42 lines", text(input[3]).includes("report: 42 lines"));
+	const out = pruneMessages(input, { keepPerRole: 1 });
+	check("context pruning unaffected by the new line", !!stubOf(out) && text(stubOf(out)).includes(".foreman/runs/r1/t1-qa.md") && !out.some((m) => text(m).includes("summary of t1-qa")) && out.some((m) => text(m).includes("t2-qa") && text(m).includes("report: 42 lines")));
+}
 
 // keep=1
 {
@@ -155,6 +166,213 @@ const allText = (arr: any[]) => arr.map(text).join("\n");
 		delete process.env.FOREMAN_CONTEXT_KEEP_PER_ROLE;
 	}
 	console.log(errors.join("\n"));
+}
+
+// Handoff pruning (A1)
+{
+	const big = (n: number) => `handoff ${n} ` + "x".repeat(400);
+	const call = (n: number, over: any = {}) => ({
+		type: "toolCall",
+		id: `c${n}`,
+		name: "foreman_delegate",
+		arguments: { role: "plan-step-builder", plan_slug: "p", plan_step: n, handoff_prompt: big(n), ...over },
+	});
+	const aMsg = (parts: any[]) => ({ role: "assistant", content: parts, timestamp: 5 });
+	const res = (n: number, over: any = {}): any => ({
+		role: "toolResult",
+		toolCallId: `c${n}`,
+		toolName: "foreman_delegate",
+		content: [{ type: "text", text: JSON.stringify({ task_id: `t${n}-plan-step-builder`, run_id: "r1", state: "running" }) }],
+		details: { run_id: "r1", task_id: `t${n}-plan-step-builder` },
+		isError: false,
+		timestamp: 5,
+		...over,
+	});
+	const hp = (m: any, k = 0) => m.content.filter((p: any) => p.type === "toolCall")[k].arguments.handoff_prompt as string;
+	const turns = (): any[] => {
+		const m: any[] = [system, user];
+		for (let n = 1; n <= 5; n++) m.push(aMsg([call(n)]), res(n), notif([note(`t${n}-plan-step-builder`, "plan-step-builder")]));
+		m.pop(); // the 5th dispatch is the latest turn (no notification yet)
+		return m;
+	};
+
+	{
+		const input = turns();
+		const snap = JSON.stringify(input);
+		const out = pruneHandoffs(input);
+		const as = out.filter((m) => m.role === "assistant");
+		check("5 dispatches over 5 turns: only the last turn keeps full handoff", as.slice(0, 4).every((m) => hp(m).startsWith("[handoff pruned:")) && hp(as[4]) === big(5));
+		check("input messages not mutated", JSON.stringify(input) === snap);
+		check("pruned stub names run, task, chars, role and step", hp(as[1]) === `[handoff pruned: ${big(2).length} chars; full text in .foreman/runs/r1/t2-plan-step-builder.json (handoff_prompt); role=plan-step-builder step=2]`);
+		check("pruned call keeps role/plan_slug/plan_step", as[0].content[0].arguments.plan_slug === "p" && as[0].content[0].arguments.plan_step === 1);
+		const again = pruneHandoffs(out);
+		check("pruning twice yields identical output (idempotent)", JSON.stringify(again) === JSON.stringify(out));
+		check("unchanged messages keep identity", out[0] === input[0] && out[1] === input[1]);
+	}
+	{
+		const input: any[] = [user, aMsg([call(1)]), res(1), aMsg([call(2)]), res(2)];
+		const out = pruneHandoffs(input);
+		check("dispatches in the same latest turn all keep full text", out === input);
+		const two: any[] = [user, aMsg([call(1), call(2)]), res(1), res(2), notif([note("t1", "qa")]), aMsg([call(3)]), res(3)];
+		const o2 = pruneHandoffs(two);
+		check("same older message: both calls pruned, latest kept", hp(o2[1], 0).startsWith("[handoff") && hp(o2[1], 1).startsWith("[handoff") && hp(o2[5]) === big(3));
+	}
+	{
+		const input: any[] = [
+			user,
+			aMsg([call(1)]), // no result
+			aMsg([call(2)]), res(2, { isError: true }),
+			aMsg([call(3)]), res(3, { details: undefined, content: [{ type: "text", text: "not json" }] }),
+			notif([note("t1", "qa")]),
+			aMsg([call(4)]), res(4),
+		];
+		check("call without result or with error result is untouched", pruneHandoffs(input) === input);
+		const viaText: any[] = [user, aMsg([call(1)]), res(1, { details: undefined }), notif([note("t1", "qa")])];
+		check("ids fall back to result text JSON", hp(pruneHandoffs(viaText)[1]).includes("r1/t1-plan-step-builder.json"));
+	}
+	{
+		const short: any[] = [user, aMsg([call(1, { handoff_prompt: "y".repeat(300) })]), res(1), notif([note("t1", "qa")])];
+		check("short handoff (<=300 chars) untouched", pruneHandoffs(short) === short);
+	}
+	{
+		const handlers: Record<string, any> = {};
+		extension({ on: (ev: string, h: any) => void (handlers[ev] = h) } as any);
+		const r = handlers.context({ type: "context", messages: turns() });
+		check("handler prunes handoffs by default", !!r && hp(r.messages.filter((m: any) => m.role === "assistant")[0]).startsWith("[handoff"));
+		process.env.FOREMAN_CONTEXT_PRUNE_HANDOFFS = "false";
+		const nm = turns().concat([]);
+		const r2 = handlers.context({ type: "context", messages: nm });
+		check("FOREMAN_CONTEXT_PRUNE_HANDOFFS=false disables", !r2 || r2.messages.filter((m: any) => m.role === "assistant").every((m: any) => !hp(m).startsWith("[handoff")));
+		delete process.env.FOREMAN_CONTEXT_PRUNE_HANDOFFS;
+		process.env.FOREMAN_CONTEXT_PRUNE = "false";
+		check("FOREMAN_CONTEXT_PRUNE=false still disables everything", handlers.context({ type: "context", messages: turns() }) === undefined);
+		delete process.env.FOREMAN_CONTEXT_PRUNE;
+	}
+	{
+		// notification pruning unchanged when handoffs are also present
+		const out = pruneMessages(build(), { keepPerRole: 1 });
+		check("notification pruning still behaves as before", out.length === build().length - 6 + 1 && !!stubOf(out));
+	}
+}
+
+// ---- A3: buildRunState ----
+{
+	const te = (data: any) => ({ type: "custom", customType: "foreman-task", id: "x", data });
+	const um = (t: string) => ({ type: "message", id: "u", message: { role: "user", content: t } });
+	const nm = (ns: any[]) => ({ type: "custom_message", customType: "foreman-task-notification", content: "", display: true, details: { notifications: ns } });
+	const files: Record<string, string> = {};
+	const mk = (entries: any[], extra: Partial<Parameters<typeof buildRunState>[0]> = {}) =>
+		buildRunState({
+			branchEntries: entries,
+			cwd: "/proj",
+			readFile: (p) => files[p],
+			gitBranch: () => "feat/x",
+			now: Date.UTC(2026, 0, 1),
+			...extra,
+		});
+	const base = [
+		te({ runId: "r1", taskId: "t1-b", role: "plan-step-builder", planStep: 1, planSlug: "demo", state: "running", output: ".foreman/runs/r1/t1-b.md" }),
+		te({ runId: "r1", taskId: "t1-b", role: "plan-step-builder", planStep: 1, planSlug: "demo", state: "completed", output: ".foreman/runs/r1/t1-b.md" }),
+		te({ runId: "r1", taskId: "t2-b", role: "plan-step-builder", planStep: 2, planSlug: "demo", state: "blocked", output: ".foreman/runs/r1/t2-b.md" }),
+		te({ runId: "r1", taskId: "t3-b", role: "qa", planStep: 3, planSlug: "demo", state: "running", output: ".foreman/runs/r1/t3-b.md" }),
+	];
+	files["/proj/.foreman/runs/r1/t3-b.json"] = JSON.stringify({ workdir: "/wt" });
+	files["/wt/docs/plans/demo.md"] = "# P\n\n## Status\n\n- Step 1: merged\n- Step 2: blocked\n- Step 3: not started\n\n## Out\n";
+	const s1 = mk([...base, nm([{ taskId: "t2-b", status: "blocked", summary: "needs the db", blockedOn: "db creds", rulings: ["use sqlite", "use sqlite", "r2"] }])]);
+	check("summary names plan, workdir, branch and step table", s1.includes("demo") && s1.includes("workdir: /wt") && s1.includes("branch: feat/x") && s1.includes("Step 1: merged") && s1.includes("Step 3: not started"));
+	check("plan Status wins over entries; entries used when no Status", s1.includes("plan ## Status") && !s1.includes("newest task entry") && (() => { delete files["/wt/docs/plans/demo.md"]; const s = mk(base); files["/wt/docs/plans/demo.md"] = "x"; return s.includes("newest task entry per step") && s.includes("Step 2: blocked"); })());
+	check("blocked task listed with output path", s1.includes("t2-b [blocked]") && s1.includes(".foreman/runs/r1/t2-b.md") && s1.includes("needs the db"));
+	check("in-flight task listed, finished one not", s1.includes("- t3-b [running]") && !s1.includes("- t1-b ["));
+	check("rulings deduplicated and capped", (s1.match(/- use sqlite/g) ?? []).length === 1 && s1.includes("- r2") && s1.includes("blocked on db creds") && (() => { const many = [nm(Array.from({ length: 30 }, (_, i) => ({ taskId: "t", status: "completed", summary: "", rulings: [`ruling-${i}`] })))]; const s = mk([...base, ...many]); return !s.includes("ruling-9\n") && s.includes("ruling-29") && (s.match(/- ruling-/g) ?? []).length === 20; })());
+	{
+		const users = Array.from({ length: 12 }, (_, i) => um(`user message ${i}`));
+		const s = mk([...users, ...base]);
+		check("user messages survive a second compaction (taken from branchEntries)", s.includes("user message 11") && s.includes("user message 4") && !s.includes("user message 3\n") && !s.includes("user message 3 "));
+	}
+	{
+		const big: any[] = [];
+		for (let i = 0; i < 500; i++) big.push(i % 2 ? te({ runId: "r1", taskId: `t${i}`, role: "qa", planStep: i, planSlug: "demo", state: i % 4 === 1 ? "blocked" : "running", output: `.foreman/runs/r1/t${i}.md` }) : um("u".repeat(2000)));
+		files["/wt/docs/plans/demo.md"] = "## Status\n" + Array.from({ length: 300 }, (_, i) => `- Step ${i}: merged`).join("\n");
+		files["/wt/FOREMAN_MEMORY.md"] = "## Decisions log\n" + "d".repeat(9000);
+		const s = mk(big);
+		check("output length <= 12000 chars on a 500-entry fixture", s.length <= 12000 && s.includes("Do not re-dispatch merged steps"));
+		delete files["/wt/FOREMAN_MEMORY.md"];
+	}
+	{
+		files["/wt/docs/plans/demo.md"] = "## Status\n- Step 1: merged\n";
+		files["/wt/FOREMAN_MEMORY.md"] = "# M\n## Decisions log\n- chose A\n## Other\nzzz";
+		const full = mk(base);
+		delete files["/wt/docs/plans/demo.md"];
+		const noPlan = mk(base);
+		files["/wt/docs/plans/demo.md"] = "## Status\n- Step 1: merged\n";
+		delete files["/wt/FOREMAN_MEMORY.md"];
+		const noMem = mk(base);
+		check("missing plan or memory file drops only that section", full.includes("- chose A") && !full.includes("zzz") && !noPlan.includes("Steps (plan ## Status)") && noPlan.includes("- chose A") && noPlan.includes("## Run") && !noMem.includes("Decisions log") && noMem.includes("Step 1: merged"));
+		const thrower = buildRunState({ branchEntries: base, cwd: "/proj", readFile: () => { throw new Error("x"); }, gitBranch: () => { throw new Error("y"); }, now: 0 });
+		check("throwing readers never throw", thrower.includes("## Run") && thrower.includes("workdir: /proj"));
+		check("same input yields identical output", mk(base) === mk(base));
+	}
+}
+
+
+// session_before_compact wiring (A3, step 10)
+{
+	const { readFileSync } = await import("node:fs");
+	const mkPi = () => {
+		const handlers: Record<string, any> = {};
+		const bus: Record<string, any[]> = {};
+		const pi = {
+			on: (ev: string, h: any) => void (handlers[ev] = h),
+			events: { on: (c: string, h: any) => ((bus[c] ??= []).push(h), () => {}), emit: (c: string, d: unknown) => (bus[c] ?? []).forEach((h) => h(d)) },
+		};
+		extension(pi as any);
+		return handlers;
+	};
+	const saved = { m: process.env.FOREMAN_PI_MODE, s: process.env.FOREMAN_PI_SUBAGENT, p: process.env.FOREMAN_CONTEXT_PRUNE };
+	const restore = () => {
+		for (const [k, v] of [["FOREMAN_PI_MODE", saved.m], ["FOREMAN_PI_SUBAGENT", saved.s], ["FOREMAN_CONTEXT_PRUNE", saved.p]] as const) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+	const entries: any[] = [
+		{ type: "custom", customType: "foreman-task", data: { runId: "r1", taskId: "t1", role: "qa", state: "running" } },
+		{ type: "message", message: { role: "user", content: "hello there" } },
+	];
+	const ev = (branchEntries: any[] = entries): any => ({ type: "session_before_compact", branchEntries, preparation: { firstKeptEntryId: "e42", tokensBefore: 9999, messagesToSummarize: [] }, reason: "manual", willRetry: false, signal: new AbortController().signal });
+	const ctx = { cwd: "/nonexistent-foreman-test" };
+	const run = async (h: any, e: any) => h.session_before_compact(e, ctx);
+
+	delete process.env.FOREMAN_PI_SUBAGENT;
+	delete process.env.FOREMAN_CONTEXT_PRUNE;
+	process.env.FOREMAN_PI_MODE = "off";
+	check("handler returns undefined outside orchestrator mode", typeof mkPi().session_before_compact === "function" && (await run(mkPi(), ev())) === undefined);
+
+	process.env.FOREMAN_PI_MODE = "orchestrator";
+	process.env.FOREMAN_PI_SUBAGENT = "1";
+	check("handler returns undefined in a subagent", (await run(mkPi(), ev())) === undefined);
+	delete process.env.FOREMAN_PI_SUBAGENT;
+
+	{
+		const r: any = await run(mkPi(), ev());
+		const c = r?.compaction;
+		check(
+			"handler returns a compaction with firstKeptEntryId and tokensBefore from preparation",
+			!!c && c.firstKeptEntryId === "e42" && c.tokensBefore === 9999 && typeof c.summary === "string" && c.summary.includes("foreman run state") && c.details?.foremanRunState === true,
+		);
+		check("no foreman-task entry -> undefined (default compaction)", (await run(mkPi(), ev([entries[1]]))) === undefined);
+	}
+	{
+		const bad = { ...ev(), get branchEntries(): any { throw new Error("boom"); } };
+		check("builder throwing falls back to undefined", (await run(mkPi(), bad)) === undefined);
+	}
+	process.env.FOREMAN_CONTEXT_PRUNE = "false";
+	check("FOREMAN_CONTEXT_PRUNE=false disables compaction", (await run(mkPi(), ev())) === undefined);
+	restore();
+
+	const en = readFileSync(new URL("../../README.md", import.meta.url), "utf8");
+	const pt = readFileSync(new URL("../../README.pt-BR.md", import.meta.url), "utf8");
+	check("README documents reserveTokens in both languages", [en, pt].every((t) => t.includes("compaction.reserveTokens") && t.includes("modelOverrides") && t.includes("session_before_compact")));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

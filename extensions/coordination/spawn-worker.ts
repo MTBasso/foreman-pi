@@ -15,9 +15,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { composeWorkerPrompt, discoverAgents } from "../../lib/agents.ts";
 import { resolveModel } from "../../lib/model-policy.ts";
-import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerEnv } from "../../lib/spawn.ts";
+import { MAX_INLINE_PROMPT_BYTES, inlineOrPointerPrompt, runPiJson, workerBaseArgs, workerEnv } from "../../lib/spawn.ts";
 import { openWatchPane, panesEnabled } from "../../lib/herdr.ts";
-import { runWithRetry } from "../../lib/retry.ts";
+import { isRateLimit, sharedGate } from "../../lib/backoff.ts";
+import { composeTaskArg, workerFooter } from "../../lib/handoff-footer.ts";
+import { detectLocale } from "../../lib/i18n.ts";
+import { resumePreamble, runWithRetry, type ResumeInfo, type RetryOptions } from "../../lib/retry.ts";
 import { blockReport, createWorktree, finishWorktree, isolateMode, retargetPrompt, shouldIsolate, type Isolated } from "../../lib/worktree.ts";
 import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
 
@@ -36,7 +39,16 @@ function failed(message: string): WorkerHandle {
 	};
 }
 
-export function spawnWorker(req: SpawnRequest): WorkerHandle {
+/** Test seam: every field defaults to the real implementation. */
+export interface SpawnWorkerDeps {
+	runPiJson: typeof runPiJson;
+	gate: Pick<typeof sharedGate, "remainingMs" | "noteRateLimit">;
+	retry: Pick<RetryOptions, "sleep" | "baseMs">;
+}
+
+export function spawnWorker(req: SpawnRequest, deps?: Partial<SpawnWorkerDeps>): WorkerHandle {
+	const run = deps?.runPiJson ?? runPiJson;
+	const gate = deps?.gate ?? sharedGate;
 	const { agents } = discoverAgents(req.cwd, "user");
 	const agent = agents.find((a) => a.name === req.role);
 	if (!agent) {
@@ -53,13 +65,14 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 	const cwd = iso?.path ?? req.cwd;
 	const prompt = iso ? retargetPrompt(req.prompt, iso) : req.prompt;
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	const args: string[] = workerBaseArgs(agent.name, process.env, { cwd });
 	const chosen = resolveModel(agent, process.env, { model: req.model, thinking: req.thinkingLevel });
 	if (chosen.model) args.push("--model", chosen.model);
 	if (chosen.thinking) args.push("--thinking", chosen.thinking);
 	if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
 
 	let tmpDir: string | undefined;
+	let promptText = "";
 	try {
 		const systemPrompt = composeWorkerPrompt(agent);
 		if (systemPrompt.trim()) {
@@ -68,25 +81,45 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			fs.writeFileSync(promptFile, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 			args.push("--append-system-prompt", promptFile);
 		}
-		args.push(`Task: ${inlineOrPointerPrompt(prompt, req.runDir, req.taskId)}`);
+		promptText = inlineOrPointerPrompt(prompt, req.runDir, req.taskId);
 	} catch (e) {
 		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 		releaseWriter();
 		return failed(`Failed to prepare worker: ${e instanceof Error ? e.message : String(e)}`);
 	}
 
-	// Inside herdr: give the worker a live watch pane following its event log.
-	const logFile = panesEnabled() ? path.join(req.runDir, `${req.taskId}.events.jsonl`) : undefined;
+	// Always keep the events log (message_end lines): it is the evidence an orphaned worker leaves behind.
+	const logFile = path.join(req.runDir, `${req.taskId}.events.jsonl`);
+	try {
+		fs.mkdirSync(req.runDir, { recursive: true });
+	} catch {
+		// ignore
+	}
+	// Inside herdr: give the worker a live watch pane following that log.
 	let watch: Promise<Awaited<ReturnType<typeof openWatchPane>>> | undefined;
-	if (logFile) {
-		try {
-			fs.mkdirSync(req.runDir, { recursive: true });
-		} catch {
-			// ignore
-		}
+	if (panesEnabled()) {
 		watch = openWatchPane({ taskId: req.taskId, role: agent.name, cwd, logFile, tailScript: path.join(PACKAGE_ROOT, "scripts", "herdr-tail.mjs") });
 	}
-	const handle = runWithRetry((attempt) => runPiJson(args, { cwd, logFile, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } }));
+	// A resume attempt prepends the preamble; the child is --no-session, so git state is the memory.
+	const footer = workerFooter({ locale: detectLocale(), cwd });
+	const buildArgs = (resume?: ResumeInfo): string[] => [...args, composeTaskArg({ handoff: promptText, resume: resume ? resumePreamble(resume.n, agent.name) : undefined, footer })];
+	const maxResumes = Number.parseInt(process.env.FOREMAN_MAX_RESUMES ?? "", 10);
+	const handle = runWithRetry(
+		(attempt, resume) => {
+			if (attempt > 0) req.onAttempt?.(attempt);
+			return run(buildArgs(resume), { cwd, logFile, onEvent: req.onEvent, env: { ...workerEnv(agent.name), ...(iso ? { FOREMAN_WORKTREE: "1" } : {}) } });
+		},
+		{
+			...(Number.isFinite(maxResumes) && maxResumes >= 0 ? { maxResumes } : {}),
+			...(deps?.retry?.sleep ? { sleep: deps.retry.sleep } : {}),
+			...(deps?.retry?.baseMs !== undefined ? { baseMs: deps.retry.baseMs } : {}),
+			gate,
+			onTransient: (r, backoffMs) => {
+				const text = `${r.errorMessage ?? ""}\n${r.stderr ?? ""}`;
+				if (isRateLimit(text)) gate.noteRateLimit(text, backoffMs);
+			},
+		},
+	);
 	const cleanupTmp = () => {
 		if (!tmpDir) return;
 		try {
@@ -112,7 +145,7 @@ export function spawnWorker(req: SpawnRequest): WorkerHandle {
 			return withBlockedReport(r, `merge-back error: ${e instanceof Error ? e.message : String(e)}`, iso);
 		}
 	});
-	return { done, kill: handle.kill, chosen: { model: chosen.model, thinking: chosen.thinking } };
+	return { done, kill: handle.kill, cwd, chosen: { model: chosen.model, thinking: chosen.thinking } };
 }
 
 function withBlockedReport(r: PiRunResult, conflict: string, iso: Isolated): PiRunResult {

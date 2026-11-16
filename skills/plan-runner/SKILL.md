@@ -1,6 +1,7 @@
 ---
 name: plan-runner
 description: Runs an already-approved plan in docs/plans/ end to end, on repos with their own build-plan/plan-status/verify-change tooling. Never builds or edits code itself. Invoke with /plan-runner <plan>.
+disable-model-invocation: true
 ---
 
 # Plan Runner
@@ -15,9 +16,11 @@ delegate you spawn per step.
 - Converse with the user in their language: detect it from their messages
   (`en` or `pt-BR`), default English. Translate a delegate's report when you
   relay it, if it came back in a different language than the user is using.
-- Write handoffs and instructions to agents in English, and set the handoff's
-  `User language:` field (`en` or `pt-BR`, default `en`) so workers write
-  their prose in the user's language.
+- Write handoffs and instructions to agents in English. The coordinator
+  appends a footer to every worker prompt (language, orchestrator-mode note,
+  working directory); do not write those yourself. Only when the user's
+  language differs from the machine locale, add one Constraints line
+  `User language: pt-BR.`
 - Never translate code, paths, field names or contract keywords (`Status`,
   `Summary`, `completed|failed|blocked`, and the like).
 
@@ -35,6 +38,13 @@ already isolated, otherwise get the user's consent before creating a
 worktree for this plan's run. Skip it only if the user declines or the
 project gives you no way to create one; work in place then.
 
+Once you know the worktree path (or the project root when working in
+place), pass it as `workdir: "<absolute path>"` on **every**
+`foreman_delegate` call. Workers then start in that checkout, so the guard
+root, `.foreman` writes and isolation all point at the plan's worktree, not
+the main checkout. The extension remembers it for the run; a later value
+replaces it.
+
 Entering orchestrator mode is the `/plan-runner` command's job, not yours:
 do not create files or edit `.gitignore` to mark anything. Read
 `references/orchestrator-mode.md` in this plugin once per session — it is the
@@ -42,6 +52,14 @@ same mode and guardrail `foreman` uses, and only the user ends it, with
 `/foreman off`. If `foreman_delegate` refuses with a not-in-mode error, tell
 the user to run `/foreman`, and never try `bash` or file edits to work around
 it.
+
+The `/plan-runner` command may append a preflight block gathered by the
+extension (do not re-run its probes). Read it once
+and tell the user in one short message what it found: `Renders: yes` steps
+that have no render tool (screenshots cannot be taken), npm scripts named in
+a step's Checks that do not exist, a missing `## Status`. Then continue; do
+not stop for it. Keep the affected steps in mind and pass them to the reviewer
+handoff as known gaps.
 
 ## 0.5. This plan's ledger (written by the extension, not by you)
 
@@ -79,6 +97,12 @@ ledger is per-run bookkeeping, the plan's own Status section is the
 authoritative merged/not-started state; if they disagree, trust the plan
 file and note the mismatch in the ledger.
 
+The plan's `## Status` section is the source of truth. When the preflight says
+it is missing, dispatch one `plan-step-builder` with `plan_step: 0` and a
+three-line handoff: add a `## Status` section to the plan (`- Step N: not
+started` per step) and commit only the plan file. If that is rejected or
+blocks, ask the user to add the section.
+
 ## 2. Run steps, respecting dependency/wave order
 
 ```dot
@@ -104,14 +128,14 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   `plan_slug: "<plan-slug>"` and `plan_step: "<N>"` on **every** call (the
   extension uses them to write the ledger), and a `handoff_prompt` filled
   from `templates/handoff-prompt.md` that names `docs/plans/<plan>.md` step
-  `<N>` and carries two fields:
+  `<N>` and carries only the deltas (the footer is appended for you):
   - `Build instructions:` — the repo's own build instructions file for a plan
     step (for example the repo's `build-plan` skill file, if it has one),
     which the delegate follows exactly, including its Merge section. If the
     repo has none, write `none` and the delegate follows the step's Touches
     and Checks.
-  - `User language:` — `en` or `pt-BR`, taken from the user's messages
-    (default `en`).
+  - A Constraints line `User language: <lang>` only if it differs from the
+    machine locale (see Language).
 
   You're standing in for the human who'd normally say "merge", so the
   delegate should go all the way to merged, not stop at "built", unless the
@@ -133,11 +157,30 @@ For each `not started` step whose dependencies are all `merged`/`decided`:
   TURN. Each completion wakes you with its own notification (batched if they
   land together). Handle each as it arrives; start the next wave only once
   every notification for the current wave is in and the plan's Status
-  section confirms the dependencies are merged/decided.
+  section confirms the dependencies are merged/decided. Exception: if two
+  steps of the wave list a shared file or a parent directory in their
+  `Touches`, dispatch them one after the other, not together (the
+  extension appends a "shares files with running step" warning to the ack
+  when you do collide).
 - A merge frees new steps — on the notification that completes it, dispatch
   everything newly unblocked in that same response, then END YOUR TURN again,
   without waiting for the user to ask.
-- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`. It is the only dispatch path (`subagent` is unavailable).
+- Every `foreman_delegate` call carries `role`, `plan_step` and `plan_slug`, plus `workdir`. It is the only dispatch path (`subagent` is unavailable).
+
+Loop rules for each notification:
+
+- Read `output` only when the status is not `completed` or the summary leaves
+  a question; use `limit`, and let `report: N lines` decide how much.
+- An ack that says `Attempt N` is a stop sign: rule on it (skip, degrade,
+  change approach) per §2.5 or ask the user; never reword the handoff and
+  re-dispatch.
+- `verified: yes` on a completed step is the independent re-run of the step's
+  declared Checks. `verified: no` is not green; `verified: n/a` means nobody
+  re-ran them.
+- A step whose job is recording the test baseline gets one attempt. On
+  `blocked` or `failed`, record a ruling "baseline unavailable", mark the step
+  `decided` in Status, tell the user, and continue; later steps report failing
+  names without a baseline file.
 
 ### 2.5. Rulings, not stalls
 
@@ -171,12 +214,15 @@ opt-in by that skill's own rules — don't run it without asking).
 Then read `references/code-review-discipline.md` and request the review half:
 the step reviews from `build-plan` cover each step in isolation; this is the
 one pass that looks at the whole accumulated diff. Fill in
-`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`,
-`User language:`), dispatch the `reviewer` role via `foreman_delegate`
+`templates/review-handoff-prompt.md` (plan section, `BASE_SHA`/`HEAD_SHA`;
+the footer carries the language), dispatch the `reviewer` role via `foreman_delegate`
 (`plan_slug`, and the last `plan_step`), and END YOUR TURN. On its
 notification read the `Verdict:` token in the summary: `changes-requested`
 means dispatch `qa-bugfix` with the findings, then the `reviewer` again over
 the new range, until `Verdict: approve` (or the user accepts the open findings).
+`Verdict: approve` with a separate `qa-needed: <QA_SHA>..<HEAD_SHA>` line means
+run one `qa` over that range BEFORE dispatching the shipper, and ship only if
+`qa` is green (no second review unless `qa` finds problems).
 
 ## 4. Handoff
 

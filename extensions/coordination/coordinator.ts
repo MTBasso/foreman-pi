@@ -10,10 +10,16 @@
  * as ONE `foreman-task-notification` custom message holding N
  * `<task-notification>` blocks. The ledger is appended (sync) before delivery.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FinishedState, WorkersSnapshot } from "../../lib/workers.ts";
-import { readStepTitle } from "../../lib/plan-steps.ts";
+import { createActivityTracker, type ActivityTracker } from "../../lib/activity.ts";
+import { createUsageTally, type UsageTally } from "../../lib/usage.ts";
+import { sharedGate, type BackoffGate } from "../../lib/backoff.ts";
+import { ISOLATABLE_ROLES } from "../../lib/worktree.ts";
+import { readOverlapsFor, readPlanText, readStepTitle } from "../../lib/plan-steps.ts";
+import { verifyChecks, type VerifyHandle, type VerifyOptions, type VerifyResult } from "../../lib/verify-checks.ts";
 
 import { ROLES, type Role } from "../../lib/roles.ts";
 export { ROLES, type Role };
@@ -29,6 +35,8 @@ export interface DelegateInput {
 	handoff_prompt: string;
 	plan_step?: number;
 	plan_slug?: string;
+	/** Absolute path of the plan worktree (or the root); latched for later delegates, a new value re-latches. */
+	workdir?: string;
 }
 
 export interface SpawnRequest {
@@ -40,6 +48,10 @@ export interface SpawnRequest {
 	runDir: string;
 	model?: string;
 	thinkingLevel?: string;
+	/** Every JSON event of the worker's stream (hot path: keep it O(1), never emit per event). */
+	onEvent?(event: unknown): void;
+	/** A retry/resume attempt (attempt >= 1) is starting: activity restarts. */
+	onAttempt?(attempt: number): void;
 }
 
 export interface WorkerResult {
@@ -58,6 +70,8 @@ export interface WorkerHandle {
 	kill(): void;
 	/** Model/thinking the spawner chose (undefined model = inherited session model). Recorded in the task meta. */
 	chosen?: { model?: string; thinking?: string };
+	/** Directory the worker actually runs in (the isolated worktree when isolated). Recorded in the task meta. */
+	cwd?: string;
 }
 
 /** How well the worker's final report followed the `--- foreman-report ---` contract. */
@@ -72,13 +86,22 @@ export interface Notification {
 	summary: string;
 	/** Path relative to the project root. */
 	output: string;
+	/** Lines in the output file (report body); absent when unknown. */
+	reportLines?: number;
+	/** C6: independent re-run of the step's declared Checks; absent when not attempted. */
+	verified?: "yes" | "no" | "n/a";
+	verifiedNote?: string;
 	/** From the worker's report block; absent when the contract was not met. */
 	files?: string[];
 	rulings?: string[];
 	blockedOn?: string;
+	/** Commands the worker guard refused, from the report's `Guard-denied:` field. */
+	guardDenied?: string[];
 	/** `unrendered` when a UI step was never rendered; screenshot paths when it was; absent when n/a. */
 	rendered?: string;
 	contract?: ReportContract;
+	/** Orphans only: number of paths `git status --short` shows in the worker's cwd (absent when none or unknown). */
+	partial?: number;
 }
 
 export interface SendOptions {
@@ -98,8 +121,20 @@ export interface CoordinatorDeps {
 	now?: () => number;
 	isOrchestratorActive?: () => boolean;
 	maxWorkers?: number;
+	/** Cap on concurrent writer roles (ISOLATABLE_ROLES); env FOREMAN_MAX_WRITERS, default 2. */
+	maxWriters?: number;
+	/** Shared rate-limit back-off gate; default is the process-wide `sharedGate`. */
+	gate?: BackoffGate;
 	batchMs?: number;
+	/** Silence threshold for stuck detection in ms (default FOREMAN_STUCK_AFTER_S * 1000, 90 s; 0 disables). */
+	stuckAfterMs?: number;
 	timeoutMs?: number;
+	/** Validates a requested workdir and returns its real path; throws on a bad one. Default: identity. */
+	resolveWorkdir?(root: string, requested: string): string;
+	/** C6 verifier; default `verifyChecks` (runs the step's npm Checks through scripts/run-suites.mjs). */
+	verify?: (o: VerifyOptions) => VerifyHandle;
+	/** C6 time budget in ms; default FOREMAN_VERIFY_TIMEOUT_S * 1000 (600 s). */
+	verifyTimeoutMs?: number;
 	/** Test hook: deterministic run id. */
 	runId?: string;
 }
@@ -117,13 +152,22 @@ interface Task {
 	prompt: string;
 	planStep?: number;
 	planSlug?: string;
+	/** Worker cwd: the latched workdir, undefined = deps.root. */
+	workdir?: string;
 	/** Plan-step title for the widget (parsed from docs/plans/<slug>.md at delegate time). */
 	title?: string;
 	state: TaskState;
 	model?: string;
 	thinkingLevel?: string;
 	chosen?: { model?: string; thinking?: string };
+	/** Where the worker runs (handle.cwd once spawned, else the requested cwd). */
+	cwd?: string;
 	handle?: WorkerHandle;
+	/** Live activity of the worker (fed from its event stream). */
+	activity?: ActivityTracker;
+	/** Per-worker usage tally (all attempts); written to the run json in finishTask. */
+	usage?: UsageTally;
+	lastStatusAt?: number;
 	timer?: ReturnType<typeof setTimeout>;
 	timedOut?: boolean;
 	killedByShutdown?: boolean;
@@ -143,6 +187,82 @@ interface Batch {
 const SNAPSHOT_FINISHED_MAX = 5;
 const SUMMARY_MAX = 400;
 const LEDGER_SUMMARY_MAX = 200;
+const ORPHAN_SUMMARY = "orphaned (orchestrator restarted)";
+const GIT_STATUS_TIMEOUT_MS = 5000;
+const STATUS_WRITE_MS = 2000;
+const STUB_PREFIX = (taskId: string) => `# ${taskId}`;
+
+/** True when the file is the coordinator's start-of-task placeholder, not a report. */
+function isStubReport(taskId: string, text: string): boolean {
+	return text.startsWith(`${STUB_PREFIX(taskId)} RUNNING`);
+}
+
+/** At most 5 items, each at most 200 chars, with a `+N more` marker. */
+function capGuardDenied(items: string[]): string {
+	const shown = items.slice(0, 5).map((s) => (s.length > 200 ? s.slice(0, 200) : s));
+	return shown.join(" | ") + (items.length > 5 ? ` | +${items.length - 5} more` : "");
+}
+
+/** `git status --short` in `cwd`, hooks off, 5 s cap; "" when the dir is gone, not a repo, or anything fails. */
+function isDir(p: string): boolean {
+	try {
+		return statSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+function gitStatusShort(cwd: string | undefined): string {
+	if (!cwd || !existsSync(cwd)) return "";
+	try {
+		return execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "status", "--short"], {
+			cwd,
+			timeout: GIT_STATUS_TIMEOUT_MS,
+			stdio: ["ignore", "pipe", "ignore"],
+			encoding: "utf8",
+		});
+	} catch {
+		return "";
+	}
+}
+
+/** Last assistant text recorded in an events log (message_end lines); "" when missing or unreadable. */
+function lastTextFromEvents(file: string): string {
+	try {
+		if (!existsSync(file)) return "";
+		const messages: any[] = [];
+		for (const line of readFileSync(file, "utf8").split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const ev = JSON.parse(line);
+				if (ev?.type === "message_end" && ev.message) messages.push(ev.message);
+			} catch {
+				// a half-written last line is expected for an orphan
+			}
+		}
+		return finalReport(messages);
+	} catch {
+		return "";
+	}
+}
+
+/** "last: <action>; <n> tokens out; last event <s>s ago" from a status.json; "" when missing or unreadable. */
+function readStatusSummary(file: string, at: number): string {
+	try {
+		if (!existsSync(file)) return "";
+		const v = JSON.parse(readFileSync(file, "utf8"))?.view;
+		if (!v || typeof v !== "object") return "";
+		const recent = Array.isArray(v.recent) ? v.recent : [];
+		const action = v.label ? [v.phase, v.label].filter(Boolean).join(" ") : (recent.length ? recent[recent.length - 1]?.label : "") || v.phase || "";
+		const parts: string[] = [];
+		if (action) parts.push(`last action: ${collapse(String(action))}`);
+		if (typeof v.outTokens === "number") parts.push(`${v.outTokens} tokens out`);
+		if (typeof v.lastEventAt === "number" && v.lastEventAt > 0) parts.push(`last event ${Math.max(0, Math.round((at - v.lastEventAt) / 1000))}s ago`);
+		return parts.join("; ");
+	} catch {
+		return "";
+	}
+}
 
 export function envInt(name: string, fallback: number): number {
 	const raw = process.env[name];
@@ -196,7 +316,8 @@ export interface ParsedReport {
 	files: string[];
 	rulings: string[];
 	blockedOn: string;
-	/** Raw `Rendered:` value, or "" when absent / n/a. */
+	guardDenied: string[];
+	/** Raw `Rendered: value, or "" when absent / n/a. */
 	rendered: string;
 	contract: ReportContract;
 }
@@ -204,7 +325,7 @@ export interface ParsedReport {
 const BLOCK_START = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*foreman-report[ \t]*-{3}[ \t]*$/i;
 const BLOCK_END = /^[ \t]*(?:>[ \t]*)?-{3}[ \t]*end[ \t]+foreman-report[ \t]*-{3}[ \t]*$/i;
 // English keywords only: localized keys ("Estado:", "Resumo:") are never labels.
-const FIELD_LABEL = /^[ \t]*(status|summary|files|rulings|blocked-on|rendered)[ \t]*:(.*)$/i;
+const FIELD_LABEL = /^[ \t]*(status|summary|files|rulings|blocked-on|guard-denied|rendered)[ \t]*:(.*)$/i;
 const NONE = /^(none|-|n\/a)?$/i;
 
 interface BlockCandidate {
@@ -236,12 +357,17 @@ function parseBlockBody(lines: string[]): Omit<ParsedReport, "contract"> | undef
 		.map((s) => s.trim().replace(/^[-*]\s+/, ""))
 		.filter((s) => !NONE.test(s));
 	const blockedOn = value("blocked-on");
+	const guardDenied = value("guard-denied")
+		.split("\n")
+		.map((s) => s.trim().replace(/^[-*]\s+/, ""))
+		.filter((s) => !NONE.test(s));
 	return {
 		status,
 		summary: collapse(value("summary")),
 		files,
 		rulings,
 		blockedOn: NONE.test(blockedOn) ? "" : blockedOn,
+		guardDenied,
 		rendered: NONE.test(value("rendered")) ? "" : value("rendered").split("\n")[0].trim(),
 	};
 }
@@ -284,9 +410,14 @@ export function parseFinalBlock(report: string): ParsedReport {
 	}
 
 	const contract: ReportContract = sawMalformed ? "malformed" : "missing";
-	if (!text.trim()) return { status: undefined, summary: "", files: [], rulings: [], blockedOn: "", rendered: "", contract };
+	if (!text.trim()) return { status: undefined, summary: "", files: [], rulings: [], blockedOn: "", guardDenied: [], rendered: "", contract };
 	const status: TaskStatus = isBlockedReport(text) ? "blocked" : "completed";
-	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", rendered: "", contract };
+	return { status, summary: summarize(text), files: [], rulings: [], blockedOn: "", guardDenied: [], rendered: "", contract };
+}
+
+/** Lines in a report body: a trailing newline does not add one; empty is 0. */
+export function countLines(text: string): number {
+	return text === "" ? 0 : text.replace(/\n$/, "").split("\n").length;
 }
 
 export function formatBlock(n: Notification): string {
@@ -298,6 +429,10 @@ export function formatBlock(n: Notification): string {
 		`plan-step: ${n.planStep ?? "-"}`,
 		`summary: ${n.summary}`,
 		`output: ${n.output}`,
+		...(n.reportLines !== undefined ? [`report: ${n.reportLines} lines`] : []),
+		...(n.verified ? [`verified: ${n.verified}${n.verifiedNote ? ` — ${collapse(n.verifiedNote)}` : ""}`] : []),
+		...(n.guardDenied && n.guardDenied.length > 0 ? [`guard-denied: ${capGuardDenied(n.guardDenied)}`] : []),
+		...(n.partial !== undefined ? [`partial: ${n.partial} changed paths`] : []),
 		...(n.rendered ? [`rendered: ${n.rendered}`] : []),
 		...(n.contract === "missing" || n.contract === "malformed" ? [`report-contract: ${n.contract}`] : []),
 		"</task-notification>",
@@ -307,6 +442,9 @@ export function formatBlock(n: Notification): string {
 export function createCoordinator(deps: CoordinatorDeps) {
 	const now = deps.now ?? Date.now;
 	const maxWorkers = Math.max(1, deps.maxWorkers ?? envInt("FOREMAN_MAX_WORKERS", 4));
+	const maxWriters = Math.max(1, deps.maxWriters ?? envInt("FOREMAN_MAX_WRITERS", 2));
+	const gate = deps.gate ?? sharedGate;
+	const stuckAfterMs = deps.stuckAfterMs ?? envInt("FOREMAN_STUCK_AFTER_S", 90) * 1000;
 	const batchMs = deps.batchMs ?? envInt("FOREMAN_BATCH_MS", 300);
 	const timeoutMs = deps.timeoutMs ?? envInt("FOREMAN_WORKER_TIMEOUT_MS", 30 * 60 * 1000);
 	const isActive = deps.isOrchestratorActive ?? (() => true);
@@ -320,10 +458,45 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	const queue: Task[] = [];
 	let seq = 0;
 	let running = 0;
+	let runningWriters = 0;
+	let pumpTimer: ReturnType<typeof setTimeout> | undefined;
 	let planSlug: string | undefined;
+	let latchedWorkdir: string | undefined;
 	let busy = false;
 	let stopped = false;
 	let batchSeq = 0;
+	/** C1: terminal outcomes per `<slug|->#<step>`, oldest first; a completed outcome clears the key. */
+	const attempts = new Map<string, Array<{ state: string; reason: string }>>();
+	/** C6: verifications in flight; they hold notifications, idle waiters and new writers. */
+	const verifications = new Set<{ handle: VerifyHandle; cancelled: boolean }>();
+	const verifyTimeoutMs = deps.verifyTimeoutMs ?? envInt("FOREMAN_VERIFY_TIMEOUT_S", 600) * 1000;
+	const attemptKey = (slug: string | undefined, step: number) => `${slug ?? "-"}#${step}`;
+	function noteAttempt(slug: string | undefined, step: number | undefined, state: string, reason: string) {
+		if (step === undefined) return;
+		const key = attemptKey(slug, step);
+		if (state === "completed") {
+			attempts.delete(key);
+			return;
+		}
+		if (state !== "failed" && state !== "blocked") return;
+		const list = attempts.get(key) ?? [];
+		list.push({ state, reason: truncate(collapse(reason), 100) });
+		attempts.set(key, list);
+	}
+	function attemptWarning(slug: string | undefined, step: number | undefined): string {
+		if (step === undefined) return "";
+		const list = attempts.get(attemptKey(slug, step)) ?? [];
+		const n = list.length + 1;
+		if (n < 3) return "";
+		const last = list.slice(-2);
+		if (!last.every((a) => a.state === "blocked" || a.state === "failed")) return "";
+		const same = last[0].reason === last[1].reason;
+		return (
+			` Attempt ${n} for step ${step}; previous attempts ended: ${list.map((a) => `${a.state} (${a.reason})`).join(", ")}. ` +
+			`Do not re-dispatch with reworded text: rule on it (skip, degrade, change approach) or ask the user.` +
+			(same ? " The last two reasons are identical." : "")
+		);
+	}
 
 	const changeListeners = new Set<() => void>();
 	function emitChange() {
@@ -369,6 +542,8 @@ export function createCoordinator(deps: CoordinatorDeps) {
 					role: t.role,
 					plan_step: t.planStep ?? null,
 					plan_slug: t.planSlug ?? null,
+					...(t.workdir ? { workdir: t.workdir } : {}),
+					...(t.cwd ? { cwd: t.cwd } : {}),
 					state: t.state,
 					handoff_prompt: t.prompt,
 					output: outputRel(t.taskId),
@@ -396,26 +571,94 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	}
 
 	function checkIdle() {
-		if (running === 0 && queue.length === 0 && pending.length === 0 && !batchTimer) {
+		if (running === 0 && queue.length === 0 && pending.length === 0 && !batchTimer && verifications.size === 0) {
 			for (const w of idleWaiters.splice(0)) w();
+		}
+	}
+
+	/** Atomic <task>.status.json (temp + rename). Best effort. */
+	function writeStatus(t: Task, final = false) {
+		if (!t.activity) return;
+		const at = now();
+		t.lastStatusAt = at;
+		const file = join(runDir, `${t.taskId}.status.json`);
+		try {
+			writeFileSync(`${file}.tmp`, JSON.stringify({ updated_at: new Date(at).toISOString(), cwd: t.cwd ?? null, ...(final ? { finished: true } : {}), view: t.activity.view(at) }));
+			renameSync(`${file}.tmp`, file);
+		} catch {
+			// evidence only
+		}
+	}
+
+	/** Placeholder report so the orchestrator never hits ENOENT; finishTask overwrites it, recover() ignores it. */
+	function writeStub(t: Task) {
+		try {
+			writeFileSync(
+				join(deps.root, outputRel(t.taskId)),
+				[
+					`${STUB_PREFIX(t.taskId)} RUNNING`,
+					"",
+					`started: ${new Date(now()).toISOString()}`,
+					`cwd: ${t.cwd ?? ""}`,
+					`events: ${join(runRel, `${t.taskId}.events.jsonl`)}`,
+					"",
+				].join("\n"),
+			);
+		} catch {
+			// best effort
 		}
 	}
 
 	function startTask(t: Task) {
 		running++;
+		if (ISOLATABLE_ROLES.has(t.role)) runningWriters++;
 		t.state = "running";
 		t.startedAt = now();
-		writeMeta(t, { started_at: new Date(now()).toISOString() });
+		let workdirFallback: string | undefined;
+		if (t.workdir && !isDir(t.workdir)) {
+			workdirFallback = `workdir ${t.workdir} no longer exists; using root`;
+			t.cwd = deps.root;
+		} else t.cwd = t.workdir ?? deps.root;
+		const activity = createActivityTracker({ stuckAfterMs: stuckAfterMs });
+		activity.reset(now());
+		t.activity = activity;
+		const usage = createUsageTally();
+		usage.noteAttempt();
+		t.usage = usage;
+		writeStub(t);
+		writeMeta(t, { started_at: new Date(now()).toISOString(), ...(workdirFallback ? { workdir_fallback: workdirFallback } : {}) });
 		let handle: WorkerHandle;
 		try {
 			handle = deps.spawn({
 				taskId: t.taskId,
 				role: t.role,
 				prompt: t.prompt,
-				cwd: deps.root,
+				cwd: t.cwd,
 				runDir,
 				model: t.model,
 				thinkingLevel: t.thinkingLevel,
+				onEvent: (event) => {
+					const at = now();
+					try {
+						usage.feed(event);
+					} catch {
+						// usage is best effort; never break the stream
+					}
+					try {
+						activity.feed(event, at);
+					} catch {
+						// activity is best effort too
+					}
+					if (at - (t.lastStatusAt ?? 0) >= STATUS_WRITE_MS) writeStatus(t);
+				},
+				onAttempt: () => {
+					try {
+						usage.noteAttempt();
+					} catch {
+						// best effort
+					}
+					activity.reset(now());
+				},
 			});
 		} catch (e) {
 			const message = e instanceof Error ? e.message : String(e);
@@ -425,8 +668,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			};
 		}
 		t.handle = handle;
-		if (handle.chosen) {
-			t.chosen = handle.chosen;
+		if (handle.cwd) t.cwd = handle.cwd;
+		if (handle.chosen || handle.cwd) {
+			if (handle.chosen) t.chosen = handle.chosen;
 			try {
 				writeMeta(t, { started_at: new Date(now()).toISOString() });
 			} catch {
@@ -456,14 +700,36 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	}
 
 	function pump() {
-		while (!stopped && running < maxWorkers && queue.length > 0) {
-			startTask(queue.shift()!);
+		if (pumpTimer) {
+			clearTimeout(pumpTimer);
+			pumpTimer = undefined;
+		}
+		if (stopped) return;
+		const limit = gate.limit(maxWorkers);
+		while (!stopped && running < limit && queue.length > 0) {
+			// Never start while the shared gate is paused; re-arm from the gate each time.
+			const wait = gate.remainingMs();
+			if (wait > 0) {
+				pumpTimer = setTimeout(() => {
+					pumpTimer = undefined;
+					pump();
+				}, wait + 5);
+				pumpTimer.unref?.();
+				return;
+			}
+			// First queued task that fits; a capped writer keeps its place and readers may pass it.
+			// No writer starts while a verification runs in the shared checkout.
+			const i = queue.findIndex((q) => !ISOLATABLE_ROLES.has(q.role) || (runningWriters < maxWriters && verifications.size === 0));
+			if (i < 0) return;
+			startTask(queue.splice(i, 1)[0]);
 		}
 	}
 
 	function finishTask(t: Task, r: WorkerResult) {
 		if (t.timer) clearTimeout(t.timer);
 		running--;
+		if (ISOLATABLE_ROLES.has(t.role)) runningWriters = Math.max(0, runningWriters - 1);
+		writeStatus(t, true);
 		if (stopped || t.killedByShutdown || t.aborted) {
 			checkIdle();
 			emitChange();
@@ -519,8 +785,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		} else {
 			body = `${report}\n`;
 		}
+		let reportLines: number | undefined;
 		try {
 			writeFileSync(join(deps.root, outputRel(t.taskId)), body);
+			reportLines = countLines(body);
 		} catch {
 			// Output file is best effort; the notification still goes out.
 		}
@@ -532,9 +800,11 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				? truncate(collapse(`${error}${report ? ` — ${report}` : r.stderr ? ` — ${r.stderr}` : ""}`), SUMMARY_MAX)
 				: parsed?.summary ?? summarize(report);
 		const contractInfo = parsed
-			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, rendered: parsed.rendered, contract: parsed.contract }
+			? { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract }
 			: {};
 		t.state = status;
+		noteAttempt(t.planSlug, t.planStep, status, parsed?.blockedOn || error || summary);
+		if (status === "completed") gate.noteCleanFinish();
 		try {
 			writeMeta(t, {
 				finished_at: new Date(now()).toISOString(),
@@ -542,14 +812,15 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				signal: r.signal,
 				error: error ?? null,
 				summary,
+				...(t.usage ? { usage: t.usage.snapshot() } : {}),
 				...contractInfo,
 			});
 		} catch {
 			// ignore
 		}
-		persist(t, { summary });
+		persist(t, { summary, ...(parsed?.blockedOn ? { blockedOn: parsed.blockedOn } : {}), ...(error ? { error } : {}) });
 
-		pending.push({
+		const note: Notification = {
 			taskId: t.taskId,
 			role: t.role,
 			status,
@@ -557,12 +828,68 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			planSlug: t.planSlug,
 			summary,
 			output: outputRel(t.taskId),
+			...(reportLines !== undefined ? { reportLines } : {}),
 			...contractInfo,
-		});
+		};
+		const v = startVerification(t, status);
+		if (v && !v.handle.immediate) {
+			// Notification is held until the checks finish (or shutdown/abort drops it).
+			verifications.add(v);
+			v.handle.done
+				.catch((): VerifyResult => ({ verified: "n/a", note: "verification failed" }))
+				.then((res) => {
+					verifications.delete(v);
+					if (!stopped && !v.cancelled) {
+						applyVerify(note, res);
+						pending.push(note);
+						scheduleFlush();
+					}
+					pump();
+					checkIdle();
+					emitChange();
+				});
+			emitChange();
+			return;
+		}
+		if (v?.handle.immediate) applyVerify(note, v.handle.immediate);
+		pending.push(note);
 		scheduleFlush();
 		pump();
 		checkIdle();
 		emitChange();
+	}
+
+	function applyVerify(n: Notification, r: VerifyResult) {
+		n.verified = r.verified;
+		if (r.note) n.verifiedNote = r.note;
+		else delete n.verifiedNote;
+	}
+
+	/** C6: only a completed plan-step-builder with a plan slug and step; any failure becomes an immediate n/a. */
+	function startVerification(t: Task, status: TaskStatus): { handle: VerifyHandle; cancelled: boolean } | undefined {
+		if (status !== "completed" || t.role !== "plan-step-builder" || !t.planSlug || t.planStep === undefined) return undefined;
+		if ((process.env.FOREMAN_VERIFY_CHECKS ?? "").trim().toLowerCase() === "off") return undefined;
+		const immediate = (r: VerifyResult) => ({ handle: { immediate: r, done: Promise.resolve(r), kill() {} } as VerifyHandle, cancelled: false });
+		try {
+			if (runningWriters > 0) return immediate({ verified: "n/a", note: "another writer is running" });
+			// Where the merge landed: the latched workdir, else the root (never the removed isolated path).
+			const cwd = t.workdir && isDir(t.workdir) ? t.workdir : deps.root;
+			const handle = (deps.verify ?? verifyChecks)({ cwd, planText: readPlanText(deps.root, t.planSlug), step: t.planStep, timeoutMs: verifyTimeoutMs });
+			return { handle, cancelled: false };
+		} catch (e) {
+			return immediate({ verified: "n/a", note: `verification error: ${collapse(String((e as Error)?.message ?? e)).slice(0, 80)}` });
+		}
+	}
+
+	function cancelVerifications() {
+		for (const v of verifications) {
+			v.cancelled = true;
+			try {
+				v.handle.kill();
+			} catch {
+				// ignore
+			}
+		}
 	}
 
 	function scheduleFlush() {
@@ -638,6 +965,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		if (typeof input.handoff_prompt !== "string" || input.handoff_prompt.trim() === "") {
 			throw new Error("handoff_prompt must be a non-empty string.");
 		}
+		const requestedWorkdir = input.workdir?.trim();
+		if (requestedWorkdir === "" || requestedWorkdir === ".") latchedWorkdir = undefined;
+		else if (requestedWorkdir) {
+			// Validate before any state changes so a bad path spawns nothing and latches nothing.
+			latchedWorkdir = deps.resolveWorkdir ? deps.resolveWorkdir(deps.root, requestedWorkdir) : requestedWorkdir;
+		}
 		stopped = false;
 		ensureRunDir();
 		const slug = input.plan_slug?.trim();
@@ -652,17 +985,31 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			prompt: input.handoff_prompt,
 			planStep: typeof input.plan_step === "number" ? input.plan_step : undefined,
 			planSlug: slug || planSlug,
+			workdir: latchedWorkdir,
 			title: undefined,
 			state: "queued",
 			model: opts.model,
 			thinkingLevel: opts.thinkingLevel,
 		};
 		t.title = readStepTitle(deps.root, t.planSlug, t.planStep);
+		// Lint: a parallel-wave step sharing files with a step that is running right now.
+		let overlapWarning = "";
+		if (t.planSlug && t.planStep !== undefined) {
+			for (const o of readOverlapsFor(deps.root, t.planSlug, t.planStep)) {
+				const busy = [...tasks.values()].some(
+					(r) => r.state === "running" && r.planSlug === t.planSlug && r.planStep === o.other,
+				);
+				if (busy) {
+					overlapWarning += ` Warning: step ${t.planStep} shares files with running step ${o.other} (${o.paths.join(", ")}); dispatch it after step ${o.other} finishes next time.`;
+				}
+			}
+		}
+		overlapWarning += attemptWarning(t.planSlug, t.planStep);
 		tasks.set(taskId, t);
 		writeMeta(t, { created_at: new Date(now()).toISOString() });
-		if (running < maxWorkers) startTask(t);
-		else {
-			queue.push(t);
+		queue.push(t);
+		pump();
+		if (t.state === "queued") {
 			persist(t);
 			emitChange();
 		}
@@ -673,7 +1020,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			state,
 			ack:
 				`Dispatched ${taskId} (${state}). END YOUR TURN now: you will be woken with a <task-notification> ` +
-				`when it finishes (full report at ${outputRel(taskId)}). Do not poll or wait.`,
+				`when it finishes (full report at ${outputRel(taskId)}). Do not poll or wait.${overlapWarning}`,
 		};
 	}
 
@@ -712,9 +1059,12 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	/** Orchestrator is shutting down: kill children, record state, no notifications. */
 	function shutdown() {
 		stopped = true;
+		cancelVerifications();
 		if (batchTimer) clearTimeout(batchTimer);
 		batchTimer = undefined;
 		queue.length = 0;
+		if (pumpTimer) clearTimeout(pumpTimer);
+		pumpTimer = undefined;
 		for (const t of tasks.values()) {
 			if (t.state === "running" || t.state === "queued") {
 				const wasRunning = t.state === "running";
@@ -748,7 +1098,10 @@ export function createCoordinator(deps: CoordinatorDeps) {
 	 * No notification is sent for aborted tasks.
 	 */
 	function abortAll(): Promise<number> {
+		cancelVerifications();
 		queue.length = 0;
+		if (pumpTimer) clearTimeout(pumpTimer);
+		pumpTimer = undefined;
 		const exits: Promise<unknown>[] = [];
 		let count = 0;
 		for (const t of tasks.values()) {
@@ -789,7 +1142,7 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		let queuedCount = 0;
 		for (const t of tasks.values()) {
 			if (t.state === "running") {
-				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, title: t.title, startedAt: t.startedAt ?? now() });
+				running.push({ taskId: t.taskId, role: t.role, planStep: t.planStep, title: t.title, startedAt: t.startedAt ?? now(), ...(t.activity ? { activity: t.activity.view(now()) } : {}) });
 			} else if (t.state === "queued") {
 				queuedCount++;
 			} else {
@@ -824,6 +1177,15 @@ export function createCoordinator(deps: CoordinatorDeps) {
 		for (const e of entries) {
 			if (!e || typeof e.taskId !== "string" || typeof e.runId !== "string") continue;
 			latest.set(`${e.runId}/${e.taskId}`, e);
+			// A resumed session must never reuse a task id: continue after the highest tN- seen.
+			const m = /^t(\d+)-/.exec(e.taskId);
+			if (m) seq = Math.max(seq, Number(m[1]));
+		}
+		for (const e of latest.values()) {
+			if (e.recovered || typeof e.planStep !== "number") continue;
+			if (e.state === "completed" || e.state === "failed" || e.state === "blocked") {
+				noteAttempt(e.planSlug, e.planStep, e.state, e.blockedOn || e.error || e.summary || "");
+			}
 		}
 		const recovered: Notification[] = [];
 		for (const e of latest.values()) {
@@ -832,8 +1194,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 			const outputRelPath: string = e.output ?? join(".foreman", "runs", e.runId, `${e.taskId}.md`);
 			const outputAbs = join(deps.root, outputRelPath);
 			let status: TaskStatus = "failed";
-			let summary = "orphaned (orchestrator restarted)";
+			let summary = ORPHAN_SUMMARY;
 			let contractInfo: Partial<Notification> = {};
+			let reportLines: number | undefined;
 			if (existsSync(outputAbs)) {
 				let report = "";
 				try {
@@ -847,16 +1210,33 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				} catch {
 					// no meta
 				}
-				if (report.trim()) {
+				if (report.trim() && !isStubReport(e.taskId, report)) {
+					reportLines = countLines(report);
 					const isFailed = metaStatus === "failed" || report.startsWith(`# ${e.taskId} FAILED`);
 					const body = report.replace(/^# .* FAILED\n+/, "");
 					const parsed = parseFinalBlock(body);
 					status = isFailed ? "failed" : (parsed.status ?? "completed");
 					summary = parsed.contract === "ok" && parsed.summary ? truncate(parsed.summary, SUMMARY_MAX) : summarize(body);
 					if (!isFailed) {
-						contractInfo = { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, rendered: parsed.rendered, contract: parsed.contract };
+						contractInfo = { files: parsed.files, rulings: parsed.rulings, blockedOn: parsed.blockedOn, guardDenied: parsed.guardDenied, rendered: parsed.rendered, contract: parsed.contract };
 					}
 				}
+			}
+			let partial: number | undefined;
+			if (status === "failed" && summary === ORPHAN_SUMMARY) {
+				const runPath = join(deps.root, ".foreman", "runs", e.runId);
+				let cwd: string | undefined;
+				try {
+					cwd = JSON.parse(readFileSync(join(runPath, `${e.taskId}.json`), "utf8")).cwd;
+				} catch {
+					// no meta
+				}
+				const last = lastTextFromEvents(join(runPath, `${e.taskId}.events.jsonl`));
+				const act = readStatusSummary(join(runPath, `${e.taskId}.status.json`), now());
+				if (act) summary = `${ORPHAN_SUMMARY} — ${act}`;
+				const paths = gitStatusShort(cwd).split("\n").filter((l) => l.trim() !== "").length;
+				if (last) summary = truncate(`${summary} — last output: ${collapse(last)}`, SUMMARY_MAX);
+				if (paths > 0) partial = paths;
 			}
 			recovered.push({
 				taskId: e.taskId,
@@ -866,7 +1246,9 @@ export function createCoordinator(deps: CoordinatorDeps) {
 				planSlug: e.planSlug,
 				summary,
 				output: outputRelPath,
+				...(reportLines !== undefined ? { reportLines } : {}),
 				...contractInfo,
+				...(partial !== undefined ? { partial } : {}),
 			});
 			deps.appendEntry(TASK_ENTRY_TYPE, { ...e, state: status, recovered: true });
 		}
