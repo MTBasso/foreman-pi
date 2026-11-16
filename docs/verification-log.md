@@ -119,3 +119,14 @@ provider-level instability around long tool-call round trips that no amount of
 rephrasing fixes. The only real mitigation is needing fewer round trips, which
 is why the `session-reminder` extension pre-gathers that state with zero tool
 calls and the skill tells the model to use it instead of re-running the checks.
+
+## worker-common.md rewrite (phase C step 18, B1)
+
+`references/worker-common.md` went from 5,901 chars (1,476 tokens, `ceil(chars/4)`)
+to 3,597 chars (900 tokens). Every rule is kept and stated once, in positive form
+where an alternative exists: the old "Working discipline" and "Working under the worker guard"
+sections became Discipline and Gotchas; the "Most blocks were avoidable ... so you never have
+to stop" framing and the guard's own explanation of why a command is refused were dropped
+(the policy lives in `references/worker-guard.md`). Wording was compressed, not rules
+removed; the cost is terser phrasing, so a live run showing guard denials on `~`, globs, loop
+variables or process substitution is the signal that a Gotchas bullet became too terse.

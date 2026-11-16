@@ -4,6 +4,10 @@ The `worker-guard` extension (`extensions/worker-guard/`) is a path-scoped
 write policy for foreman workers. Read this when a worker reports
 `Status: blocked` because of it, or before trusting it as a safety boundary.
 
+Worker-facing rules (literal paths, one command per suite, scratch under
+`.foreman/`, what to do on a denial) live in `references/worker-common.md`,
+under Gotchas; this file is the policy reference and is not appended to worker prompts.
+
 ## What it does
 
 Each worker is a child `pi` spawned with `FOREMAN_PI_SUBAGENT=1` and
@@ -103,6 +107,17 @@ This is a heuristic guard, not a sandbox.
 
 If a block is a false positive, change the policy in
 `extensions/worker-guard/policy.ts` and add a case to `smoke-test.ts`.
+
+- Nested linked worktrees: the innermost worktree containing a path decides
+  (`owningWorktree` in `policy.ts`). For scoped roles (`qa`, `codebase-auditor`,
+  `shipper`) a path under a nested worktree such as `<root>/.worktrees/x/` is
+  writable only below that worktree's `.foreman/`; `.foreman/../src` is resolved
+  first and stays denied. Dev roles keep the `.git` and real `.env` denials there.
+- Loop rebinding: `for s in x y; do ...; done` is unrolled only when the loop
+  variable is not rebound in the body. If the variable appears as a bare word
+  (`printf -v s ...`, `declare s`, `mapfile s`, `getopts ... s`), the command is
+  left un-unrolled, so any `$s` path stays denied (a loop variable named like a
+  literal body word is a known false positive).
 
 ## v0.3 notes
 

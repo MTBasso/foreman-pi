@@ -6,6 +6,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { ROLES } from "../../lib/roles.ts";
 import { workerFooter } from "../../lib/handoff-footer.ts";
 
+/** Ceiling for worker-common.md; the plan target is 900 (see docs/verification-log.md for the measured number). */
+const WORKER_COMMON_TOKEN_CEILING = 900;
 const root = new URL("../../", import.meta.url);
 const skill = readFileSync(new URL("skills/foreman/SKILL.md", root), "utf8");
 const pr = readFileSync(new URL("skills/plan-runner/SKILL.md", root), "utf8");
@@ -175,4 +177,20 @@ check("review template has QA covered up to", /QA covered up to: <sha or none>/.
 check("reviewer.md names qa-needed and the diff --stat rule", /qa-needed: <QA_SHA>\.\.<HEAD_SHA>/.test(reviewer) && /git diff --stat <QA_SHA>\.\.HEAD/.test(reviewer) && /QA covered up to/.test(reviewer));
 check("skills and delegation reference route qa-needed to qa", [pr, delegationRef].every((t) => /qa-needed/.test(t) && /`qa`/.test(t)));
 check("reviewer stays read-only (tools line unchanged)", /^tools: read, grep, find, bash$/m.test(reviewer) && /writes? no files/.test(reviewer));
+// B1 (phase C step 18): worker-common rewrite.
+{
+	const tokens = Math.ceil(common.length / 4);
+	check("worker-common <= 900 tokens", tokens <= WORKER_COMMON_TOKEN_CEILING, `${tokens} tokens`);
+	const gotchas = /^### Gotchas\n([\s\S]*?)(?=^### )/m.exec(common)?.[1] ?? "";
+	check("worker-common has ## Gotchas with the five listed items", gotchas !== "" && [/literal/i, /one literal command/i, /`\.foreman\/`/, /python3 -c/, /Guard-denied:/].every((r) => r.test(gotchas)) && /nested/i.test(gotchas) && /git show <sha>:<path>/.test(gotchas));
+	const neg = common.split("\n").filter((l) => /^- +\**(Never|Don't|Do not|No|Not)\b/.test(l));
+	check("at most 3 negation-led bullets in worker-common (hard guardrails only)", neg.length <= 3, neg.join(" | "));
+	check("report contract block and Guard-denied unchanged", /Status: completed \| failed \| blocked\nSummary: <≤400 chars, in the user's language>\nFiles: <comma-separated paths, or none>\nRulings: <"Ruling: what — why" lines, or none>\nBlocked-on: <what\/who, or none>\nGuard-denied: <each command the worker guard refused, one per line, or none>\nRendered: <screenshot paths under \.foreman\/, "unrendered", or "n\/a">/.test(common));
+	check("run-suites command still literal", common.includes("node {{PACKAGE_ROOT}}/scripts/run-suites.mjs --cwd <repo> py:a.py npm:test"));
+	const guardDoc = readFileSync(new URL("references/worker-guard.md", root), "utf8");
+	const spot = ["Stuck twice", "baseline-diff.mjs", "Receiving a review", "git show <sha>:<path>", "python3 -c", "Review feedback"];
+	check("no rule text duplicated between worker-common and worker-guard (spot list of 6 phrases)", spot.every((p) => common.includes(p) && !guardDoc.includes(p)), spot.filter((p) => !common.includes(p) || guardDoc.includes(p)).join(","));
+	check("worker-guard points to worker-common and has nested-worktree and loop-rebinding notes", /worker-common\.md/.test(guardDoc) && /nested/i.test(guardDoc) && /innermost/i.test(guardDoc) && /printf -v/.test(guardDoc));
+	check("worker-common: Package root line first and {{PACKAGE_ROOT}} used for scripts", /^Package root: \{\{PACKAGE_ROOT\}\}/m.test(common) && /\{\{PACKAGE_ROOT\}\}\/scripts\/baseline-diff\.mjs/.test(common));
+}
 if (failures) process.exit(1);

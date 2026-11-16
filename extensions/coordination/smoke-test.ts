@@ -836,6 +836,7 @@ async function main() {
 		const sample = composeWorkerPrompt(pkg[0]);
 		const m = /Package root: (\S+)/.exec(sample);
 		check("compose: Package root line is the real path and exists", !!m && m[1] === PACKAGE_ROOT && existsSync(join(m[1], "references", "worker-common.md")));
+		check("compose: worker prompt carries Gotchas, Guard-denied and the baseline-diff path", /### Gotchas/.test(sample) && /Guard-denied:/.test(sample) && sample.includes(`${PACKAGE_ROOT}/scripts/baseline-diff.mjs`));
 		check("compose: {{PACKAGE_ROOT}} also substituted in the agent body", composeWorkerPrompt({ systemPrompt: "see {{PACKAGE_ROOT}}/x" }).includes(`see ${PACKAGE_ROOT}/x`));
 	}
 
