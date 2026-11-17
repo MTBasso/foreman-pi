@@ -104,6 +104,27 @@ function gatherOrientation(cwd: string): string {
 		lines.push("git: not a git repository (or git unavailable)");
 	}
 
+	const worktrees = runGit(cwd, ["worktree", "list"]);
+	if (worktrees && worktrees.split("\n").length > 1) lines.push(`git worktree list:\n${worktrees}`);
+
+	try {
+		const docs = join(cwd, "docs");
+		const handoffs = existsSync(docs) ? readdirSync(docs).filter((n) => /^handoff.*\.md$/i.test(n)) : [];
+		if (handoffs.length) {
+			lines.push(
+				`handoff files in docs/: ${handoffs.join(", ")} (a prior run may be unfinished: ` +
+					"suggest /foreman resume or /plan-runner <plan> instead of a generic menu)",
+			);
+		}
+	} catch {
+		// non-fatal
+	}
+
+	lines.push(
+		"NOTE: git state above is LOCAL only (no fetch). Remote branches/PR/merge status may be stale; " +
+			"to confirm live state, delegate a read-only worker (git fetch, gh pr view). Do not infer it from .git/refs.",
+	);
+
 	try {
 		const entries = readdirSync(cwd, { withFileTypes: true })
 			.map((d) => d.name + (d.isDirectory() ? "/" : ""))

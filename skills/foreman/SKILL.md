@@ -33,6 +33,8 @@ spawn.
 
 **Check the `foreman-session-reminder` custom message already in this conversation before running any check yourself.** It pre-gathers `FOREMAN_MEMORY.md`'s first lines, git branch/status/log, a top-level listing and whether orchestrator mode is active. Re-running `ls`/`cat`/`git log` for something already there wastes round trips; reach for a tool only for what it doesn't cover.
 
+The orientation's git state is local only: it never fetches. When you need live state (remote branches, PR or merge status, whether something landed on GitHub), do not guess from `.git/refs` and do not ask the user to run commands; delegate a read-only worker (`codebase-auditor`) to `git fetch` and `gh pr view`. If the orientation lists handoff files under `docs/` or extra worktrees, open by proposing to resume that work (`/foreman resume`, or `/plan-runner <plan>` for an approved plan) instead of a generic menu.
+
 Read `references/using-worktrees.md` (resolved as above) and follow it before anything else —
 detect whether you're already isolated, otherwise get the user's consent
 before creating a worktree for this feature/bug. Skip it only if the user

@@ -34,6 +34,8 @@ import { createModeTracker } from "../../lib/mode.ts";
  * No bash (opaque, hard to audit), no write/edit (must delegate).
  */
 const ORCHESTRATOR_TOOLS = ["read", "grep", "find", "ls", "foreman_delegate"];
+/** Read-only inspection tools to turn on for the orchestrator when available. */
+const INSPECTION_TOOLS = ["grep", "find", "ls"];
 /** Tools that are always blocked while orchestrating, even if re-enabled. */
 const BLOCKED_TOOLS = ["bash", "write", "edit"];
 /** Pi's built-in default tool set, used when no saved list exists. */
@@ -52,7 +54,19 @@ export default function (pi: ExtensionAPI) {
 		const active = pi.getActiveTools();
 		if (saved === undefined && active.some((t: string) => BLOCKED_TOOLS.includes(t))) saved = [...active];
 		const next = active.filter((t: string) => ORCHESTRATOR_TOOLS.includes(t));
-		if (next.length !== active.length) pi.setActiveTools(next);
+		// grep/find/ls are not in pi's default active set, so filtering alone
+		// would leave the foreman with only read + foreman_delegate. Enable the
+		// ones that exist, so the skill's promise of read-only inspection holds.
+		let known: Set<string> | undefined;
+		try {
+			known = new Set(pi.getAllTools().map((t: { name: string }) => t.name));
+		} catch {
+			known = undefined;
+		}
+		if (known) {
+			for (const t of INSPECTION_TOOLS) if (known.has(t) && !next.includes(t)) next.push(t);
+		}
+		if (next.length !== active.length || next.some((t) => !active.includes(t))) pi.setActiveTools(next);
 	}
 
 	function restore() {
